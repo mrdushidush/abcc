@@ -1,0 +1,4 @@
+# Proper nouns that clippy's doc_markdown lint mistakes for identifiers. `..`
+# keeps clippy's own default list; these are the names this project writes in
+# prose, where backticking them would make the sentence worse rather than better.
+doc-valid-idents = ["SQLite", "SQLite's", "Ratatui", "LM", "GPU", "VRAM", "TTFT", "WAL", "CPython", "CPython's", ".."]

@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/abcc-core",
+    "crates/abcc-store",
 ]
 
 [workspace.package]
