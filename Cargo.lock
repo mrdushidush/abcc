@@ -12,6 +12,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "abcc-engine"
+version = "0.1.0"
+dependencies = [
+ "abcc-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "abcc-store"
 version = "0.1.0"
 dependencies = [
