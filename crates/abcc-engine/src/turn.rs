@@ -1,0 +1,537 @@
+//! The turn loop: one phase, one frozen head, N rounds of tools, one artifact.
+//!
+//! This is the function ADR-0001's falsifier is about. The donor engine is 93
+//! modules and 65,519 lines and it works; the ruling made it a **specification
+//! and a test corpus** rather than a source tree, and *"the rewrite does not
+//! re-earn the engine's working behaviour"* is the observation that would
+//! overturn it. So the loop is written against the contracts and not against the
+//! code, and every rule it holds is one a measurement produced:
+//!
+//! * **The head never moves.** [`Head::prefix`] is `&'static str` and the loop
+//!   appends to a [`Body`] — the same body, growing — so every round after the
+//!   first is a prefix-cache hit rather than a cold prefill. One token changed at
+//!   the front costs the whole 79.7% saving (F81).
+//! * **A refused tool is told to the model, in its own transcript.** The denial
+//!   goes on the log as [`Why::Denied`] and into the body as that call's result,
+//!   because a model that cannot see the refusal asks again, and asking again is
+//!   the round budget spent on nothing.
+//! * **Silence is marked.** A stream that says nothing for
+//!   [`Limits::liveness_gap`] gets an [`Event::LivenessMark`]. The harness this
+//!   project came from once sat silent for forty minutes — 240× the attention
+//!   limit — and could not tell that from a hang (ADR-0012 §5).
+//! * **An empty payload at the cap is an absence.** `finish_reason == "length"`
+//!   with nothing in it is [`Why::TruncatedAtCap`], never a verdict and never a
+//!   zero; 17 of 57 judge calls were lost that way.
+//! * **Stopping is dropping.** The loop samples [`ControlPoint::interrupted`]
+//!   between deltas and drops the stream, which closes the socket (F200). No
+//!   cancel token reaches into the provider.
+
+use std::time::{Duration, Instant};
+
+use abcc_core::event::{Event, Finish, Usage};
+use abcc_core::outcome::{Claim, Why};
+use abcc_core::seq::AttemptId;
+
+use crate::control::{ControlPoint, Disposition, Stop};
+use crate::head::Head;
+use crate::provider::{
+    ApiRequest, Body, Delta, Message, Provider, ProviderError, Schema, ToolCall, TraceSignal, Turn,
+    TurnStream,
+};
+use crate::tools::ToolSpec;
+
+/// Where the loop writes what happened.
+///
+/// A trait rather than a `Store`, because ADR-0006 makes the log the only thing
+/// that crosses between a worker and anything else — so the loop's dependency is
+/// *there is somewhere to write*, and the durable half is the driver's business.
+pub trait Journal {
+    fn record(&mut self, event: Event);
+}
+
+impl<F: FnMut(Event)> Journal for F {
+    fn record(&mut self, event: Event) {
+        self(event);
+    }
+}
+
+/// What a tool did, in the shape `ToolCallEnded` wants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResult {
+    /// What the model is shown. It is the tool's own output rather than a
+    /// summary of it, because a summary is a claim about a measurement.
+    pub text: String,
+    pub exit: Option<i32>,
+    pub elapsed_ms: u64,
+    /// The class, when the tool produced no measurable ending.
+    pub unmeasured: Option<Why>,
+}
+
+/// Something that can run an admitted tool call.
+///
+/// The policy check has already happened when this is called — the `spec` is the
+/// proof of it — so an implementation never re-decides whether the role may do
+/// this. **Two places deciding one thing is how the donor ended up with a path
+/// check that is not in the path.**
+pub trait Tools {
+    fn run(&self, spec: &'static ToolSpec, call: &ToolCall) -> ToolResult;
+}
+
+/// The stops that are not the operator's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Rounds of tool calls before the phase gives up.
+    ///
+    /// ⚠ A **stop, not a tier**. There is one tier and the only purchase
+    /// available is another attempt (ADR-0010), so exhausting this escalates
+    /// nothing — it ends the phase with `BudgetExhausted`, which is neither a
+    /// pass nor a failure.
+    pub rounds: u32,
+    /// The per-read budget on the stream, which is therefore also the idle-gap
+    /// timeout: a stream silent this long is a hang (F198, F199).
+    pub idle_gap: Duration,
+    /// How long a stream may say nothing before the log says it is alive.
+    /// ADR-0012 §5's bar is that no gap over ten seconds goes unmarked.
+    pub liveness_gap: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits {
+            rounds: 24,
+            // The champion's rung: ~2.4x its measured worst-case TTFB, and
+            // 1.7-3.3x tighter than the 300 s inherited (F199).
+            idle_gap: Duration::from_secs(90),
+            liveness_gap: Duration::from_secs(10),
+        }
+    }
+}
+
+/// What one phase cost, whether or not it produced anything.
+///
+/// Returned on every ending, including a stop, because a phase the operator
+/// cancelled still spent tokens and an accounting that counts only successes is
+/// an accounting that under-reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseReport {
+    pub turns: u32,
+    pub tool_calls: u32,
+    pub denials: u32,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    /// `None` when no call reported one, which is different from zero.
+    pub reasoning_tokens: Option<u32>,
+    /// The most concerning trace signal any turn in this phase produced.
+    ///
+    /// ADR-0010 §7 asks *at token 200, has the reasoning trace closed?* and says
+    /// the answer is a stop rather than a score. ⚠ **At Skeleton it is recorded
+    /// and not acted on.** Stopping a generation on this signal is a
+    /// behavioural change that needs a population to justify it, and the
+    /// population is what recording it produces. It never becomes a number shown
+    /// next to an answer either way.
+    pub trace: TraceSignal,
+    pub elapsed_ms: u64,
+}
+
+impl Default for PhaseReport {
+    fn default() -> PhaseReport {
+        PhaseReport {
+            turns: 0,
+            tool_calls: 0,
+            denials: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            reasoning_tokens: None,
+            trace: TraceSignal::Absent,
+            elapsed_ms: 0,
+        }
+    }
+}
+
+impl PhaseReport {
+    /// Fold one turn's cost in. `reasoning_tokens` stays `None` until a provider
+    /// reports one, because none reported is not the same as none spent.
+    fn count(&mut self, turn: &Turn) {
+        self.turns += 1;
+        self.prompt_tokens = self.prompt_tokens.saturating_add(turn.usage.prompt_tokens);
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(turn.usage.completion_tokens);
+        if let Some(r) = turn.usage.reasoning_tokens {
+            self.reasoning_tokens = Some(self.reasoning_tokens.unwrap_or(0).saturating_add(r));
+        }
+        if concern(turn.trace) > concern(self.trace) {
+            self.trace = turn.trace;
+        }
+    }
+}
+
+/// How much a trace signal is worth worrying about. Absent is not the same as
+/// closed and neither is a problem; an open trace at token 200 is the one the
+/// ADR is about.
+fn concern(signal: TraceSignal) -> u8 {
+    match signal {
+        TraceSignal::Absent => 0,
+        TraceSignal::Closed => 1,
+        TraceSignal::OpenAt200 => 2,
+    }
+}
+
+/// How a phase ended. Three ways, and only one of them is an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhaseEnded {
+    /// The model stopped asking for tools and said something.
+    Answered { text: String, report: PhaseReport },
+    /// The operator stopped it. Not a failure of the work.
+    Stopped { stop: Stop, report: PhaseReport },
+    /// 🚨 No artifact, and here is the class. Never a score, and never an empty
+    /// string standing in for one.
+    Unmeasured { why: Why, report: PhaseReport },
+}
+
+impl PhaseEnded {
+    #[must_use]
+    pub fn report(&self) -> &PhaseReport {
+        match self {
+            PhaseEnded::Answered { report, .. }
+            | PhaseEnded::Stopped { report, .. }
+            | PhaseEnded::Unmeasured { report, .. } => report,
+        }
+    }
+}
+
+/// One phase's worth of driving.
+pub struct TurnLoop<'a> {
+    provider: &'a dyn Provider,
+    tools: &'a dyn Tools,
+    model: String,
+    limits: Limits,
+}
+
+impl<'a> TurnLoop<'a> {
+    #[must_use]
+    pub fn new(provider: &'a dyn Provider, tools: &'a dyn Tools, model: impl Into<String>) -> Self {
+        TurnLoop {
+            provider,
+            tools,
+            model: model.into(),
+            limits: Limits::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Run one phase to an ending.
+    ///
+    /// `body` is borrowed rather than owned because a retry is the same body with
+    /// the failure appended (ADR-0010) — handing it back is what makes the fix
+    /// round *this phase with different feedback* rather than a new phase.
+    pub fn run(
+        &self,
+        head: Head,
+        attempt: AttemptId,
+        schema: Option<Schema>,
+        body: &mut Body,
+        control: &mut ControlPoint,
+        journal: &mut dyn Journal,
+    ) -> PhaseEnded {
+        let started = Instant::now();
+        let mut report = PhaseReport::default();
+
+        for _round in 0..self.limits.rounds {
+            let turn = match self.one_turn(head, attempt, schema, body, control, journal) {
+                Ok(turn) => turn,
+                Err(ending) => return ending.into_phase(report, started),
+            };
+            report.count(&turn);
+
+            // 🚨 Asked before the text is read, because a payload that is not
+            // there is an absence rather than a short answer.
+            if let Some(why) = turn.uncertain() {
+                return Ending::Unmeasured(why).into_phase(report, started);
+            }
+
+            if !turn.wants_tools() {
+                let text = turn.text;
+                journal.record(Event::ClaimRecorded {
+                    attempt,
+                    claim: Claim {
+                        by: head.call_sign().to_owned(),
+                        text: text.clone(),
+                    },
+                });
+                report.elapsed_ms = elapsed_ms(started);
+                return PhaseEnded::Answered { text, report };
+            }
+
+            self.tool_round(head, attempt, &turn, body, journal, &mut report);
+        }
+
+        Ending::Unmeasured(Why::BudgetExhausted {
+            which: format!("{} rounds", self.limits.rounds),
+        })
+        .into_phase(report, started)
+    }
+
+    /// One model call: the step boundary, the request, the stream, the drain.
+    fn one_turn(
+        &self,
+        head: Head,
+        attempt: AttemptId,
+        schema: Option<Schema>,
+        body: &Body,
+        control: &mut ControlPoint,
+        journal: &mut dyn Journal,
+    ) -> Result<Turn, Ending> {
+        // The step boundary, before any work is committed to.
+        if let Disposition::Stop(stop) = control.check() {
+            return Err(Ending::Stopped(stop));
+        }
+
+        let request = ApiRequest {
+            model: &self.model,
+            head,
+            body,
+            schema,
+            idle_gap: self.limits.idle_gap,
+        };
+        journal.record(Event::ModelCallStarted {
+            attempt,
+            provider: self.provider.id().to_string(),
+            model: self.model.clone(),
+            head: head.key().to_owned(),
+            budget: head.budget(),
+        });
+
+        let mut stream = self
+            .provider
+            .start(&request)
+            .map_err(|e| Ending::Unmeasured(e.why()))?;
+        let drained = self.drain(&mut *stream, attempt, head, control, journal);
+        // Dropping the stream is the cancellation, so it happens here rather than
+        // at the end of a scope somebody might later widen.
+        drop(stream);
+
+        match drained {
+            Drained::Turn(turn) => Ok(turn),
+            Drained::Failed(e) => Err(Ending::Unmeasured(e.why())),
+            Drained::Interrupted => Err(match control.check() {
+                Disposition::Stop(stop) => Ending::Stopped(stop),
+                // The flag was set and the verb was not there. It cannot happen
+                // through `ControlHandle`, which writes the verb first — so if it
+                // does, say so rather than carry on with a dropped stream.
+                Disposition::Carry => Ending::Unmeasured(Why::EngineError {
+                    detail: "interrupted with no control verb on the channel".to_owned(),
+                }),
+            }),
+        }
+    }
+
+    /// Admit, run and append every tool the turn asked for.
+    fn tool_round(
+        &self,
+        head: Head,
+        attempt: AttemptId,
+        turn: &Turn,
+        body: &mut Body,
+        journal: &mut dyn Journal,
+        report: &mut PhaseReport,
+    ) {
+        // The assistant's own turn goes on the body before its tool results, so
+        // the transcript reads in the order it happened.
+        if !turn.text.is_empty() {
+            body.append(Message::assistant(turn.text.clone()));
+        }
+        let policy = head.policy();
+        for call in &turn.tool_calls {
+            match policy.admits(&call.tool) {
+                Ok(spec) => {
+                    report.tool_calls += 1;
+                    journal.record(Event::ToolCallStarted {
+                        attempt,
+                        tool: spec.name.to_owned(),
+                        tier: spec.required_tier().to_string(),
+                    });
+                    let result = self.tools.run(spec, call);
+                    journal.record(Event::ToolCallEnded {
+                        attempt,
+                        tool: spec.name.to_owned(),
+                        exit: result.exit,
+                        elapsed_ms: result.elapsed_ms,
+                        unmeasured: result.unmeasured.clone(),
+                    });
+                    body.append(Message::tool_result(&call.id, result.text));
+                }
+                Err(denied) => {
+                    report.denials += 1;
+                    journal.record(Event::ToolCallEnded {
+                        attempt,
+                        tool: call.tool.clone(),
+                        exit: None,
+                        elapsed_ms: 0,
+                        unmeasured: Some(Why::Denied {
+                            role: head.call_sign().to_owned(),
+                            tool: call.tool.clone(),
+                            ceiling: head.max_tier().to_string(),
+                        }),
+                    });
+                    // The model is told, in its own transcript. A refusal it
+                    // cannot see is a refusal it asks for again.
+                    body.append(Message::tool_result(&call.id, denied.to_string()));
+                }
+            }
+        }
+    }
+
+    /// Read one turn out of a stream, sampling the control channel between deltas
+    /// and marking the log when the stream goes quiet.
+    fn drain(
+        &self,
+        stream: &mut dyn TurnStream,
+        attempt: AttemptId,
+        head: Head,
+        control: &ControlPoint,
+        journal: &mut dyn Journal,
+    ) -> Drained {
+        let started = Instant::now();
+        let mut acc = Accumulator::default();
+        let mut last_mark = Instant::now();
+
+        loop {
+            // 🚨 Between deltas, not inside the read. One atomic load, and the
+            // caller drops the stream on the way out.
+            if control.interrupted() {
+                return Drained::Interrupted;
+            }
+            if last_mark.elapsed() >= self.limits.liveness_gap {
+                journal.record(Event::LivenessMark {
+                    attempt,
+                    note: format!(
+                        "{} streaming: {} chars of answer, {} of trace",
+                        head.key(),
+                        acc.text.len(),
+                        acc.reasoning_chars
+                    ),
+                });
+                last_mark = Instant::now();
+            }
+
+            let Some(next) = stream.next_delta() else {
+                break;
+            };
+            match next {
+                Err(e) => return Drained::Failed(e),
+                Ok(delta) => acc.take(delta),
+            }
+        }
+
+        let Some((usage, finish)) = acc.ended.clone() else {
+            // The stream ended with no ending. A proxy that answers 200 and then
+            // nothing looks exactly like this, so it is named rather than guessed
+            // at.
+            return Drained::Failed(ProviderError::Malformed {
+                detail: "the stream ended without a finish reason".to_owned(),
+            });
+        };
+
+        journal.record(Event::ModelCallEnded {
+            attempt,
+            usage,
+            finish: finish.clone(),
+            ttfb_ms: acc.ttfb_ms,
+            elapsed_ms: elapsed_ms(started),
+        });
+
+        Drained::Turn(Turn {
+            trace: acc.trace(usage.completion_tokens),
+            text: acc.text,
+            reasoning_chars: acc.reasoning_chars,
+            tool_calls: acc.tool_calls,
+            usage,
+            finish,
+            ttfb_ms: acc.ttfb_ms,
+            elapsed_ms: elapsed_ms(started),
+            budget: head.budget(),
+        })
+    }
+}
+
+/// The deltas of one turn, folded as they arrive.
+#[derive(Default)]
+struct Accumulator {
+    ttfb_ms: u64,
+    text: String,
+    reasoning_chars: usize,
+    saw_reasoning: bool,
+    reasoning_open: bool,
+    tool_calls: Vec<ToolCall>,
+    ended: Option<(Usage, Finish)>,
+}
+
+impl Accumulator {
+    fn take(&mut self, delta: Delta) {
+        match delta {
+            Delta::Opened { ttfb_ms } => self.ttfb_ms = ttfb_ms,
+            Delta::Text(chunk) => {
+                self.reasoning_open = false;
+                self.text.push_str(&chunk);
+            }
+            Delta::Reasoning(chunk) => {
+                self.saw_reasoning = true;
+                self.reasoning_open = true;
+                self.reasoning_chars += chunk.len();
+            }
+            Delta::ToolCall(call) => {
+                self.reasoning_open = false;
+                self.tool_calls.push(call);
+            }
+            Delta::Closed { usage, finish } => self.ended = Some((usage, finish)),
+        }
+    }
+
+    /// ADR-0010 §7's one in-flight signal, asked at token 200: **had the trace
+    /// closed?** If not, this turn is far likelier to end at the ceiling with
+    /// nothing. 🚨 It is a stop, not a score, and it never becomes a number shown
+    /// next to an answer.
+    fn trace(&self, completion_tokens: u32) -> TraceSignal {
+        if !self.saw_reasoning {
+            TraceSignal::Absent
+        } else if self.reasoning_open && completion_tokens >= 200 {
+            TraceSignal::OpenAt200
+        } else {
+            TraceSignal::Closed
+        }
+    }
+}
+
+enum Drained {
+    Turn(Turn),
+    Interrupted,
+    Failed(ProviderError),
+}
+
+/// The two ways a phase ends without an artifact. Split out so the loop reads as
+/// the sequence it is rather than as five early returns that each rebuild a
+/// report.
+enum Ending {
+    Stopped(Stop),
+    Unmeasured(Why),
+}
+
+impl Ending {
+    fn into_phase(self, mut report: PhaseReport, started: Instant) -> PhaseEnded {
+        report.elapsed_ms = elapsed_ms(started);
+        match self {
+            Ending::Stopped(stop) => PhaseEnded::Stopped { stop, report },
+            Ending::Unmeasured(why) => PhaseEnded::Unmeasured { why, report },
+        }
+    }
+}
+
+fn elapsed_ms(from: Instant) -> u64 {
+    u64::try_from(from.elapsed().as_millis()).unwrap_or(u64::MAX)
+}

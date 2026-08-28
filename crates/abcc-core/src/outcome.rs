@@ -107,6 +107,18 @@ pub enum Why {
     /// The measurement exists but was taken at a sha the tree has since left.
     /// See [`Report::headline_at`].
     StaleMeasurement { taken_at: String, now: String },
+    /// 🚨 The role's ceiling refused the call, so nothing ran and there is
+    /// nothing to measure.
+    ///
+    /// A denial is a **normal outcome**, not a fault: ADR-0014's control is
+    /// denying the class, and a class denied silently is a class nobody can
+    /// audit. It is a member of this enum for the same reason the other ten are
+    /// — it is a sentence an operator can act on, and it is not `false`.
+    Denied {
+        role: String,
+        tool: String,
+        ceiling: String,
+    },
     /// The turn loop itself broke — a malformed response, a provider error, a
     /// tool layer that could not answer. Attempt-level rather than rung-level,
     /// and it is here because ADR-0009 §7 makes this enum W3's failure class too.
@@ -134,6 +146,11 @@ impl fmt::Display for Why {
             Why::StaleMeasurement { taken_at, now } => {
                 write!(f, "measured at {taken_at}, tree is now at {now}")
             }
+            Why::Denied {
+                role,
+                tool,
+                ceiling,
+            } => write!(f, "{role} may not use {tool} (capped at {ceiling})"),
             Why::EngineError { detail } => write!(f, "the turn loop failed: {detail}"),
         }
     }

@@ -1,0 +1,262 @@
+//! A provider that replays a written script.
+//!
+//! ⚠ **Not a mock.** It is two things the project needs on its own terms.
+//!
+//! 1. It is how the turn loop is exercised without a GPU. The box has one card,
+//!    a model swap costs 23.77 s and the quality champion runs at 4.9× — so a
+//!    test suite that needs a resident model is a test suite nobody runs before
+//!    committing.
+//! 2. **It is the contract the HTTP provider has to satisfy.** The [`Delta`]
+//!    sequence here is the sequence a real stream produces; if writing the real
+//!    one requires a shape this cannot express, the seam is wrong and that is
+//!    worth finding out in a test rather than at a socket.
+//!
+//! It also earns its keep as a check on ADR-0013's `&self`: this type is shared,
+//! not owned, and it holds its script behind a lock rather than behind `&mut`.
+//! A provider that needed `&mut self` could not be written this way, which is the
+//! property the inherited trait lacked.
+
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use abcc_core::event::{Finish, Usage};
+
+use crate::provider::{
+    ApiRequest, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, ToolCall,
+    TurnStream,
+};
+
+/// One turn's worth of deltas, in the order a stream produces them.
+#[derive(Debug, Clone, Default)]
+pub struct Script(Vec<Result<Delta, ProviderError>>);
+
+impl Script {
+    /// A turn that answers and asks for nothing.
+    #[must_use]
+    pub fn says(text: &str) -> Script {
+        Script(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Text(text.to_owned())),
+            Ok(Delta::Closed {
+                usage: usage(64, u32::try_from(text.len() / 4).unwrap_or(1), None),
+                finish: Finish::Stop,
+            }),
+        ])
+    }
+
+    /// A turn that asks for one tool.
+    #[must_use]
+    pub fn calls(id: &str, tool: &str, arguments: &str) -> Script {
+        Script(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::ToolCall(ToolCall {
+                id: id.to_owned(),
+                tool: tool.to_owned(),
+                arguments: arguments.to_owned(),
+            })),
+            Ok(Delta::Closed {
+                usage: usage(64, 20, None),
+                finish: Finish::ToolCalls,
+            }),
+        ])
+    }
+
+    /// 🚨 The ending that is an absence: the cap, with nothing in the payload.
+    /// 17 of 57 judge calls were lost this way, and none of them is a zero.
+    #[must_use]
+    pub fn truncated_at_cap(budget: u32) -> Script {
+        Script(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Reasoning("thinking, at length, ".repeat(64))),
+            Ok(Delta::Closed {
+                usage: usage(64, budget, Some(budget)),
+                finish: Finish::Length {
+                    content_empty: true,
+                },
+            }),
+        ])
+    }
+
+    /// A turn whose reasoning trace is still open when the answer is due — the
+    /// signal ADR-0010 §7 asks for at token 200.
+    #[must_use]
+    pub fn trace_still_open(completion_tokens: u32) -> Script {
+        Script(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Reasoning("still going ".repeat(200))),
+            Ok(Delta::Closed {
+                usage: usage(64, completion_tokens, Some(completion_tokens)),
+                finish: Finish::Stop,
+            }),
+        ])
+    }
+
+    /// A stream that ends without a finish reason — a proxy that answered 200 and
+    /// then nothing.
+    #[must_use]
+    pub fn ends_without_saying_so() -> Script {
+        Script(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Text("half an ans".to_owned())),
+        ])
+    }
+
+    /// A stream that fails partway.
+    #[must_use]
+    pub fn fails(error: ProviderError) -> Script {
+        Script(vec![Ok(Delta::Opened { ttfb_ms: 12 }), Err(error)])
+    }
+
+    /// Anything else.
+    #[must_use]
+    pub fn raw(deltas: Vec<Result<Delta, ProviderError>>) -> Script {
+        Script(deltas)
+    }
+
+    /// Add a delta to the end of this turn.
+    #[must_use]
+    pub fn and(mut self, delta: Delta) -> Script {
+        self.0.push(Ok(delta));
+        self
+    }
+
+    /// Report reasoning tokens on this turn, which `PLAN.md` §5 requires logged
+    /// on every call from day one.
+    #[must_use]
+    pub fn with_reasoning_tokens(mut self, n: u32) -> Script {
+        for delta in &mut self.0 {
+            if let Ok(Delta::Closed { usage, .. }) = delta {
+                usage.reasoning_tokens = Some(n);
+            }
+        }
+        self
+    }
+}
+
+#[must_use]
+fn usage(prompt: u32, completion: u32, reasoning: Option<u32>) -> Usage {
+    Usage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        reasoning_tokens: reasoning,
+        cached_tokens: None,
+    }
+}
+
+/// What the loop actually sent. The point of keeping it is that the freeze is
+/// checkable end to end: a head that moved between rounds shows up here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seen {
+    pub head_key: &'static str,
+    pub head_prefix: &'static str,
+    pub model: String,
+    pub budget: u32,
+    pub messages: Vec<Message>,
+}
+
+/// A provider that replays [`Script`]s in order.
+pub struct Scripted {
+    id: ProviderId,
+    class: ProviderClass,
+    scripts: Mutex<VecDeque<Script>>,
+    seen: Mutex<Vec<Seen>>,
+    /// Time to wait before each delta, so a test can interrupt a stream that is
+    /// genuinely in flight rather than one that has already finished.
+    pace: Duration,
+}
+
+impl Scripted {
+    #[must_use]
+    pub fn new(scripts: Vec<Script>) -> Scripted {
+        Scripted {
+            id: ProviderId::new("scripted"),
+            class: ProviderClass::Local,
+            scripts: Mutex::new(scripts.into()),
+            seen: Mutex::new(Vec::new()),
+            pace: Duration::ZERO,
+        }
+    }
+
+    /// Answer as a cloud provider, so an egress predicate has something to be
+    /// true about.
+    #[must_use]
+    pub fn cloud(mut self) -> Scripted {
+        self.class = ProviderClass::Cloud;
+        self.id = ProviderId::new("scripted-cloud");
+        self
+    }
+
+    /// Space the deltas out.
+    #[must_use]
+    pub fn paced(mut self, pace: Duration) -> Scripted {
+        self.pace = pace;
+        self
+    }
+
+    /// Every request this provider was given, in order.
+    ///
+    /// # Panics
+    ///
+    /// If a previous caller panicked while holding the lock.
+    #[must_use]
+    pub fn seen(&self) -> Vec<Seen> {
+        self.seen.lock().expect("scripted provider lock").clone()
+    }
+
+    /// Scripts not yet played.
+    ///
+    /// # Panics
+    ///
+    /// If a previous caller panicked while holding the lock.
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.scripts.lock().expect("scripted provider lock").len()
+    }
+}
+
+impl Provider for Scripted {
+    fn id(&self) -> ProviderId {
+        self.id.clone()
+    }
+
+    fn class(&self) -> ProviderClass {
+        self.class
+    }
+
+    fn start(&self, req: &ApiRequest<'_>) -> Result<Box<dyn TurnStream>, ProviderError> {
+        self.seen.lock().expect("lock").push(Seen {
+            head_key: req.head.key(),
+            head_prefix: req.head.prefix(),
+            model: req.model.to_owned(),
+            budget: req.budget(),
+            messages: req.body.messages().to_vec(),
+        });
+        let script = self
+            .scripts
+            .lock()
+            .expect("lock")
+            .pop_front()
+            .ok_or_else(|| ProviderError::Malformed {
+                detail: "the script ran out of turns".to_owned(),
+            })?;
+        Ok(Box::new(ScriptedStream {
+            deltas: script.0.into(),
+            pace: self.pace,
+        }))
+    }
+}
+
+struct ScriptedStream {
+    deltas: VecDeque<Result<Delta, ProviderError>>,
+    pace: Duration,
+}
+
+impl TurnStream for ScriptedStream {
+    fn next_delta(&mut self) -> Option<Result<Delta, ProviderError>> {
+        if !self.pace.is_zero() {
+            std::thread::sleep(self.pace);
+        }
+        self.deltas.pop_front()
+    }
+}

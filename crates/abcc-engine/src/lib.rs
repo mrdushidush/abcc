@@ -41,7 +41,9 @@ pub mod child;
 pub mod control;
 pub mod head;
 pub mod provider;
+pub mod scripted;
 pub mod tools;
+pub mod turn;
 
 pub use child::{Finished, Killer, Spawn, ToolChild};
 pub use control::{ControlHandle, ControlPoint, Disposition, Gone, Keep, Stop, Urgency};
@@ -51,3 +53,4 @@ pub use provider::{
     Schema, ToolCall, TraceSignal, Turn, TurnStream,
 };
 pub use tools::{Confinement, Denied, Destructive, Policy, Reach, Tier, ToolSpec};
+pub use turn::{Journal, Limits, PhaseEnded, PhaseReport, ToolResult, Tools, TurnLoop};
