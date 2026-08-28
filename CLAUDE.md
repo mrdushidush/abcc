@@ -7,14 +7,14 @@ is; this file is how to work in it.
 ## Commands
 
 The loop ladder, re-measured warm on the development box, 2026-08-28, at four
-crates, with exit status asserted. Use the cheapest rung that answers the
-question, and re-measure when the workspace grows again.
+crates and 153 tests, with exit status asserted. Use the cheapest rung that
+answers the question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
-| after every edit | `cargo check --workspace --all-targets` | 0.17 s |
-| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.23 s |
-| once, before commit | `cargo test --workspace` | 4.5 s |
+| after every edit | `cargo check --workspace --all-targets` | 0.20 s |
+| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.26 s |
+| once, before commit | `cargo test --workspace` | 7.1 s |
 
 🚨 **The middle rung used to end `&& cargo test --lib`, and that ran zero tests.**
 Every test in this workspace is an integration test under `tests/`, which
@@ -23,11 +23,11 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test heads --test policy --test control --test turn_loop`
-is **0.5 s** and covers everything that does not start a process. The full suite
-costs 4.5 s because `tests/child.rs` spawns real children and `abcc-vcs` drives
-real git — that time is processes, not compilation, and it is the price of
-testing claims about an OS against the OS.
+`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch`
+is **0.47 s** for 72 tests and covers everything that does not start a process.
+The full suite costs 7.1 s because `tests/child.rs` and `tests/exec.rs` spawn real
+children and `abcc-vcs` drives real git — that time is processes, not
+compilation, and it is the price of testing claims about an OS against the OS.
 
 Run a single test by name (`cargo test <name>`) when you are iterating on one
 failure.
@@ -40,6 +40,12 @@ do not reformat around it.
 
 - Nothing is required to build or test. The model-serving path needs LM Studio
   running locally, and its port and API key change on every model load.
+- 🚨 **The `bash` tool resolves its own interpreter and does not spawn the name.**
+  On this box the first `bash` on PATH is the WSL relay in the system directory,
+  and with no distribution installed it answers `execvpe(/bin/bash) failed` at
+  **exit 1** — which a tool layer that spawned the name would record as *the
+  command failed* about a shell that never ran (F492). `ABCC_SHELL` overrides the
+  search; the fallback is Git for Windows.
 - The model server is not started by the test suite. Tests that need one are
   `#[ignore]`d and named `*_live_*`; run them with `--ignored` after starting it.
 - `target/` gets large. Do not clean it to free space without asking.
@@ -71,6 +77,13 @@ do not reformat around it.
 - **Attempts are immutable.** Retry, edit, re-route and replay are all one
   operation — fork from a checkpoint with a `Cause` — so lineage exists by
   construction. Nothing updates an attempt row except the event that ends it.
+- **A tool below the exec tier may not start a child process — including to do
+  its own job.** `apply_patch` applies diffs in-process and `list_files` reads
+  ignore rules in-process, rather than either of them calling git, because the
+  exec class is *derived* from `ToolSpec::reach`: a `Reach::Edits` tool that
+  spawned a child would be an exec-class tool admitted at the write tier, which
+  is the donor defect the derivation exists to prevent. If a file tool seems to
+  need a subprocess, that is the design telling you it is an exec tool.
 - The isolation boundary is the tool child process, not the agent. A tool that
   spawns a shell is in the same class as one that runs code, regardless of its
   argument surface. That class is **derived** from `ToolSpec::reach` rather than

@@ -40,10 +40,12 @@
 pub mod child;
 pub mod control;
 pub mod head;
+pub mod patch;
 pub mod provider;
 pub mod scripted;
 pub mod tools;
 pub mod turn;
+pub mod workspace;
 
 pub use child::{Finished, Killer, Spawn, ToolChild};
 pub use control::{ControlHandle, ControlPoint, Disposition, Gone, Keep, Stop, Urgency, Watch};
@@ -54,3 +56,4 @@ pub use provider::{
 };
 pub use tools::{Confinement, Denied, Destructive, Policy, Reach, Tier, ToolSpec};
 pub use turn::{Journal, Limits, PhaseEnded, PhaseReport, ToolResult, Tools, TurnLoop};
+pub use workspace::{Toolchain, Workspace};

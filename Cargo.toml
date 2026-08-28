@@ -29,6 +29,13 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 ratatui = "0.30"
 crossterm = "0.29"
 shared_child = "1"
+# ripgrep's own crates. `list_files` advertises that it honours the repository's
+# ignore rules and `search` advertises a regular expression, so the choice is
+# between the reference implementation of those two sentences and a subset that
+# would make the head's own tool descriptions overclaim. Neither walks in
+# parallel here, so ADR-0006's thread inventory is untouched.
+ignore = "0.4"
+regex = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

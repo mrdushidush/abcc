@@ -10,6 +10,8 @@ authors.workspace = true
 
 [dependencies]
 abcc-core = { workspace = true }
+ignore = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shared_child = { workspace = true }

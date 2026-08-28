@@ -386,7 +386,7 @@ impl ToolChild {
             stdout: take_text(&self.stdout),
             stderr: take_text(&self.stderr),
             elapsed_ms: elapsed_ms(self.started),
-            confinement: achieved_confinement(),
+            confinement: confinement(),
             unmeasured,
         }
     }
@@ -439,7 +439,8 @@ impl ToolChild {
 /// claim rather than a measurement, and ADR-0014's falsifier is *a supported
 /// confinement primitive appears* — which is why the stronger arm exists and why
 /// nothing returns it yet.
-const fn achieved_confinement() -> Confinement {
+#[must_use]
+pub const fn confinement() -> Confinement {
     Confinement::Cwd
 }
 
