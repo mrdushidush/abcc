@@ -103,12 +103,26 @@ pub enum Role {
 }
 
 /// One message in the varying half of a request.
+///
+/// 🚨 **`tool_calls` exists because writing the real provider found the seam
+/// short one field.** [`crate::scripted::Scripted`] is documented as *the
+/// contract the HTTP provider has to satisfy — if writing the real one requires a
+/// shape this cannot express, the seam is wrong and that is worth finding out in
+/// a test rather than at a socket*, and this is that. A transcript that carries a
+/// tool *result* with no record of the assistant turn that **asked** for it is
+/// not the conversation that happened: the `OpenAI` dialect rejects it outright,
+/// and a lenient chat template renders results arriving from nowhere — so the
+/// model is shown answers to questions it cannot see itself having asked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
     /// Set on [`Role::Tool`], naming the call this is the result of.
     pub tool_call_id: Option<String>,
+    /// Set on [`Role::Assistant`], naming the calls this turn asked for. Empty on
+    /// every other role, and empty on an assistant turn that only spoke.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 impl Message {
@@ -118,6 +132,7 @@ impl Message {
             role: Role::User,
             content: content.into(),
             tool_call_id: None,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -127,6 +142,22 @@ impl Message {
             role: Role::Assistant,
             content: content.into(),
             tool_call_id: None,
+            tool_calls: Vec::new(),
+        }
+    }
+
+    /// The assistant turn that asked for tools, with what it asked for.
+    ///
+    /// The text may be empty — a turn that only called tools is the common case —
+    /// and the calls are carried verbatim, arguments still a string, because the
+    /// transcript records what was asked rather than what the host made of it.
+    #[must_use]
+    pub fn assistant_calling(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls,
         }
     }
 
@@ -136,6 +167,7 @@ impl Message {
             role: Role::Tool,
             content: content.into(),
             tool_call_id: Some(call_id.into()),
+            tool_calls: Vec::new(),
         }
     }
 }

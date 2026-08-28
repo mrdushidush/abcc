@@ -7,14 +7,14 @@ is; this file is how to work in it.
 ## Commands
 
 The loop ladder, re-measured warm on the development box, 2026-08-28, at four
-crates and 153 tests, with exit status asserted. Use the cheapest rung that
+crates and 170 tests, with exit status asserted. Use the cheapest rung that
 answers the question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
-| after every edit | `cargo check --workspace --all-targets` | 0.20 s |
+| after every edit | `cargo check --workspace --all-targets` | 0.27 s |
 | before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.26 s |
-| once, before commit | `cargo test --workspace` | 7.1 s |
+| once, before commit | `cargo test --workspace` | 8.5 s |
 
 🚨 **The middle rung used to end `&& cargo test --lib`, and that ran zero tests.**
 Every test in this workspace is an integration test under `tests/`, which
@@ -23,11 +23,14 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch`
-is **0.47 s** for 72 tests and covers everything that does not start a process.
-The full suite costs 7.1 s because `tests/child.rs` and `tests/exec.rs` spawn real
+`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch --test http`
+is **1.4 s** for 89 tests and covers everything that does not start a process.
+The full suite costs 8.5 s because `tests/child.rs` and `tests/exec.rs` spawn real
 children and `abcc-vcs` drives real git — that time is processes, not
 compilation, and it is the price of testing claims about an OS against the OS.
+⚠ `tests/http.rs` is 0.9 s of that subset and nearly all of it is deliberate
+sleeping: it drives a socket that writes when it is told to, because the claims
+it makes are about *when* bytes arrive.
 
 Run a single test by name (`cargo test <name>`) when you are iterating on one
 failure.
@@ -48,6 +51,18 @@ do not reformat around it.
   search; the fallback is Git for Windows.
 - The model server is not started by the test suite. Tests that need one are
   `#[ignore]`d and named `*_live_*`; run them with `--ignored` after starting it.
+  `ABCC_MODEL_BASE_URL` and `ABCC_MODEL_API_KEY` point the provider somewhere
+  other than `http://127.0.0.1:1234`, and `ABCC_MODEL` names the model.
+- 🚨 **The hang detector is ours, not the HTTP client's** (F493). ADR-0006 rests
+  on F198 — that `RequestBuilder::timeout` on `reqwest::blocking` is a *per-read*
+  budget — and the test ADR-0006 called not optional failed the first time it
+  ran: measured against a socket, six lines 200 ms apart under a 500 ms budget
+  fail at **0.502 s on reqwest 0.12.28 and 0.509 s on 0.13.4**. It is a total
+  duration on both. So `openai.rs` builds its client with **no timeout at all**
+  (the blocking default is 30 s, which is why that is explicit), reads the
+  response on its own thread and applies the gap with `recv_timeout` on the
+  consuming side. **Do not put a `timeout()` back on that request** — it would
+  cap the whole turn, and `tests/http.rs` fails if you do.
 - `target/` gets large. Do not clean it to free space without asking.
 
 ## Style rules that differ from defaults
@@ -96,7 +111,14 @@ do not reformat around it.
 - **Cancelling a turn is dropping the stream.** `TurnStream` has deliberately no
   `cancel()`; the worker samples `ControlPoint::interrupted` between deltas and
   lets the stream fall out of scope. A second way to stop is a second thing that
-  can be forgotten.
+  can be forgotten. With `openai.rs` the drop reaches the socket one hop away:
+  the reader thread's next send fails and it drops the response.
+- **A tool result carries the assistant turn that asked for it.** `Message` has a
+  `tool_calls` field and the loop fills it, because a transcript with an answer
+  and no question is a message the `OpenAI` dialect rejects and a lenient chat
+  template renders as a result arriving from nowhere. That field exists because
+  writing the real provider found the seam short — which is what `scripted.rs`
+  is for.
 - **A stopped tool child is `Cancelled`, never `exit: 1`.** `TerminateProcess`
   hands back 1, so `Killer::kill` takes a `by` and `finish()` reads it — otherwise
   the record says *the tests failed* about work nobody ran.

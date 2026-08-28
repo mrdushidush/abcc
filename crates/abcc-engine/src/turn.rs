@@ -342,10 +342,14 @@ impl<'a> TurnLoop<'a> {
         report: &mut PhaseReport,
     ) {
         // The assistant's own turn goes on the body before its tool results, so
-        // the transcript reads in the order it happened.
-        if !turn.text.is_empty() {
-            body.append(Message::assistant(turn.text.clone()));
-        }
+        // the transcript reads in the order it happened — and it carries the
+        // calls it asked for, not only whatever it said alongside them. A tool
+        // result whose question is missing is a message the OpenAI dialect
+        // rejects and a lenient template renders as an answer from nowhere.
+        body.append(Message::assistant_calling(
+            turn.text.clone(),
+            turn.tool_calls.clone(),
+        ));
         let policy = head.policy();
         for call in &turn.tool_calls {
             match policy.admits(&call.tool) {

@@ -40,6 +40,7 @@
 pub mod child;
 pub mod control;
 pub mod head;
+pub mod openai;
 pub mod patch;
 pub mod provider;
 pub mod scripted;
@@ -50,6 +51,7 @@ pub mod workspace;
 pub use child::{Finished, Killer, Spawn, ToolChild};
 pub use control::{ControlHandle, ControlPoint, Disposition, Gone, Keep, Stop, Urgency, Watch};
 pub use head::{Head, Serves};
+pub use openai::OpenAiCompat;
 pub use provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Role,
     Schema, ToolCall, TraceSignal, Turn, TurnStream,

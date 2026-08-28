@@ -29,6 +29,14 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 ratatui = "0.30"
 crossterm = "0.29"
 shared_child = "1"
+# ADR-0006 option C: threads own the work and the HTTP client is the blocking
+# one. `blocking` + `json` only -- no TLS, because the served endpoint is on this
+# machine and every dependency that is not here is a dependency that cannot
+# break the build. A cloud provider will need a feature added, which is an edit
+# somebody can see rather than a capability that was already sitting there.
+# ⚠ Pinned 0.13 rather than the donor's 0.12 (OQ-W3-22), and the upgrade is only
+# safe because `tests/http.rs` pins the per-read timeout semantic F198 measured.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"] }
 # ripgrep's own crates. `list_files` advertises that it honours the repository's
 # ignore rules and `search` advertises a regular expression, so the choice is
 # between the reference implementation of those two sentences and a subset that
