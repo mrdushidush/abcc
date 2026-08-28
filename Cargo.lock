@@ -23,6 +23,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "abcc-vcs"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
