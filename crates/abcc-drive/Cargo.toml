@@ -1,0 +1,22 @@
+[package]
+name = "abcc-drive"
+description = "The attempt driver: Localize then Change, over the log, the repository and the engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+abcc-core = { workspace = true }
+abcc-engine = { workspace = true }
+abcc-store = { workspace = true }
+abcc-vcs = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

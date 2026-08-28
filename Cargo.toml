@@ -5,6 +5,7 @@ members = [
     "crates/abcc-store",
     "crates/abcc-vcs",
     "crates/abcc-engine",
+    "crates/abcc-drive",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ abcc-core = { path = "crates/abcc-core" }
 abcc-store = { path = "crates/abcc-store" }
 abcc-vcs = { path = "crates/abcc-vcs" }
 abcc-engine = { path = "crates/abcc-engine" }
+abcc-drive = { path = "crates/abcc-drive" }
 abcc-tui = { path = "crates/abcc-tui" }
 
 serde = { version = "1", features = ["derive"] }

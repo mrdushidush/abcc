@@ -12,6 +12,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "abcc-drive"
+version = "0.1.0"
+dependencies = [
+ "abcc-core",
+ "abcc-engine",
+ "abcc-store",
+ "abcc-vcs",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "abcc-engine"
 version = "0.1.0"
 dependencies = [
