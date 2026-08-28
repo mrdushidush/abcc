@@ -37,10 +37,14 @@
 //! unit names surviving as *call-signs on phases*, which is the one part of that
 //! table the reconciliation kept.
 
+pub mod child;
+pub mod control;
 pub mod head;
 pub mod provider;
 pub mod tools;
 
+pub use child::{Finished, Killer, Spawn, ToolChild};
+pub use control::{ControlHandle, ControlPoint, Disposition, Gone, Keep, Stop, Urgency};
 pub use head::{Head, Serves};
 pub use provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Role,

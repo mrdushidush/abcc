@@ -28,6 +28,7 @@ thiserror = "2"
 rusqlite = { version = "0.39", features = ["bundled"] }
 ratatui = "0.30"
 crossterm = "0.29"
+shared_child = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
