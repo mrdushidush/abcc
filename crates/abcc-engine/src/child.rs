@@ -32,7 +32,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 use abcc_core::outcome::Why;
 use shared_child::SharedChild;
 
+use crate::control::Watch;
 use crate::tools::Confinement;
 
 /// The most output kept per stream. Beyond it the drainer keeps reading and
@@ -54,7 +55,36 @@ pub const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 /// case where a grandchild inherited the pipe and holds it open after its parent
 /// is gone — which no signal on this platform reliably resolves, so the honest
 /// move is to bound the wait and report what was captured.
+///
+/// 🚨 **F491: this constant, not [`WATCH_POLL`], is what an operator waits for
+/// when they stop a tool.** Halting a bare child returns its result in **4 ms**;
+/// halting the same sleep behind an interpreter returns in **2,043 ms**, because
+/// `TerminateProcess` reaches the interpreter and the grandchild it started
+/// keeps the write end open until this expires. The child is dead either way —
+/// the blast stops at 4 ms and the *record* of it arrives 2 s later. It is kept
+/// at 2 s: the alternative trades an operator-invisible 2 s against the partial
+/// output of every tool that hangs, which is the evidence a hang is diagnosed
+/// from.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// How often a waiting worker looks at its control flag while a tool child runs.
+///
+/// The stream's sampling interval is one SSE line — 13–18 ms at measured decode
+/// rates — and this is the same order, so an operator's verb reaches a running
+/// `run_tests` on the same timescale it reaches a running generation.
+///
+/// ⚠ It is polled on the **calling** thread. A watcher thread would make three
+/// per running tool, and ADR-0006's inventory says two.
+///
+/// Measured end to end at **4 ms** from the console's verb to the worker's
+/// result, for a child with nothing behind it (F491). It is not the number an
+/// operator sees when a tool ran a shell — see [`DRAIN_GRACE`].
+const WATCH_POLL: Duration = Duration::from_millis(20);
+
+/// Who a [`Watch`] speaks for. The urgent flag is set by
+/// [`crate::control::ControlHandle::request`] and by nothing else, so a child it
+/// ends was ended by the operator.
+const WATCHED_BY: &str = "operator";
 
 /// 🚨 **The environment a tool child gets, as data in one const.**
 ///
@@ -301,7 +331,23 @@ impl ToolChild {
     /// would be throwing away the evidence.
     #[must_use]
     pub fn finish(self) -> Finished {
-        let waited = self.child.wait_timeout(self.budget);
+        self.finish_watching(&Watch::detached())
+    }
+
+    /// Wait as [`ToolChild::finish`] does, and end the child early when an
+    /// operator's urgent verb is waiting.
+    ///
+    /// 🚨 This is the whole of ADR-0006's justification for `shared_child`. A
+    /// generation is cancelled by dropping its stream, which closes the socket
+    /// (F200) — **a tool child has no equivalent property**, so without this a
+    /// `Halt` issued while `run_tests` runs is honoured whenever the test suite
+    /// happens to finish, which is the thing it was issued about.
+    ///
+    /// The child is killed *and named*: `TerminateProcess` gives it exit code 1,
+    /// so the result reads [`Why::Cancelled`] rather than a failed suite.
+    #[must_use]
+    pub fn finish_watching(self, watch: &Watch) -> Finished {
+        let waited = self.wait_within(watch);
         let (exit, unmeasured) = match waited {
             Ok(Some(status)) => {
                 self.await_drainers();
@@ -342,6 +388,33 @@ impl ToolChild {
             elapsed_ms: elapsed_ms(self.started),
             confinement: achieved_confinement(),
             unmeasured,
+        }
+    }
+
+    /// Wait for the child within its budget, looking at the watch as it goes.
+    ///
+    /// `Ok(None)` means the budget is spent and the caller kills; a watch that
+    /// fires kills here instead, because the reason has to be recorded before the
+    /// exit status is read.
+    fn wait_within(&self, watch: &Watch) -> std::io::Result<Option<ExitStatus>> {
+        if !watch.is_attached() {
+            // Nothing can interrupt this, so wait once rather than wake 3,000
+            // times over a two-minute budget to ask a question with one answer.
+            return self.child.wait_timeout(self.budget);
+        }
+        let deadline = self.started + self.budget;
+        loop {
+            if watch.interrupted() {
+                let _ = self.killer().kill(WATCHED_BY);
+                return self.child.wait().map(Some);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            if let Some(status) = self.child.wait_timeout(left.min(WATCH_POLL))? {
+                return Ok(Some(status));
+            }
         }
     }
 

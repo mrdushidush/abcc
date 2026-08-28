@@ -121,6 +121,45 @@ impl ControlHandle {
     }
 }
 
+/// A read-only view of the urgent flag, for something that is not a stream.
+///
+/// 🚨 It exists for exactly one thing: **a tool child, which cannot be cancelled
+/// by being dropped.** A generation stops because the socket closes when the
+/// worker lets the stream fall out of scope (F200); a `bash` running a test
+/// suite has no such property, so the one dependency ADR-0006 admits for the
+/// tool layer — `shared_child` — is spent on killing it, and this is the thing
+/// that tells it to.
+///
+/// It carries no verb, deliberately. It answers the same question
+/// [`ControlPoint::interrupted`] answers — *is there an urgent verb waiting* —
+/// and the worker reads **which** one at its next [`ControlPoint::check`], on the
+/// thread that owns the channel. A second reader of the channel would be a second
+/// place the first stop could be latched.
+#[derive(Debug, Clone, Default)]
+pub struct Watch(Option<Arc<AtomicBool>>);
+
+impl Watch {
+    /// A watch nothing ever sets: a tool layer with no console attached, which is
+    /// every test that is not about cancellation.
+    #[must_use]
+    pub fn detached() -> Watch {
+        Watch(None)
+    }
+
+    /// Whether there is a control point behind this at all. A detached watch lets
+    /// a caller wait once rather than poll for nothing.
+    #[must_use]
+    pub fn is_attached(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// One atomic load, same as [`ControlPoint::interrupted`].
+    #[must_use]
+    pub fn interrupted(&self) -> bool {
+        self.0.as_ref().is_some_and(|f| f.load(Ordering::Acquire))
+    }
+}
+
 /// The worker has finished; there is nobody to poke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the attempt this control was for is no longer running")]
@@ -161,6 +200,15 @@ impl ControlPoint {
     #[must_use]
     pub fn interrupted(&self) -> bool {
         self.urgent.load(Ordering::Acquire)
+    }
+
+    /// A view of the urgent flag for a tool child.
+    ///
+    /// Cheap to clone and safe to hold across threads, because it is read-only:
+    /// the flag is set by [`ControlHandle::request`] and by nothing else.
+    #[must_use]
+    pub fn watch(&self) -> Watch {
+        Watch(Some(Arc::clone(&self.urgent)))
     }
 
     /// The step boundary. Drains everything waiting and latches the first stop.

@@ -6,10 +6,12 @@
 use std::fs;
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use abcc_core::event::Control;
 use abcc_core::outcome::Why;
 use abcc_engine::child::{ENV_ALLOWLIST, Spawn, ToolChild};
+use abcc_engine::control::ControlPoint;
 use abcc_engine::tools::Confinement;
 
 /// A shell invocation, per platform. The two branches exist because the claims
@@ -28,6 +30,16 @@ fn sleeper(cwd: &Path) -> Spawn {
         shell(cwd, "ping -n 60 127.0.0.1")
     } else {
         shell(cwd, "sleep 60")
+    }
+}
+
+/// The same sleep with no interpreter in front of it, so nothing but the child
+/// itself holds the pipe. It is the control in the halt-latency measurement.
+fn bare_sleeper(cwd: &Path) -> Spawn {
+    if cfg!(windows) {
+        Spawn::new("ping", cwd).args(["-n", "60", "127.0.0.1"])
+    } else {
+        Spawn::new("sleep", cwd).arg("60")
     }
 }
 
@@ -262,4 +274,104 @@ fn the_child_runs_where_it_was_put() {
         "listed a different directory: {}",
         finished.stdout
     );
+}
+
+// ---------------------------------------------------------------------------
+// The operator's verb, while a tool runs
+// ---------------------------------------------------------------------------
+
+/// 🚨 **A `Halt` issued while `run_tests` runs must not wait for `run_tests`.**
+///
+/// A generation is cancelled by dropping its stream, which closes the socket
+/// (F200). A tool child has no such property, and this is the whole of
+/// ADR-0006's justification for `shared_child`: the worker polls its control
+/// flag on its own thread — no third thread per tool — and kills the child by
+/// name.
+///
+/// 🚨 **Both shapes are timed in one test on purpose (F491).** The bare child is
+/// the control: it is the same verb, the same poll and the same kill, and the
+/// only difference is whether a grandchild is holding the pipe. Timing the
+/// wrapped one alone would have read as *the poll interval is 2 s*, which it is
+/// not.
+#[test]
+fn an_operators_verb_reaches_a_running_tool_child() {
+    // The control: one process, so the pipes reach EOF the moment it dies.
+    let (bare, bare_ms) = halted(&bare_sleeper);
+    // The real shape: `bash -c` leaves a grandchild holding the write end.
+    let (wrapped, wrapped_ms) = halted(&sleeper);
+
+    for finished in [&bare, &wrapped] {
+        assert_eq!(finished.exit, None, "a stopped child has no exit status");
+        assert_eq!(
+            finished.unmeasured,
+            Some(Why::Cancelled {
+                by: "operator".to_owned()
+            }),
+            "a child the operator stopped is not a child that failed"
+        );
+    }
+    // Loose bounds, because these are real processes on a shared box; the
+    // numbers themselves are printed and quoted in `WATCH_POLL` and
+    // `DRAIN_GRACE`.
+    assert!(
+        bare_ms < 1_000,
+        "the verb took {bare_ms} ms to reach a bare child"
+    );
+    assert!(
+        wrapped_ms < 5_000,
+        "the verb took {wrapped_ms} ms to reach a wrapped child"
+    );
+    println!("halt to result: bare child {bare_ms} ms, shell-wrapped child {wrapped_ms} ms");
+}
+
+/// Start a sleeper, halt it 150 ms in, and time the verb against the result the
+/// worker actually gets back.
+fn halted(shape: &dyn Fn(&Path) -> Spawn) -> (abcc_engine::child::Finished, u128) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (control, handle) = ControlPoint::new();
+    let child = ToolChild::spawn(&shape(dir.path()).budget(Duration::from_mins(1))).expect("spawn");
+
+    let poked = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(150));
+        let at = Instant::now();
+        handle
+            .request(Control::Halt)
+            .expect("the worker is still there");
+        at
+    });
+
+    let finished = child.finish_watching(&control.watch());
+    let asked_at = poked.join().expect("the console thread did not panic");
+    (finished, asked_at.elapsed().as_millis())
+}
+
+/// A watch with nothing on it changes nothing. The tool ends the way it would
+/// have, and the wait is one call rather than a poll loop.
+#[test]
+fn a_watch_nobody_pokes_leaves_the_result_alone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (control, _handle) = ControlPoint::new();
+    let finished =
+        ToolChild::spawn(&shell(dir.path(), "echo watched").budget(Duration::from_secs(30)))
+            .expect("spawn")
+            .finish_watching(&control.watch());
+
+    assert_eq!(finished.exit, Some(0));
+    assert_eq!(finished.unmeasured, None);
+    assert!(finished.stdout.contains("watched"), "{}", finished.stdout);
+}
+
+/// 🚨 F356, as a maintenance test rather than a memory. Two trees holding one
+/// package name and one shared `CARGO_TARGET_DIR` make cargo print `Fresh`, run
+/// *the other tree's* binary and report `ok. 0 passed` at exit 0 — a green test
+/// run that measured nothing. The allowlist is what keeps a tool child from
+/// inheriting one, so the guard belongs where the list is.
+#[test]
+fn the_allowlist_does_not_carry_a_shared_build_cache() {
+    for forbidden in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+        assert!(
+            !ENV_ALLOWLIST.contains(&forbidden),
+            "{forbidden} would let two trees share one gate (F356)"
+        );
+    }
 }

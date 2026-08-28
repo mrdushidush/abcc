@@ -46,7 +46,7 @@ pub mod tools;
 pub mod turn;
 
 pub use child::{Finished, Killer, Spawn, ToolChild};
-pub use control::{ControlHandle, ControlPoint, Disposition, Gone, Keep, Stop, Urgency};
+pub use control::{ControlHandle, ControlPoint, Disposition, Gone, Keep, Stop, Urgency, Watch};
 pub use head::{Head, Serves};
 pub use provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Role,
