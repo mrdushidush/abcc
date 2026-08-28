@@ -6,15 +6,15 @@ is; this file is how to work in it.
 
 ## Commands
 
-The loop ladder, re-measured warm on the development box, 2026-08-28, at five
-crates and 182 tests, with exit status asserted. Use the cheapest rung that
+The loop ladder, re-measured warm on the development box, 2026-08-28, at six
+crates and 209 tests, with exit status asserted. Use the cheapest rung that
 answers the question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
-| after every edit | `cargo check --workspace --all-targets` | 0.29 s |
-| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.40 s |
-| once, before commit | `cargo test --workspace` | 9.5 s |
+| after every edit | `cargo check --workspace --all-targets` | 0.37 s |
+| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.49 s |
+| once, before commit | `cargo test --workspace` | 10.5 s |
 
 🚨 **The middle rung used to end `&& cargo test --lib`, and that ran zero tests.**
 Every test in this workspace is an integration test under `tests/`, which
@@ -23,9 +23,9 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch --test http --test journal`
-is **1.5 s** for 92 tests and covers everything that does not start a process.
-The full suite costs 9.5 s because `tests/child.rs` and `tests/exec.rs` spawn real
+`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch --test http --test journal --test view --test theme --test screen --test keys`
+is **1.6 s** for 118 tests and covers everything that does not start a process.
+The full suite costs 10.5 s because `tests/child.rs` and `tests/exec.rs` spawn real
 children, and `abcc-vcs` and `abcc-drive` drive real git — that time is processes, not
 compilation, and it is the price of testing claims about an OS against the OS.
 ⚠ `tests/http.rs` is 0.9 s of that subset and nearly all of it is deliberate
@@ -97,6 +97,19 @@ do not reformat around it.
   in place, and never add a generic set-status path. Emit the command, let
   `TaskState::apply` decide, and let the store write the event and the projection
   in one transaction.
+- 🚨 **The reader reads the event log and never the projection.** `abcc-tui` folds
+  `Logged` events into its own board even though the `task` table exists and is
+  cheaper to query, because Skeleton's exit criterion is *"the reader shows that
+  run without reading anything but the log"* — and a reader that queried the
+  projection would keep drawing a healthy board for a milestone that had stopped
+  writing events. Do not "optimise" it onto `Store::tasks`.
+- **Every event variant has a line, and the compiler says so.**
+  `abcc_tui::line::describe` is one exhaustive match over `Event` with **no
+  wildcard arm**, which is the whole reason the reader ships in Skeleton rather
+  than at Console: *"every milestone emits events in the shape Console reads"* is
+  otherwise a written rule nothing checks. A new variant does not build until
+  somebody has decided what an operator sees when it happens. The same holds for
+  `Theme` over `TaskState` — a theme is a label map, exhaustive by construction.
 - **`Outcome` has no `bool` in it.** `Headline::is_pass` is the only function in
   the workspace that produces one. If you find yourself wanting a second, the
   thing you actually want is a new `Why` variant.

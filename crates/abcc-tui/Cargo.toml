@@ -1,0 +1,18 @@
+[package]
+name = "abcc-tui"
+description = "The plain-text reader over the event log. Console extends it; the battlefield lands there."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+abcc-core = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
