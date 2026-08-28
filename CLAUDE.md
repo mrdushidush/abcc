@@ -6,18 +6,31 @@ is; this file is how to work in it.
 
 ## Commands
 
-The loop ladder, measured warm on the development box, 2026-08-28, with exit
-status asserted. Use the cheapest rung that answers the question, and re-measure
-these when the workspace grows — they are small today because it is one crate.
+The loop ladder, re-measured warm on the development box, 2026-08-28, at four
+crates, with exit status asserted. Use the cheapest rung that answers the
+question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
-| after every edit | `cargo check --workspace --all-targets` | 0.15 s |
-| before proposing a change | `cargo clippy --all-targets -- -D warnings && cargo test --lib` | 0.42 s |
-| once, before commit | `cargo test --workspace` | 0.5 s |
+| after every edit | `cargo check --workspace --all-targets` | 0.17 s |
+| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.23 s |
+| once, before commit | `cargo test --workspace` | 4.5 s |
 
-Run a single test by name (`cargo test <name>`) over a whole module when you are
-iterating on one failure.
+🚨 **The middle rung used to end `&& cargo test --lib`, and that ran zero tests.**
+Every test in this workspace is an integration test under `tests/`, which
+`--lib` does not build — so the rung looked like it asserted something and
+asserted nothing. It is dropped rather than repaired, because clippy over
+`--all-targets` already compiles every test target.
+
+When you want tests inside the middle rung, name them:
+`cargo test --workspace --test heads --test policy --test control --test turn_loop`
+is **0.5 s** and covers everything that does not start a process. The full suite
+costs 4.5 s because `tests/child.rs` spawns real children and `abcc-vcs` drives
+real git — that time is processes, not compilation, and it is the price of
+testing claims about an OS against the OS.
+
+Run a single test by name (`cargo test <name>`) when you are iterating on one
+failure.
 
 Formatting and the toolchain are pinned in `rust-toolchain.toml`. If
 `cargo fmt --all --check` disagrees with CI, that is a bug in the pin — report it,
@@ -60,7 +73,20 @@ do not reformat around it.
   construction. Nothing updates an attempt row except the event that ends it.
 - The isolation boundary is the tool child process, not the agent. A tool that
   spawns a shell is in the same class as one that runs code, regardless of its
-  argument surface.
+  argument surface. That class is **derived** from `ToolSpec::reach` rather than
+  declared in a second column, so the two cannot drift apart.
+- **A prompt head cannot vary.** `Head::prefix()` takes no arguments and returns
+  `&'static str`. Do not add a parameter to it — a task id or a timestamp in the
+  system prefix costs a full cold prefill, and the freeze is checked end to end
+  by `the_head_never_moves_and_the_body_only_grows`. Context is appended, which
+  is why `Body` has no operation but `append` and `Role` has no `System`.
+- **Cancelling a turn is dropping the stream.** `TurnStream` has deliberately no
+  `cancel()`; the worker samples `ControlPoint::interrupted` between deltas and
+  lets the stream fall out of scope. A second way to stop is a second thing that
+  can be forgotten.
+- **A stopped tool child is `Cancelled`, never `exit: 1`.** `TerminateProcess`
+  hands back 1, so `Killer::kill` takes a `by` and `finish()` reads it — otherwise
+  the record says *the tests failed* about work nobody ran.
 
 ## Repository etiquette
 
