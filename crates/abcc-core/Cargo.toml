@@ -1,0 +1,19 @@
+[package]
+name = "abcc-core"
+description = "ABCC 2.0 domain vocabulary: the lifecycle, the event, and the outcome type."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/abcc-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mrdushidush/abcc"
+authors = ["David <mrdushidush@gmail.com>"]
+
+[workspace.dependencies]
+abcc-core = { path = "crates/abcc-core" }
+abcc-store = { path = "crates/abcc-store" }
+abcc-vcs = { path = "crates/abcc-vcs" }
+abcc-engine = { path = "crates/abcc-engine" }
+abcc-tui = { path = "crates/abcc-tui" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rusqlite = { version = "0.39", features = ["bundled"] }
+ratatui = "0.30"
+crossterm = "0.29"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

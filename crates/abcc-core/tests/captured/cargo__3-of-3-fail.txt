@@ -1,0 +1,36 @@
+running 3 tests
+tests::t1 --- FAILED
+tests::t3 --- FAILED
+tests::t2 --- FAILED
+
+failures:
+
+---- tests::t1 stdout ----
+
+thread 'tests::t1' (7928) panicked at src\lib.rs:6:23:
+assertion `left == right` failed
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::t3 stdout ----
+
+thread 'tests::t3' (2460) panicked at src\lib.rs:8:23:
+boom
+
+---- tests::t2 stdout ----
+
+thread 'tests::t2' (10252) panicked at src\lib.rs:7:23:
+assertion `left == right` failed
+  left: 1
+ right: 3
+
+
+failures:
+    tests::t1
+    tests::t2
+    tests::t3
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

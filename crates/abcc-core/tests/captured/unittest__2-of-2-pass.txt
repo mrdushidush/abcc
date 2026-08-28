@@ -1,0 +1,7 @@
+test_a (test_upload.T.test_a) ... ok
+test_b (test_upload.T.test_b) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.000s
+
+OK

@@ -1,0 +1,23 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.5, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\david\AppData\Local\Programs\Python\Python314\python.exe
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: C:\Users\david\AppData\Local\Temp\claude\D--dev-ABCC-20-powerd-by-claudette\463b7307-6bfa-443c-b297-cdb3fd6ebc03\scratchpad\parser\pytest_collection_error
+plugins: anyio-4.13.0, hypothesis-6.165.10
+collecting ... collected 0 items / 1 error
+
+=================================== ERRORS ====================================
+____________________ ERROR collecting tests/test_upload.py ____________________
+ImportError while importing test module 'C:\Users\david\AppData\Local\Temp\claude\D--dev-ABCC-20-powerd-by-claudette\463b7307-6bfa-443c-b297-cdb3fd6ebc03\scratchpad\parser\pytest_collection_error\tests\test_upload.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\..\..\..\Programs\Python\Python314\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_upload.py:1: in <module>
+    import a_module_that_does_not_exist
+E   ModuleNotFoundError: No module named 'a_module_that_does_not_exist'
+=========================== short test summary info ===========================
+ERROR tests/test_upload.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+============================== 1 error in 0.38s ===============================

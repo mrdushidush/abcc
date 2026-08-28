@@ -1,0 +1,12 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.5, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\david\AppData\Local\Programs\Python\Python314\python.exe
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: C:\Users\david\AppData\Local\Temp\claude\D--dev-ABCC-20-powerd-by-claudette\463b7307-6bfa-443c-b297-cdb3fd6ebc03\scratchpad\parser\pytest_2_of_2_pass
+plugins: anyio-4.13.0, hypothesis-6.165.10
+collecting ... collected 2 items
+
+tests/test_upload.py::test_a PASSED                                      [ 50%]
+tests/test_upload.py::test_b PASSED                                      [100%]
+
+============================== 2 passed in 0.27s ==============================

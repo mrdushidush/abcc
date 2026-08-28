@@ -1,0 +1,42 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.5, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\david\AppData\Local\Programs\Python\Python314\python.exe
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: C:\Users\david\AppData\Local\Temp\claude\D--dev-ABCC-20-powerd-by-claudette\463b7307-6bfa-443c-b297-cdb3fd6ebc03\scratchpad\parser\pytest_3_of_3_fail
+plugins: anyio-4.13.0, hypothesis-6.165.10
+collecting ... collected 3 items
+
+tests/test_upload.py::test_a FAILED                                      [ 33%]
+tests/test_upload.py::test_b FAILED                                      [ 66%]
+tests/test_upload.py::test_c FAILED                                      [100%]
+
+================================== FAILURES ===================================
+___________________________________ test_a ____________________________________
+
+>   def test_a(): assert 1 == 2
+                  ^^^^^^^^^^^^^
+E   assert 1 == 2
+
+tests\test_upload.py:1: AssertionError
+___________________________________ test_b ____________________________________
+
+>   def test_b(): assert "x" == "y"
+                  ^^^^^^^^^^^^^^^^^
+E   AssertionError: assert 'x' == 'y'
+E     
+E     - y
+E     + x
+
+tests\test_upload.py:2: AssertionError
+___________________________________ test_c ____________________________________
+
+>   def test_c(): raise ValueError("boom")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: boom
+
+tests\test_upload.py:3: ValueError
+=========================== short test summary info ===========================
+FAILED tests/test_upload.py::test_a - assert 1 == 2
+FAILED tests/test_upload.py::test_b - AssertionError: assert 'x' == 'y'
+FAILED tests/test_upload.py::test_c - ValueError: boom
+============================== 3 failed in 0.30s ==============================

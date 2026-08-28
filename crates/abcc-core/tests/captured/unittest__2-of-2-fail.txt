@@ -1,0 +1,25 @@
+test_a (test_upload.T.test_a) ... FAIL
+test_b (test_upload.T.test_b) ... FAIL
+
+======================================================================
+FAIL: test_a (test_upload.T.test_a)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\david\AppData\Local\Temp\claude\D--dev-ABCC-20-powerd-by-claudette\463b7307-6bfa-443c-b297-cdb3fd6ebc03\scratchpad\parser\unittest_2_of_2_fail\tests\test_upload.py", line 3, in test_a
+    def test_a(self): self.assertTrue(False)
+                      ~~~~~~~~~~~~~~~^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_b (test_upload.T.test_b)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\david\AppData\Local\Temp\claude\D--dev-ABCC-20-powerd-by-claudette\463b7307-6bfa-443c-b297-cdb3fd6ebc03\scratchpad\parser\unittest_2_of_2_fail\tests\test_upload.py", line 4, in test_b
+    def test_b(self): self.assertEqual(1, 2)
+                      ~~~~~~~~~~~~~~~~^^^^^^
+AssertionError: 1 != 2
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.001s
+
+FAILED (failures=2)

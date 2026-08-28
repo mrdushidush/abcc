@@ -1,0 +1,6 @@
+# Pinned deliberately. W13 F430: the donors' CI is unpinned, so a toolchain
+# release can turn a green repository red without a commit. The CLAUDE.md
+# promise that `cargo fmt --check` agrees with CI is only safe because of this.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

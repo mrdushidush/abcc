@@ -1,0 +1,9 @@
+target/
+*.log
+
+# The event log and anything else a run produces. The store is a durable record,
+# not a source artifact.
+/var/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

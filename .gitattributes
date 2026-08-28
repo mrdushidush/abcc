@@ -1,0 +1,7 @@
+# One line-ending rule for the whole tree. ADR-0007's restore contract is exact
+# *up to the repository's own text attributes*, and the donor that had no such
+# rule accumulated 241 divergent files without noticing (W6 F328). State it.
+* text=auto eol=lf
+*.png binary
+*.wav binary
+*.gguf binary
