@@ -10,10 +10,10 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use abcc_core::event::{Control, Event};
+use abcc_core::event::{Control, Event, Finish, Usage};
 use abcc_core::outcome::Why;
 use abcc_core::seq::{AttemptId, Seq};
-use abcc_engine::provider::{Message, ProviderError, Role, TraceSignal};
+use abcc_engine::provider::{Delta, Message, ProviderError, Role, TraceSignal};
 use abcc_engine::scripted::{Script, Scripted};
 use abcc_engine::tools::ToolSpec;
 use abcc_engine::{
@@ -937,5 +937,71 @@ fn a_refused_tool_call_keeps_its_arguments_and_a_successful_one_does_not() {
             }
         )),
         "a successful call copied its arguments onto the log"
+    );
+}
+
+/// 🚨 **F506.** A turn cut at our own cap **with content and tool calls** is
+/// still an absence, and its tool calls are never run.
+///
+/// This is the case `a422` fell through: `length`, `content_empty: false`,
+/// completion exactly the 8,192 budget — so neither the overflow branch
+/// (`completion < budget`) nor the old cap branch (`content_empty`) fired, the
+/// fragment was executed, `apply_patch` was handed a **zero-character** argument
+/// string and blamed for it, and the malformed turn went onto the body. The next
+/// request came back HTTP 500 with an empty page. The window was 32,768 and the
+/// conversation was 16,401, so nothing here was an overflow and nothing here was
+/// the model's fault.
+#[test]
+fn a_turn_cut_at_our_cap_mid_tool_call_runs_nothing_and_ends_the_phase() {
+    let cut = Script::raw(vec![
+        Ok(Delta::Opened { ttfb_ms: 12 }),
+        Ok(Delta::Text("I will patch cli.rs".to_owned())),
+        // The fragment: the arguments were still streaming when the cap hit.
+        Ok(Delta::ToolCall(ToolCall {
+            id: "c1".to_owned(),
+            tool: "apply_patch".to_owned(),
+            arguments: String::new(),
+        })),
+        Ok(Delta::Closed {
+            usage: Usage {
+                prompt_tokens: 8_209,
+                completion_tokens: 8_192,
+                reasoning_tokens: Some(0),
+                cached_tokens: None,
+            },
+            finish: Finish::Length {
+                content_empty: false,
+            },
+        }),
+    ]);
+    let provider = Scripted::new(vec![cut]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let PhaseEnded::Unmeasured { why, .. } = &ended else {
+        panic!("a turn cut mid-tool-call is not an answer: {ended:?}");
+    };
+    assert_eq!(why, &Why::TruncatedAtCap { budget: 8_192 });
+    assert!(
+        tools.ran.lock().expect("lock").is_empty(),
+        "a fragment of a tool call was executed: {:?}",
+        tools.ran.lock().expect("lock")
+    );
+    // And nothing malformed reaches the body, which is what the server chokes on.
+    assert!(
+        !kinds(&log).contains(&"tool_call_started"),
+        "the fragment was admitted: {:?}",
+        kinds(&log)
     );
 }

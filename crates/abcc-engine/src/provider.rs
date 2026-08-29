@@ -450,6 +450,16 @@ impl Turn {
     /// window cut with an empty payload is indistinguishable from a cap cut
     /// until these two numbers are compared. Run 1 died at 14,261 + 2,123 =
     /// 16,384 against a budget of 8,192, and was called an engine fault.
+    ///
+    /// 🚨 **F506: `length` ends the turn whether or not the payload is empty,
+    /// and that is the whole point.** A cut turn's *tool calls are fragments* —
+    /// twice now the last one arrived with a zero-character argument string and
+    /// was recorded as the model failing its own schema. Appending that turn and
+    /// asking again is what produced both contentless HTTP 500s: `a422` was
+    /// 8,209 + 8,192 = **16,401 against a 32,768 window**, so the window cannot
+    /// explain it and the malformed conversation can. So a `Length` finish is
+    /// uncertain **always**, and `content_empty` selects the sentence rather
+    /// than deciding whether there is one.
     #[must_use]
     pub fn uncertain(&self) -> Option<Why> {
         if matches!(self.finish, Finish::Length { .. })
@@ -466,7 +476,10 @@ impl Turn {
                 prompt_tokens: self.usage.prompt_tokens,
             });
         }
-        if self.finish.is_uncertain() {
+        // F506: at or above our own cap, `length` is our doing — and it is an
+        // absence either way, because a payload cut mid-token is a fragment and
+        // a tool call cut mid-argument is not a request.
+        if self.finish.is_uncertain() || matches!(self.finish, Finish::Length { .. }) {
             Some(Why::TruncatedAtCap {
                 budget: self.budget,
             })
