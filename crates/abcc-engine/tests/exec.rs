@@ -9,7 +9,7 @@
 use std::fs;
 use std::time::Duration;
 
-use abcc_core::outcome::Why;
+use abcc_core::outcome::{Reading, Why};
 use abcc_engine::provider::ToolCall;
 use abcc_engine::tools::{Confinement, lookup};
 use abcc_engine::turn::{ToolResult, Tools};
@@ -40,6 +40,11 @@ const ECHOING: Toolchain = Toolchain {
     witnesses: &[],
     test: &["cmd", "/C", "echo ran the tests & exit 3"],
     diagnostics: &["cmd", "/C", "echo checked"],
+    // Exit 3 is "interrupted before running anything" to a python profile and
+    // "no `test result:` line" to a cargo one; both read it as an absence, and
+    // this fixture is about the tool layer's wiring rather than the reading.
+    reading: Reading::Python,
+    standard: None,
 };
 
 #[cfg(not(windows))]
@@ -48,6 +53,8 @@ const ECHOING: Toolchain = Toolchain {
     witnesses: &[],
     test: &["sh", "-c", "echo ran the tests; exit 3"],
     diagnostics: &["sh", "-c", "echo checked"],
+    reading: Reading::Python,
+    standard: None,
 };
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,13 @@
+error: this function has too many lines (101/100)
+   --> crates\abcc\src\cli.rs:130:1
+    |
+130 | pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliError> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_lines
+    = note: `-D clippy::too-many-lines` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_lines)]`
+
+error: could not compile `abcc` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `abcc` (lib) due to 1 previous error

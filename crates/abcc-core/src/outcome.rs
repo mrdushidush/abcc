@@ -50,7 +50,17 @@ pub struct Measurement {
     /// sentence, and this closes the first of them: 6 of 81 measured trees no
     /// longer existed, because the edit landed 1.7–3.0 s after the test binary.
     pub sha: String,
-    /// The process's exit status, as the OS reported it.
+    /// 🚨 **The verdict, in the convention every checker on this machine already
+    /// uses: 0 is green.** Where the rung ran a program this is that program's
+    /// exit status as the OS reported it, which is the case the type was written
+    /// for and still the common one.
+    ///
+    /// ⚠ It is *not* only that. The gate's structural rung is a fact about the
+    /// tree rather than a program — the diff between two snapshots — and it
+    /// reports its answer here in the same convention, because
+    /// [`Outcome::is_green`] is the one reader of this field and *"the verdict"*
+    /// is what it is asking for. What the field must never hold is a number
+    /// parsed out of a runner's prose: the exit status decides (ADR-0009 §5).
     pub exit: i32,
     /// Counts, when the runner printed them in a form this profile can read.
     /// `None` means the process ran and the counts were not recoverable, which is
@@ -417,6 +427,55 @@ impl Report {
     }
 }
 
+/// How a profile reads its runner's ending. **ADR-0009 §5: the toolchain profile
+/// owns the exit-code reading.**
+///
+/// It is an enum on the profile rather than a match on the profile's *name*
+/// because a name match is a second table keyed to the first, and the two drift.
+/// Every variant answers the same question — *did anything run?* — and each
+/// runner answers it differently enough that one parser cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reading {
+    /// `cargo test`: **no exit code means "nothing to run"** — a crate with no
+    /// tests exits 0 and prints `test result: ok. 0 passed` — and **101 is both
+    /// a red suite and a test target that does not compile**. See
+    /// [`classify_cargo_tests`].
+    Cargo,
+    /// pytest and `python -m unittest`: **5** is "no tests collected", **2–4**
+    /// is "interrupted before running", 1 is "ran and something failed". See
+    /// [`classify_python_tests`].
+    Python,
+    /// 🚨 **The exit status is the whole measurement.** A linter, a formatter or
+    /// a build prints diagnostics rather than a tally, so there is nothing to
+    /// count and [`Measurement::counts`] is `None`.
+    ///
+    /// ⚠ That `None` is the same value a runner gets when its counts could not
+    /// be recovered, and the two are different things. It is accepted rather
+    /// than fixed with a fourth state, because a console that shows "counts not
+    /// recoverable" for a linter is mildly wrong, while a type that distinguishes
+    /// them costs every consumer a branch that changes no decision.
+    ExitOnly,
+}
+
+impl Reading {
+    /// Turn what the host watched into an outcome, this profile's way.
+    #[must_use]
+    pub fn classify(self, rung: &str, sha: &str, exit: i32, out: &str) -> Outcome {
+        match self {
+            Reading::Cargo => classify_cargo_tests(rung, sha, exit, out),
+            Reading::Python => classify_python_tests(rung, sha, exit, out),
+            Reading::ExitOnly => Outcome::Measured(Measurement {
+                rung: rung.to_owned(),
+                sha: sha.to_owned(),
+                exit,
+                counts: None,
+                detail: evidence(out),
+            }),
+        }
+    }
+}
+
 /// The classifier the donors needed.
 ///
 /// Both runners answer *"did anything run?"* in the exit status — pytest and
@@ -430,22 +489,28 @@ impl Report {
 /// `None` rather than zero.
 #[must_use]
 pub fn classify_python_tests(rung: &str, sha: &str, exit: i32, out: &str) -> Outcome {
-    let tail = last_nonempty(out);
     match exit {
+        // ⚠ `NothingToRun` keeps the last line rather than the evidence block:
+        // there is no fault to point at, and the one line pytest prints
+        // (`no tests ran in 0.23s`) is the whole of what happened.
         5 => Outcome::Unmeasured {
             rung: rung.to_owned(),
-            why: Why::NothingToRun { detail: tail },
+            why: Why::NothingToRun {
+                detail: last_nonempty(out),
+            },
         },
         2..=4 => Outcome::Unmeasured {
             rung: rung.to_owned(),
-            why: Why::FailedBeforeRunning { detail: tail },
+            why: Why::FailedBeforeRunning {
+                detail: evidence(out),
+            },
         },
         _ => Outcome::Measured(Measurement {
             rung: rung.to_owned(),
             sha: sha.to_owned(),
             exit,
             counts: counts_from(out),
-            detail: tail,
+            detail: evidence(out),
         }),
     }
 }
@@ -467,7 +532,6 @@ pub fn classify_python_tests(rung: &str, sha: &str, exit: i32, out: &str) -> Out
 /// * anything else — a measurement, green or red on the exit status.
 #[must_use]
 pub fn classify_cargo_tests(rung: &str, sha: &str, exit: i32, out: &str) -> Outcome {
-    let tail = last_nonempty(out);
     let summaries: Vec<&str> = out
         .lines()
         .map(str::trim)
@@ -477,7 +541,9 @@ pub fn classify_cargo_tests(rung: &str, sha: &str, exit: i32, out: &str) -> Outc
     if summaries.is_empty() {
         return Outcome::Unmeasured {
             rung: rung.to_owned(),
-            why: Why::FailedBeforeRunning { detail: tail },
+            why: Why::FailedBeforeRunning {
+                detail: evidence(out),
+            },
         };
     }
     let counts = counts_from(&summaries.join("\n"));
@@ -495,8 +561,74 @@ pub fn classify_cargo_tests(rung: &str, sha: &str, exit: i32, out: &str) -> Outc
         sha: sha.to_owned(),
         exit,
         counts,
-        detail: tail,
+        detail: evidence(out),
     })
+}
+
+/// The most evidence lines kept, and the most characters. Both are caps on a
+/// durable record rather than on what an operator may read: the whole output is
+/// in the worktree, and this is the part that travels.
+const EVIDENCE_LINES: usize = 8;
+const EVIDENCE_CHARS: usize = 2_000;
+
+/// What a rung's `detail` says, chosen so that it cannot contradict the counts
+/// beside it.
+///
+/// 🚨 **F517: the last line of a green run of this repository's own suite says
+/// `test result: ok. 0 passed`.** `cargo test --workspace` prints **44**
+/// `test result:` lines here — one per target — and the last of them belongs to
+/// an empty doc-test target. [`counts_from`] gets the verdict right because it
+/// sums every one of them (281 passed, 0 failed, exit 0); the *sentence* stored
+/// beside those counts was the single most misleading line in 720 lines of
+/// output, and it is F357's defect — *"tests: 0 passed"* on a crate that has
+/// them — arriving as the human-readable half of a **correct** measurement.
+///
+/// The rule is two-sided because the runners are:
+///
+/// * **rustc and clippy put the fault at the top** and end with
+///   `could not compile ... due to 1 previous error`, which names no lint and no
+///   function. On F512's run 10 the line that matters —
+///   `this function has too many lines (101/100)` — is 12 lines from the end.
+/// * **pytest and `cargo test` put it at the bottom**, in a `failures:` block
+///   followed by a summary.
+///
+/// So: every `error`-prefixed line from the top, then the tail, deduplicated.
+/// ⚠ **This is presentation and never a verdict.** The exit status decides
+/// (ADR-0009 §5), no count is derived from any line chosen here, and a line is
+/// never selected for what it claims about counts — which is the mistake that
+/// made a green run say zero.
+#[must_use]
+pub fn evidence(out: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    for line in out.lines().map(str::trim) {
+        if kept.len() >= EVIDENCE_LINES / 2 {
+            break;
+        }
+        // `error`, `error:` and rustc's `error[E0004]` all start this way.
+        if line.starts_with("error") {
+            kept.push(line);
+        }
+    }
+    let tail: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .rev()
+        .take(EVIDENCE_LINES)
+        .collect();
+    for line in tail.into_iter().rev() {
+        if kept.len() >= EVIDENCE_LINES {
+            break;
+        }
+        if !kept.contains(&line) {
+            kept.push(line);
+        }
+    }
+    let joined = kept.join("\n");
+    match joined.char_indices().nth(EVIDENCE_CHARS) {
+        None => joined,
+        Some((at, _)) => format!("{}…", &joined[..at]),
+    }
 }
 
 fn last_nonempty(out: &str) -> String {

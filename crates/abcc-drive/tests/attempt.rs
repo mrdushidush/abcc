@@ -17,13 +17,14 @@ use std::process::Command as OsCommand;
 
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
 use abcc_core::event::{Control, Event};
-use abcc_core::outcome::Why;
+use abcc_core::outcome::{Headline, Outcome, Reading, Why};
 use abcc_core::seq::{MissionId, Seq, TaskId, UnitId};
 use abcc_core::task::{AbortReason, TaskState};
 use abcc_drive::{Driver, Landed};
 use abcc_engine::Head;
 use abcc_engine::control::{ControlHandle, ControlPoint};
 use abcc_engine::scripted::{Script, Scripted};
+use abcc_engine::workspace::Toolchain;
 use abcc_store::Store;
 use abcc_vcs::{Repo, Sha};
 
@@ -98,12 +99,110 @@ fn seed(store: &mut Store) -> TaskId {
 
 /// Run one attempt with `scripts` and no operator interference.
 fn drive(subject: &Subject, store: &mut Store, task: TaskId, scripts: Vec<Script>) -> Landed {
+    driven(subject, store, task, scripts, None)
+}
+
+/// The same, with an operator-configured toolchain profile so the gate has rungs
+/// to run. ⚠ The profiles below need nothing installed: what is under test is the
+/// driver's wiring, not cargo. `abcc-gate`'s own tests are where the rungs are.
+fn driven(
+    subject: &Subject,
+    store: &mut Store,
+    task: TaskId,
+    scripts: Vec<Script>,
+    toolchain: Option<Toolchain>,
+) -> Landed {
     let (mut control, _handle) = ControlPoint::new();
     let provider = Scripted::new(scripts);
     let repo = Repo::open(&subject.root).expect("open");
-    Driver::new(store, &repo, &provider, MODEL, &subject.worktrees)
+    let mut driver = Driver::new(store, &repo, &provider, MODEL, &subject.worktrees);
+    if let Some(toolchain) = toolchain {
+        driver = driver.toolchain(toolchain);
+    }
+    driver
         .run(task, UnitId(0), Cause::Fresh, &mut control)
         .expect("run")
+}
+
+/// A profile whose test command passes and whose standard is not declared, so a
+/// changed tree reaches `Green` on three rungs.
+#[cfg(windows)]
+const PASSING: Toolchain = Toolchain {
+    name: "scripted",
+    witnesses: &[],
+    test: &["cmd", "/C", "echo test result: ok. 2 passed; 0 failed;"],
+    diagnostics: &["cmd", "/C", "echo checked"],
+    reading: Reading::Cargo,
+    standard: None,
+};
+
+#[cfg(not(windows))]
+const PASSING: Toolchain = Toolchain {
+    name: "scripted",
+    witnesses: &[],
+    test: &["sh", "-c", "echo 'test result: ok. 2 passed; 0 failed;'"],
+    diagnostics: &["sh", "-c", "echo checked"],
+    reading: Reading::Cargo,
+    standard: None,
+};
+
+/// The same profile with a red suite.
+#[cfg(windows)]
+const FAILING: Toolchain = Toolchain {
+    test: &[
+        "cmd",
+        "/C",
+        "echo test result: FAILED. 1 passed; 1 failed; & exit 101",
+    ],
+    ..PASSING
+};
+
+#[cfg(not(windows))]
+const FAILING: Toolchain = Toolchain {
+    test: &[
+        "sh",
+        "-c",
+        "echo 'test result: FAILED. 1 passed; 1 failed;'; exit 101",
+    ],
+    ..PASSING
+};
+
+/// The script pair that answers *and* writes, which is what the gate needs to
+/// have anything to measure.
+fn changing() -> Vec<Script> {
+    vec![
+        Script::says("src/lib.rs is the place"),
+        Script::calls(
+            "c1",
+            "write_file",
+            r#"{"path":"src/new.rs","content":"pub fn two() -> u32 { 2 }\n"}"#,
+        ),
+        Script::says("wrote src/new.rs"),
+    ]
+}
+
+fn rungs(store: &Store) -> Vec<Outcome> {
+    store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::RungRecorded { outcome, .. } => Some(outcome),
+            _ => None,
+        })
+        .collect()
+}
+
+fn question(store: &Store) -> String {
+    store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .find_map(|l| match l.event {
+            Event::OperatorPrompted { question, .. } => Some(question),
+            _ => None,
+        })
+        .expect("no question was put to the operator")
 }
 
 fn kinds(store: &Store) -> Vec<&'static str> {
@@ -202,6 +301,7 @@ fn one_attempt_runs_localize_then_change_and_the_log_says_so() {
             "phase_ended",
             // The closing snapshot is taken while the worktree still exists.
             "checkpoint_taken",
+            "rung_recorded",
             "worktree_closed",
             "attempt_ended",
             "operator_prompted",
@@ -255,16 +355,22 @@ fn the_change_phase_is_given_what_recon_found() {
 }
 
 // ---------------------------------------------------------------------------
-// What the driver refuses to say
+// What the driver says now that a rung exists
 // ---------------------------------------------------------------------------
 
-/// 🚨 The load-bearing test of this crate. The model answered, the phases ran,
-/// the work is on disk — and **nothing measured it**, so the attempt is
-/// `Uncertain` and the task is handed to a human. There is no gate at Skeleton;
-/// an `Accomplished` here would be a model's claim standing where a measurement
-/// belongs, which is the defect ADR-0009 exists to prevent.
+/// 🚨 **The model answered, and the tree did not move.** The free rung refuses
+/// it before any checker is spawned, and the attempt is `Refused` rather than
+/// uncertain — because *nothing changed* is a measurement, not an absence.
+///
+/// This shape is not hypothetical: of **25 real attempts** on one task in this
+/// project's log, **16 closed on a byte-identical tree** while the model said it
+/// was done. It is the exact case a harness with no gate calls success.
+///
+/// ⚠ The task goes to the operator and not to `Failed`, and the recommendation
+/// is another attempt. Those do not disagree: the rule is *a task may not go
+/// terminal while something is owed to a person*.
 #[test]
-fn a_working_attempt_ends_uncertain_because_nothing_measured_it() {
+fn an_answer_over_an_unchanged_tree_is_refused_by_the_free_rung() {
     let subject = subject();
     let mut store = Store::in_memory().expect("store");
     let task = seed(&mut store);
@@ -279,25 +385,120 @@ fn a_working_attempt_ends_uncertain_because_nothing_measured_it() {
     let kept = landed.kept.clone().expect("the work was not kept");
     assert_eq!(
         landed.outcome,
+        AttemptOutcome::Refused {
+            rung: "structural".to_owned(),
+            detail: "the attempt changed no file the repository tracks".to_owned(),
+        },
+        "an answer over an unchanged tree was not refused"
+    );
+    assert!(landed.outcome.is_retryable());
+    assert!(matches!(landed.state, TaskState::AwaitingOrders { .. }));
+    assert!(matches!(landed.next, Some(NextAction::Attempt { .. })));
+
+    // 🚨 One rung on the log and no more: the ladder stops at a refusal, so a
+    // free rung saves the cold build the other three would have cost.
+    let recorded = rungs(&store);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].rung(), "structural");
+
+    let asked = question(&store);
+    assert!(asked.contains(&kept), "the question: {asked}");
+    assert!(asked.contains("structural"), "the question: {asked}");
+}
+
+/// A profile in the tree and a change on disk: every declared rung measured,
+/// none refused, and **`Accomplished` is said by a measurement**.
+///
+/// It is the only path to that word in the whole system, and what cannot reach
+/// it is anything the model wrote — a `Claim` has no function that turns it into
+/// an `Outcome`.
+#[test]
+fn a_change_that_passes_every_declared_rung_is_accomplished() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let landed = driven(&subject, &mut store, task, changing(), Some(PASSING));
+
+    assert_eq!(landed.outcome, AttemptOutcome::Success);
+    assert!(!landed.outcome.is_retryable(), "success was made retryable");
+    assert!(matches!(landed.state, TaskState::Accomplished { .. }));
+    assert_eq!(landed.next, Some(NextAction::Stop));
+
+    let gate = landed.gate.as_ref().expect("the gate did not run");
+    assert!(gate.accepts());
+    assert_eq!(gate.headline, Headline::Green { rungs: 3 });
+    assert_eq!(rungs(&store).len(), 3, "every rung is on the log");
+}
+
+/// A rung refused. The attempt is `Refused`, the task waits for a person, and the
+/// question quotes the evidence the host watched rather than the fact that
+/// something failed — a refusal an operator cannot read is one nobody can fix.
+#[test]
+fn a_change_a_rung_refuses_is_refused_and_the_question_carries_the_evidence() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let landed = driven(&subject, &mut store, task, changing(), Some(FAILING));
+
+    let AttemptOutcome::Refused { rung, detail } = &landed.outcome else {
+        panic!("a refused change ended {:?}", landed.outcome);
+    };
+    assert_eq!(rung, "acceptance");
+    assert!(detail.contains("FAILED"), "{detail}");
+    assert!(matches!(landed.state, TaskState::AwaitingOrders { .. }));
+
+    let asked = question(&store);
+    assert!(asked.contains("acceptance"), "{asked}");
+    assert!(asked.contains("FAILED"), "{asked}");
+}
+
+/// 🚨 The gate ran and could not measure. That is neither a pass nor a failure,
+/// and the operator is told **exactly which rung** was missing — the distinction
+/// v1 cannot make at all, because its dispatcher is gated on the word `passed`.
+#[test]
+fn a_change_with_no_checker_is_uncertain_and_names_what_was_missing() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    // No profile, and the fixture carries no witness file.
+    let landed = drive(&subject, &mut store, task, changing());
+
+    let kept = landed.kept.clone().expect("the work was not kept");
+    assert_eq!(
+        landed.outcome,
         AttemptOutcome::Uncertain {
             why: Why::NoCheckerForArtifact {
                 artifact: kept.clone()
             }
         },
-        "a working attempt was called something other than unmeasured"
     );
-    assert!(
-        landed.outcome.is_retryable(),
-        "an unmeasured attempt was made unretryable"
-    );
+    assert!(landed.outcome.is_retryable());
     assert!(matches!(landed.state, TaskState::AwaitingOrders { .. }));
-    assert!(matches!(
-        landed.next,
-        Some(NextAction::HandToOperator { .. })
-    ));
 
-    // The question names the snapshot, so the operator can look at the tree the
-    // sentence is about rather than at whatever the worktree holds now.
+    // 🚨 The absence did not stop the ladder — the veto still ran, and it is on
+    // the log beside the rung that could not.
+    let recorded = rungs(&store);
+    assert_eq!(recorded.len(), 3);
+    assert!(matches!(recorded[1], Outcome::Unmeasured { .. }));
+
+    let asked = question(&store);
+    assert!(asked.contains("acceptance"), "{asked}");
+    assert!(asked.contains(&kept), "{asked}");
+}
+
+/// The question names the snapshot, so the operator can look at the tree the
+/// sentence is about rather than at whatever the worktree holds now.
+#[test]
+fn the_operators_question_names_the_snapshot_it_is_about() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let landed = drive(&subject, &mut store, task, changing());
+    let kept = landed.kept.clone().expect("the work was not kept");
     let question = store
         .read_from(Seq::ORIGIN, 1000)
         .expect("read")

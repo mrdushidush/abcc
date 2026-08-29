@@ -15,13 +15,16 @@
 //!
 //! # The five rules this driver holds
 //!
-//! 1. 🚨 **It never says `Accomplished`.** There is no gate at Skeleton, so an
-//!    attempt whose model answered ends
+//! 1. 🚨 **Only a measurement says `Accomplished`.** The Gate milestone made
+//!    that word reachable and did not make it cheap: the driver runs
+//!    [`abcc_gate::Gate`] over the snapshot pair and reads
+//!    [`Headline::is_pass`], which is `Green` and nothing else — every declared
+//!    rung measured, none of them red. A model's answer still reaches nothing:
+//!    what it says is a `Claim`, and there is no function anywhere that turns one
+//!    into an `Outcome`. ⚠ When no rung could measure — no toolchain profile in
+//!    the tree — the ending is still
 //!    [`AttemptOutcome::Uncertain`]`{ why: `[`Why::NoCheckerForArtifact`]` }` and
-//!    the task is handed to the operator. Calling that success would be exactly
-//!    the defect ADR-0009 exists to prevent — a model's claim reaching the place
-//!    a measurement belongs — and it is the one shortcut that would make the
-//!    whole milestone dishonest.
+//!    the operator is still owed the question.
 //! 2. **A failure before `AttemptStarted` leaves the task `Deployed`, and that is
 //!    the design rather than a leak.** `Deployed`'s contract *is* "a slot is held
 //!    and no attempt has started"; it is reaped on the spin-up bound and
@@ -44,7 +47,7 @@ use std::path::PathBuf;
 
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
 use abcc_core::event::Event;
-use abcc_core::outcome::Why;
+use abcc_core::outcome::{Headline, Why};
 use abcc_core::run::AttemptPhase;
 use abcc_core::seq::{AttemptId, CheckpointId, PromptId, TaskId, UnitId};
 use abcc_core::task::{AbortReason, Command, Refused, TaskState};
@@ -52,7 +55,8 @@ use abcc_engine::control::{ControlPoint, Keep, Watch};
 use abcc_engine::head::Head;
 use abcc_engine::provider::{Body, Provider};
 use abcc_engine::turn::{Limits, PhaseEnded, PhaseReport, Tools, TurnLoop};
-use abcc_engine::workspace::Workspace;
+use abcc_engine::workspace::{Toolchain, Workspace};
+use abcc_gate::{Gate, Measured};
 use abcc_store::{Applied, Store, StoreError, TaskRow};
 use abcc_vcs::{Repo, Sha, VcsError, Worktree, checkpoint_ref};
 
@@ -106,6 +110,14 @@ pub struct Landed {
     /// The closing snapshot's sha. `None` only when the operator said `Kill`,
     /// which is the one verb that keeps nothing.
     pub kept: Option<String>,
+    /// What the gate measured, when it ran.
+    ///
+    /// 🚨 `None` is not *the gate passed nothing* — it is *the gate was not
+    /// asked*, and there are exactly two ways to get it: the last phase did not
+    /// answer, so there is no artifact to measure, or the operator stopped the
+    /// attempt. Measuring an attempt that ended in an absence would spend a cold
+    /// build (55 s and 2.3 GB, F356) to learn what the ending already said.
+    pub gate: Option<Measured>,
     /// 🚨 A **recommendation**, not an act. `None` when the ending was the
     /// operator's, because what happens after an operator stops something is the
     /// operator's and not the fleet's to propose.
@@ -120,6 +132,15 @@ pub struct Driver<'a> {
     model: String,
     worktrees: PathBuf,
     limits: Limits,
+    /// An operator's chosen toolchain profile, overriding what the tree's
+    /// witness files say.
+    ///
+    /// 🚨 **One profile per attempt, used by both the tool layer and the gate.**
+    /// ADR-0008 calls a profile operator configuration, and two copies of it —
+    /// one for the `run_tests` the model calls and one for the acceptance rung —
+    /// would be two things that can disagree about what this repository's tests
+    /// are. `None` is *detect it*, which is the normal case.
+    toolchain: Option<Toolchain>,
 }
 
 impl<'a> Driver<'a> {
@@ -142,12 +163,22 @@ impl<'a> Driver<'a> {
             model: model.into(),
             worktrees: worktrees.into(),
             limits: Limits::default(),
+            toolchain: None,
         }
     }
 
     #[must_use]
     pub fn limits(mut self, limits: Limits) -> Driver<'a> {
         self.limits = limits;
+        self
+    }
+
+    /// Use this toolchain profile instead of detecting one. See
+    /// [`Driver::toolchain`](Driver#structfield.toolchain) — it reaches the tool
+    /// layer and the gate together, on purpose.
+    #[must_use]
+    pub fn toolchain(mut self, toolchain: Toolchain) -> Driver<'a> {
+        self.toolchain = Some(toolchain);
         self
     }
 
@@ -178,7 +209,7 @@ impl<'a> Driver<'a> {
             task,
             unit,
             cause,
-            checkpoint_from: Some(opened.checkpoint),
+            checkpoint_from: Some(opened.opening.id),
         })?;
         let attempt = AttemptId::at(started.seq);
         self.command(task, Command::Engage { attempt })?;
@@ -237,7 +268,7 @@ impl<'a> Driver<'a> {
             sha: taken.sha.to_string(),
         })?;
 
-        let workspace = Workspace::open(worktree.path())
+        let mut workspace = Workspace::open(worktree.path())
             .map_err(|source| DriveError::Io {
                 what: "opening the attempt's workspace",
                 source,
@@ -245,12 +276,16 @@ impl<'a> Driver<'a> {
             // The operator's urgent verb reaches a running tool child through
             // this, which is the whole of `shared_child`'s justification and was
             // measured at 4 ms to the child (F491).
-            .watching(watch);
+            .watching(watch.clone());
+        if let Some(toolchain) = self.toolchain {
+            workspace = workspace.with_toolchain(toolchain);
+        }
 
         Ok(Opened {
-            checkpoint: taken.id,
+            opening: taken,
             worktree,
             workspace,
+            watch,
         })
     }
 
@@ -319,6 +354,20 @@ impl<'a> Driver<'a> {
             }
         };
 
+        // 🚨 **The gate runs here and it cannot run anywhere else.** It needs the
+        // closing snapshot to exist — a measurement is stamped with the sha it
+        // was taken at (ADR-0009 §6) — and it needs the worktree to still be
+        // there, because that is the tree the checkers run in and the operator's
+        // checkout must never be the thing a rung compiles.
+        let gate = match (kept.as_ref(), last) {
+            (Some(closing), PhaseEnded::Answered { .. }) => {
+                Some(self.gate(attempt, &opened, closing)?)
+            }
+            // An attempt that ended in an absence has nothing to measure, and an
+            // attempt the operator stopped is not ours to judge.
+            _ => None,
+        };
+
         let path = opened.worktree.path().display().to_string();
         match opened.worktree.close() {
             Ok(()) => {
@@ -335,7 +384,7 @@ impl<'a> Driver<'a> {
             }
         }
 
-        let ending = ending(last, attempt, kept.as_ref());
+        let ending = ending(last, attempt, kept.as_ref(), gate.as_ref());
         self.store.append(Event::AttemptEnded {
             task,
             attempt,
@@ -343,6 +392,7 @@ impl<'a> Driver<'a> {
         })?;
 
         let state = match ending.landing {
+            Landing::Accomplished => self.command(task, Command::Accomplish { attempt })?,
             Landing::HandToOperator { question } => {
                 let asked = self.store.append(Event::OperatorPrompted {
                     task,
@@ -376,8 +426,42 @@ impl<'a> Driver<'a> {
             localize: localize.report().clone(),
             change: change.map(|c| c.report().clone()),
             kept: kept.map(|k| k.sha.to_string()),
+            gate,
             next: ending.next,
         })
+    }
+
+    /// Walk the deterministic ladder over the attempt's own snapshot pair, and
+    /// put every rung on the log.
+    ///
+    /// ADR-0009 §7: **every rung, measured or not, is an event.** That is what
+    /// makes the report a projection of the log rather than a second source of
+    /// truth, and it is why this writes `RungRecorded` for the absences too — a
+    /// rung that could not run is the fact an operator most needs and the one a
+    /// gate is most tempted to drop.
+    ///
+    /// ⚠ The gate watches the control point, so an operator's `Halt` reaches a
+    /// running cold build instead of waiting it out. A ten-minute rung with no
+    /// stop verb would be the one place in the system where the console goes
+    /// deaf.
+    fn gate(&mut self, attempt: AttemptId, opened: &Opened, closing: &Kept) -> Result<Measured> {
+        // 🚨 `Repo::open` on the *worktree*, for `checkpoint_worktree`'s reason:
+        // it shares the git directory, so both snapshot shas resolve, and every
+        // path the gate touches is inside the attempt's own tree.
+        let inner = Repo::open(opened.worktree.path())?;
+        let mut gate = Gate::open(&inner, opened.worktree.path()).watching(opened.watch.clone());
+        if let Some(toolchain) = self.toolchain {
+            gate = gate.with_toolchain(toolchain);
+        }
+        let measured = gate.measure(&opened.opening.sha, &closing.sha);
+
+        for outcome in measured.report.outcomes() {
+            self.store.append(Event::RungRecorded {
+                attempt,
+                outcome: outcome.clone(),
+            })?;
+        }
+        Ok(measured)
     }
 
     /// The closing snapshot, taken **in the worktree**.
@@ -448,9 +532,17 @@ const OPERATOR: &str = "operator";
 
 /// The attempt's isolation, alive for as long as the attempt is.
 struct Opened {
-    checkpoint: CheckpointId,
+    /// 🚨 The whole opening snapshot and not only its id, because the gate's
+    /// free rung is the diff between this sha and the closing one — and a
+    /// `CheckpointId` is a position in the log, which git cannot diff.
+    opening: Kept,
     worktree: Worktree,
     workspace: Workspace,
+    /// The same watch the workspace got, kept so the gate's rungs are as
+    /// stoppable as the tool children were. A cold build is the longest thing
+    /// this system does, and it would be the one place an operator's verb goes
+    /// unanswered.
+    watch: Watch,
 }
 
 /// A snapshot that was taken and recorded.
@@ -459,9 +551,16 @@ struct Kept {
     sha: Sha,
 }
 
-/// Where the driver takes the task when the attempt is over. Four, and none of
-/// them is `Accomplished`.
+/// Where the driver takes the task when the attempt is over.
+///
+/// 🚨 **`Accomplished` is here now, and the Gate milestone is what put it
+/// there.** It was absent for the whole of Skeleton because there was nothing
+/// entitled to say it; the entitlement is [`Headline::Green`], which requires
+/// every declared rung to have produced a measurement and none of them to be
+/// red. What still cannot reach it is anything a model said.
 enum Landing {
+    /// Every declared rung measured, and none of them refused.
+    Accomplished,
     /// Nothing measured it, so a human is owed the question.
     HandToOperator { question: String },
     /// The attempt produced no artifact.
@@ -493,24 +592,85 @@ fn keep_for(last: &PhaseEnded) -> Keep {
     }
 }
 
-fn ending(last: &PhaseEnded, attempt: AttemptId, kept: Option<&Kept>) -> Ending {
+fn ending(
+    last: &PhaseEnded,
+    attempt: AttemptId,
+    kept: Option<&Kept>,
+    gate: Option<&Measured>,
+) -> Ending {
     match last {
-        // 🚨 The model answered, and nothing measured it. This is the honest
-        // ending of a *working* Skeleton attempt, and it is `Uncertain`.
+        // The model answered. What the attempt *is* now depends on what the
+        // ladder found, and on nothing the model wrote.
         PhaseEnded::Answered { .. } => {
             let artifact = kept.map_or_else(
                 || "the attempt's worktree".to_owned(),
                 |k| k.sha.as_str().to_owned(),
             );
-            let question = brief::unverified(&artifact);
-            Ending {
-                outcome: AttemptOutcome::Uncertain {
-                    why: Why::NoCheckerForArtifact { artifact },
+            match gate.map(|g| &g.headline) {
+                // 🚨 The one path to success in the whole system, and it is a
+                // conjunction of measurements: `Green` means every declared rung
+                // ran and none of them refused.
+                Some(Headline::Green { .. }) => Ending {
+                    outcome: AttemptOutcome::Success,
+                    next: Some(NextAction::Stop),
+                    landing: Landing::Accomplished,
                 },
-                next: Some(NextAction::HandToOperator {
-                    question: question.clone(),
-                }),
-                landing: Landing::HandToOperator { question },
+                // 🚨 A deterministic rung refused. The task goes to the operator
+                // rather than to `Failed`, and the recommendation is another
+                // attempt — the two do not disagree, because the rule this
+                // driver holds is *a task may not go terminal while something is
+                // owed to a person*, and a refusal that is one line from landing
+                // is exactly what a person should get to look at. F512 is that
+                // situation six times over.
+                Some(Headline::Red { rung, detail }) => {
+                    let question = brief::refused(rung, detail, &artifact);
+                    Ending {
+                        outcome: AttemptOutcome::Refused {
+                            rung: rung.clone(),
+                            detail: detail.clone(),
+                        },
+                        next: Some(NextAction::Attempt {
+                            cause: Cause::Retry { of: attempt },
+                        }),
+                        landing: Landing::HandToOperator { question },
+                    }
+                }
+                // The ladder could not see enough to say either way, and it says
+                // exactly what was missing. `Green` is a claim about coverage,
+                // so this is neither a pass nor a failure.
+                Some(Headline::Unverified { missing }) => {
+                    let question = brief::unverified(&artifact, missing);
+                    let why = missing.first().map_or_else(
+                        || Why::NoCheckerForArtifact {
+                            artifact: artifact.clone(),
+                        },
+                        |(_, why)| why.clone(),
+                    );
+                    Ending {
+                        outcome: classify(&why),
+                        next: Some(NextAction::HandToOperator {
+                            question: question.clone(),
+                        }),
+                        landing: Landing::HandToOperator { question },
+                    }
+                }
+                // ⚠ The gate was not asked. Reachable only when the closing
+                // snapshot was not taken, which `keep_for` makes impossible for
+                // an `Answered` phase — stated rather than asserted, because an
+                // unmeasured artifact has an honest sentence and a panic does
+                // not.
+                None => {
+                    let question = brief::unverified(&artifact, &[]);
+                    Ending {
+                        outcome: AttemptOutcome::Uncertain {
+                            why: Why::NoCheckerForArtifact { artifact },
+                        },
+                        next: Some(NextAction::HandToOperator {
+                            question: question.clone(),
+                        }),
+                        landing: Landing::HandToOperator { question },
+                    }
+                }
             }
         }
         PhaseEnded::Unmeasured { why, .. } => {

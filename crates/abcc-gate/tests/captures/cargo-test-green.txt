@@ -1,0 +1,551 @@
+     Running unittests src\lib.rs (target\debug\deps\abcc-1c413bb89271837f.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\abcc-3caa58a34a42d3d8.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\cli.rs (target\debug\deps\cli-30bb9aaa0ae5f75f.exe)
+
+running 17 tests
+test a_prompt_with_spaces_arrives_whole ... ok
+test a_flag_with_no_value_after_it_is_an_error_and_not_a_silent_default ... ok
+test a_review_that_is_not_a_length_of_time_is_refused ... ok
+test minutes_become_seconds_at_the_edge ... ok
+test a_task_id_that_is_not_one_says_what_one_looks_like ... ok
+test a_usage_error_exits_two_and_a_refusal_exits_one ... ok
+test an_idle_gap_that_is_not_a_positive_length_of_time_is_refused ... ok
+test a_review_carries_who_and_whether_it_crossed_a_boundary ... ok
+test nothing_at_all_is_help_and_help_is_not_a_failure ... ok
+test every_verb_the_parser_accepts_is_in_the_usage_text ... ok
+test an_unknown_verb_is_named_rather_than_ignored ... ok
+test review_needs_both_the_change_and_the_minutes ... ok
+test a_task_id_is_the_same_whether_or_not_it_carries_its_prefix ... ok
+test run_takes_its_options_and_nothing_positional ... ok
+test the_global_flags_may_appear_before_or_after_the_verb ... ok
+test two_positionals_are_refused_rather_than_one_being_dropped ... ok
+test watch_names_an_unknown_theme_rather_than_falling_back_to_one ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\confirm.rs (target\debug\deps\confirm-0a87727dc66d8f5c.exe)
+
+running 13 tests
+test a_fingerprint_matches_regardless_of_case_because_a_path_is_not_an_id ... ok
+test a_server_holding_nothing_and_a_server_offering_nothing_are_two_sentences ... ok
+test a_body_that_is_not_a_listing_is_a_sentence_that_quotes_it ... ok
+test the_evidence_behind_a_confirmation_is_carried_and_said_out_loud ... ok
+test a_downloaded_model_is_not_a_loaded_one ... ok
+test a_listing_is_read_as_ids_in_the_order_the_server_gave_them ... ok
+test a_loaded_model_that_is_not_the_one_asked_for_is_refused ... ok
+test the_bare_servers_gguf_path_is_confirmed_only_by_the_operators_fingerprint ... ok
+test a_fingerprint_that_matches_nothing_is_not_a_pass ... ok
+test the_id_the_operator_asked_for_is_confirmed_without_any_configuration ... ok
+test a_blank_fingerprint_is_no_fingerprint_rather_than_a_substring_of_everything ... ok
+test both_listing_urls_are_found_from_any_spelling_of_a_base_url ... ok
+test the_note_names_what_was_asked_and_what_was_actually_there ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\desk.rs (target\debug\deps\desk-433c0fee1762e844.exe)
+
+running 7 tests
+test a_redirect_with_no_prompt_is_not_a_redirect ... ok
+test a_verb_is_recognised_however_it_is_typed ... ok
+test a_redirects_prompt_keeps_its_own_spacing ... ok
+test the_five_verbs_parse_and_nothing_else_does ... ok
+test the_desks_connection_writes_while_another_connection_holds_the_log ... ok
+test a_verb_is_written_even_when_there_is_no_longer_anybody_to_poke ... ok
+test a_verb_reaches_the_log_and_then_the_worker ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests\feed.rs (target\debug\deps\feed-0007d5b2a7b282f0.exe)
+
+running 9 tests
+test the_reader_shows_a_real_run_from_the_log_alone ... ignored, needs a real log; pass ABCC_LOG
+test a_log_that_is_not_one_fails_at_open_rather_than_drawing_an_empty_board ... ok
+test an_empty_log_is_an_empty_board_and_says_nothing_else ... ok
+test the_head_is_the_last_seq_written ... ok
+test a_board_comes_out_of_the_log_and_nothing_else ... ok
+test an_attempts_events_are_its_tasks_heartbeat ... ok
+test a_position_in_the_middle_shows_the_board_as_it_was_there ... ok
+test rewinding_the_durable_feed_lands_where_the_tail_was ... ok
+test a_page_is_bounded_and_the_cursor_advances_past_it ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests\home.rs (target\debug\deps\home-2d9e7bb7130a8136.exe)
+
+running 6 tests
+test a_repository_path_that_differs_only_in_case_is_one_repository ... ok
+test the_default_never_lands_in_the_repository_it_is_about ... ok
+test a_home_inside_the_repository_is_refused_and_says_why ... ok
+test a_home_beside_the_repository_is_allowed_and_holds_both_things ... ok
+test the_repository_itself_is_refused_and_so_is_a_directory_under_it ... ok
+test the_default_is_keyed_by_the_repositorys_path_and_not_by_its_name ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\operator.rs (target\debug\deps\operator-d671757a98f33510.exe)
+
+running 13 tests
+test the_ground_refuses_a_directory_that_is_not_a_repository ... ok
+test where_names_both_paths_and_neither_is_in_the_repository ... ok
+test a_task_with_no_title_is_titled_by_the_first_line_of_its_prompt ... ok
+test a_second_task_joins_the_first_mission_rather_than_starting_another ... ok
+test a_review_is_recorded_in_seconds_and_says_whether_it_crossed_a_boundary ... ok
+test a_task_that_is_not_on_the_board_is_a_sentence_and_not_a_panic ... ok
+test ending_a_task_that_is_not_waiting_on_anybody_records_a_note_and_not_a_question ... ok
+test a_task_lands_queued_and_the_board_shows_it ... ok
+test a_terminal_task_cannot_be_ended_twice ... ok
+test a_listing_command_does_not_reconcile_a_live_attempt ... ok
+test rejecting_stops_the_task_and_is_attributed_to_a_person ... ok
+test the_answer_is_recorded_against_the_question_that_was_asked ... ok
+test accepting_lands_a_durable_terminal_state_that_is_not_accomplished ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+
+     Running unittests src\lib.rs (target\debug\deps\abcc_core-b716af3bf5cd5a0a.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\endings.rs (target\debug\deps\endings-e140f9123476ec3f.exe)
+
+running 10 tests
+test a_cargo_crate_with_no_tests_is_unmeasured_rather_than_green ... ok
+test the_five_cargo_endings_are_four_outcomes_and_the_green_one_is_the_only_pass ... ok
+test a_run_that_collected_nothing_is_never_green ... ok
+test a_green_headline_needs_every_rung_measured ... ok
+test a_green_measurement_at_a_stale_sha_is_unverified_and_not_green ... ok
+test the_mixed_run_counts_are_right_in_both_directions ... ok
+test a_red_unittest_run_never_reports_a_pass_it_did_not_see ... ok
+test the_all_red_run_is_measured_and_red_and_carries_its_counts ... ok
+test a_red_measurement_at_a_stale_sha_stays_red ... ok
+test every_capture_is_classified_and_the_classes_are_not_all_the_same ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests\lifecycle.rs (target\debug\deps\lifecycle-f5c5defe775d0f6b.exe)
+
+running 18 tests
+test a_command_naming_a_stale_attempt_is_refused ... ok
+test engaged_is_watched_on_progress_and_not_on_time_since_assignment ... ok
+test awaiting_orders_releases_the_slot_and_keeps_the_workspace ... ok
+test an_attempt_can_ask_for_orders_and_carry_on ... ok
+test holding_keeps_the_workspace_and_gives_back_the_slot ... ok
+test abort_and_commandeer_are_legal_from_every_non_terminal_state ... ok
+test no_command_resurrects_a_terminal_task ... ok
+test nothing_holds_a_slot_unwatched ... ok
+test one_task_runs_from_queued_to_accomplished ... ok
+test boot_moves_exactly_the_states_that_named_a_dead_resource ... ok
+test mode_only_ratchets_downward ... ok
+test only_a_retry_spends_the_retry_budget ... ok
+test only_the_phases_without_a_model_may_refuse ... ok
+test every_state_round_trips_through_json ... ok
+test operator_states_are_watched_and_never_reaped ... ok
+test since_is_the_seq_of_the_transition_that_produced_it ... ok
+test terminal_states_hold_nothing ... ok
+test there_are_nine_states_and_three_of_them_are_terminal ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\properties.rs (target\debug\deps\properties-e6aa6cb20ef41969.exe)
+
+running 7 tests
+test a_report_with_nothing_measured_is_not_a_pass ... ok
+test what_the_model_said_never_becomes_what_the_host_saw ... ok
+test exhaustion_is_classified_and_is_neither_pass_nor_fail ... ok
+test an_empty_payload_at_the_token_cap_is_an_absence_not_a_verdict ... ok
+test the_first_red_is_the_headline_and_it_names_itself ... ok
+test the_reasons_for_not_measuring_are_distinguishable_and_none_is_green ... ok
+test every_outcome_round_trips_through_json ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\abcc_drive-d9aa5200ff4f02af.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\attempt.rs (target\debug\deps\attempt-f30bd62bcac2b75f.exe)
+
+running 9 tests
+test killing_keeps_nothing_and_aborts_the_task ... ok
+test a_redirect_holds_the_work_and_recommends_a_forked_attempt ... ok
+test a_localize_that_produces_nothing_ends_the_attempt_before_builders_runs ... ok
+test halting_keeps_the_work_at_a_checkpoint_and_holds_the_task ... ok
+test one_attempt_runs_localize_then_change_and_the_log_says_so ... ok
+test the_change_phase_is_given_what_recon_found ... ok
+test a_working_attempt_ends_uncertain_because_nothing_measured_it ... ok
+test restarting_after_an_attempt_reconstructs_the_same_board ... ok
+test the_work_survives_as_a_checkpoint_and_the_operators_checkout_does_not_move ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+
+     Running tests\journal.rs (target\debug\deps\journal-320691202e5949f7.exe)
+
+running 3 tests
+test a_write_that_did_not_land_is_latched_and_reported ... ok
+test every_event_that_lands_is_counted ... ok
+test the_events_after_a_failed_write_are_still_written ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src\lib.rs (target\debug\deps\abcc_engine-c2071b0be7a1c3b1.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\child.rs (target\debug\deps\child-554298cc252aec59.exe)
+
+running 11 tests
+test the_allowlist_is_a_named_list_with_no_prefix_rules ... ok
+test the_allowlist_does_not_carry_a_shared_build_cache ... ok
+test a_program_that_is_not_here_says_so ... ok
+test every_child_reports_the_confinement_it_actually_got ... ok
+test a_watch_nobody_pokes_leaves_the_result_alone ... ok
+test the_operators_environment_does_not_reach_the_child ... ok
+test the_child_runs_where_it_was_put ... ok
+test a_child_that_outruns_the_pipe_buffer_is_not_a_timeout ... ok
+test a_killed_child_is_cancelled_rather_than_failed ... ok
+test a_child_that_outstays_its_budget_is_a_timeout_and_never_an_exit_code ... ok
+test an_operators_verb_reaches_a_running_tool_child ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.38s
+
+     Running tests\control.rs (target\debug\deps\control-48afe8a28a2370f3.exe)
+
+running 8 tests
+test a_verb_for_a_finished_attempt_is_refused_rather_than_lost ... ok
+test pause_and_halt_differ_only_in_urgency ... ok
+test pause_waits_for_a_step_boundary_and_halt_does_not ... ok
+test resume_is_not_a_stop ... ok
+test the_first_stop_latches ... ok
+test the_urgent_verbs_are_seen_between_deltas ... ok
+test the_verb_is_on_the_channel_before_the_flag_is_set ... ok
+test an_urgent_verb_is_seen_within_a_delta_or_two ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests\exec.rs (target\debug\deps\exec-427aa457ca06e4c5.exe)
+
+running 9 tests
+test a_workspace_with_no_toolchain_says_there_is_no_checker ... ok
+test a_destructive_git_command_is_refused_through_both_tools ... ok
+test the_workspace_says_what_actually_confines_its_children ... ok
+test the_witness_file_is_what_detects_a_profile ... ok
+test an_ordinary_git_command_runs ... ok
+test a_failing_command_has_an_exit_status ... ok
+test run_tests_runs_the_profiles_command_and_reports_what_happened ... ok
+test bash_runs_a_command_in_the_workspace ... ok
+test a_command_that_outstays_the_budget_the_model_set_is_unmeasured ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.42s
+
+     Running tests\heads.rs (target\debug\deps\heads-008fd3fbbf65672c.exe)
+
+running 9 tests
+test every_head_carries_the_same_output_budget ... ok
+test heads_exist_for_the_model_phases_and_only_those ... ok
+test a_prefix_is_byte_identical_on_a_second_rendering ... ok
+test no_prefix_exceeds_the_prefill_budget ... ok
+test the_head_set_is_four_and_closed ... ok
+test every_head_carries_the_boundary_and_the_honesty_rule ... ok
+test the_judge_head_carries_no_tools_at_all ... ok
+test the_four_prefixes_are_distinct_and_each_names_its_call_sign ... ok
+test a_head_advertises_exactly_the_tools_it_admits ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\http.rs (target\debug\deps\http-8883ab4c780c2b4f.exe)
+
+running 19 tests
+test a_live_turn_asks_for_a_tool_and_the_call_arrives_assembled ... ignored, needs a model server; the port and key change on every load
+test a_live_turn_reports_usage_and_a_reasoning_trace ... ignored, needs a model server; the port and key change on every load
+test every_registry_schema_is_valid_json ... ok
+test a_stream_that_reports_no_usage_stops_rather_than_costing_zero_tokens ... ok
+test a_streamed_turn_produces_the_sequence_the_scripted_contract_describes ... ok
+test a_refusal_that_is_not_the_swap_window_is_not_retried ... ok
+test a_reply_that_is_not_an_event_stream_is_read_as_a_whole_completion ... ok
+test the_cap_with_an_empty_payload_is_marked_as_the_absence_it_is ... ok
+test the_judge_advertises_no_tools_at_all ... ok
+test a_stream_that_ends_without_a_finish_reason_produces_no_ending ... ok
+test a_schema_travels_as_strict_json_schema_and_never_as_json_object ... ok
+test the_request_carries_the_head_the_tools_and_the_ask_for_real_token_counts ... ok
+test tool_calls_are_assembled_from_their_fragments ... ok
+test two_calls_that_carry_no_index_do_not_collapse_into_one ... ok
+test the_second_request_carries_the_assistant_turn_that_asked_for_the_tool ... ok
+test a_gap_longer_than_the_budget_is_an_idle_gap_and_never_a_generic_failure ... ok
+test the_same_budget_bounds_the_wait_for_the_first_byte ... ok
+test a_transient_400_during_a_model_swap_is_retried_once ... ok
+test a_turn_whose_body_outlasts_the_budget_completes_while_every_gap_stays_inside_it ... ok
+
+test result: ok. 17 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+     Running tests\patch.rs (target\debug\deps\patch-fd114084fbf0c3f9.exe)
+
+running 9 tests
+test prose_with_no_diff_in_it_is_refused_by_name ... ok
+test dev_null_on_either_side_is_a_creation_or_a_deletion ... ok
+test a_git_style_header_is_read_past ... ok
+test a_diff_cannot_write_outside_the_workspace ... ok
+test one_hunk_that_does_not_match_leaves_every_file_alone ... ok
+test a_line_feed_diff_applies_to_a_carriage_return_file_and_leaves_it_that_way ... ok
+test a_creation_and_a_deletion_do_what_they_say ... ok
+test two_hunks_in_one_file_both_land ... ok
+test a_hunk_applies_where_its_context_is_rather_than_where_it_claims ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\policy.rs (target\debug\deps\policy-4730fb4ef2033053.exe)
+
+running 13 tests
+test the_exec_class_is_refused_at_every_ceiling_below_exec ... ok
+test a_head_admits_exactly_what_it_advertises ... ok
+test a_short_cluster_carries_its_letters_and_a_long_option_does_not ... ok
+test a_shell_wrapper_does_not_launder_the_command ... ok
+test an_invented_tool_is_refused_by_the_same_call ... ok
+test only_builders_reaches_the_exec_class ... ok
+test the_over_match_is_deliberate_and_bounded ... ok
+test the_registry_has_no_duplicate_names ... ok
+test the_ordinary_commands_pass ... ok
+test the_backstop_is_separate_from_the_ceiling ... ok
+test the_table_recognises_all_seven_operations ... ok
+test a_tool_that_spawns_a_child_is_exactly_a_tool_at_exec ... ok
+test write_file_and_run_tests_cannot_both_be_had_below_exec ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\turn_loop.rs (target\debug\deps\turn_loop-fd8c741de336fa81.exe)
+
+running 21 tests
+test a_length_finish_at_our_own_cap_is_still_the_cap ... ok
+test a_length_finish_below_our_cap_is_the_servers_window_and_names_it ... ok
+test a_phase_that_answers_records_the_call_and_the_claim ... ok
+test a_refused_call_never_reads_as_started ... ok
+test a_pause_lets_the_round_in_flight_finish ... ok
+test a_phase_that_says_nothing_and_then_answers_is_answered ... ok
+test a_denied_tool_is_refused_on_the_log_and_in_the_transcript ... ok
+test a_stream_that_ends_without_an_ending_is_malformed_and_not_empty ... ok
+test a_phase_whose_model_said_nothing_is_unmeasured_rather_than_answered ... ok
+test a_trace_that_closed_and_a_trace_that_never_existed_are_different_values ... ok
+test a_refused_tool_call_keeps_its_arguments_and_a_successful_one_does_not ... ok
+test an_empty_payload_at_the_cap_is_an_absence ... ok
+test an_idle_gap_reaches_the_report_as_a_timeout ... ok
+test an_open_trace_at_token_200_is_recorded ... ok
+test nothing_in_a_body_can_be_a_system_message ... ok
+test one_provider_serves_two_loops_at_once ... ok
+test reasoning_tokens_are_carried_on_every_call ... ok
+test the_head_never_moves_and_the_body_only_grows ... ok
+test the_round_budget_is_a_stop_and_not_a_tier ... ok
+test an_urgent_verb_stops_a_stream_in_flight ... ok
+test a_quiet_stream_is_marked_alive ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests\workspace.rs (target\debug\deps\workspace-f74c6868ee1db86f.exe)
+
+running 17 tests
+test a_role_below_the_ceiling_never_reaches_the_workspace_at_all ... ok
+test dot_dot_cannot_leave_the_workspace ... ok
+test every_tool_in_the_registry_has_an_implementation ... ok
+test an_absolute_path_inside_the_workspace_is_accepted ... ok
+test a_pattern_that_will_not_compile_says_why ... ok
+test list_files_does_not_walk_into_dot_git ... ok
+test the_loop_drives_this_workspace_and_the_write_lands_on_disk ... ok
+test read_file_refuses_a_binary_file ... ok
+test read_file_says_how_long_the_file_is_when_the_range_is_past_it ... ok
+test a_path_outside_the_workspace_is_refused_with_the_path_that_was_meant ... ok
+test read_file_names_the_range_it_gave ... ok
+test a_file_tool_has_no_exit_status ... ok
+test the_arguments_are_read_leniently_and_a_missing_one_is_still_a_refusal ... ok
+test list_files_honours_the_repositorys_ignore_rules ... ok
+test search_honours_a_glob ... ok
+test write_file_creates_the_directories_it_needs_and_says_which_it_did ... ok
+test search_says_how_many_files_it_looked_at ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src\lib.rs (target\debug\deps\abcc_store-275d7f5b0e2c613f.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\durability.rs (target\debug\deps\durability-5202db978c61356c.exe)
+
+running 13 tests
+test a_write_that_cannot_land_leaves_no_trace ... ok
+test the_effective_mode_is_a_projection_of_the_log ... ok
+test an_attempt_cannot_end_twice ... ok
+test seq_is_dense_and_strictly_increasing ... ok
+test read_from_pages_by_the_same_integer_the_events_are_identified_by ... ok
+test a_task_history_is_that_task_and_nothing_else ... ok
+test boot_re_presents_a_prompt_and_never_answers_it ... ok
+test the_projection_is_rebuildable_and_is_not_the_source_of_truth ... ok
+test a_refused_command_leaves_the_task_alone_and_says_so_on_the_log ... ok
+test the_pragmas_are_the_ones_adr_0005_specifies ... ok
+test boot_reconstructs_identical_status_from_the_log_alone ... ok
+test killing_the_process_mid_attempt_requeues_and_tombstones_it ... ok
+test a_second_boot_over_the_same_log_changes_nothing ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\durability_rate.rs (target\debug\deps\durability_rate-b7177b6a005e63bf.exe)
+
+running 1 test
+test measure_the_transition_rate ... ignored, writes and fsyncs; run explicitly
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\abcc_tui-391197910bb07db8.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\keys.rs (target\debug\deps\keys-ddf060c6024202f1.exe)
+
+running 8 tests
+test q_and_escape_are_the_way_out ... ok
+test paging_back_past_the_origin_stops_at_the_origin ... ok
+test a_key_release_does_nothing ... ok
+test the_position_keys_move_the_cursor_and_nothing_else ... ok
+test the_selection_moves_by_one_and_stops_at_the_ends ... ok
+test a_selection_past_the_end_survives_a_rewind ... ok
+test the_terminal_backend_and_the_key_events_are_one_crossterm ... ok
+test a_page_key_moves_by_exactly_one_page ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\lines.rs (target\debug\deps\lines-2e12b960dcf5658a.exe)
+
+running 3 tests
+test a_tools_unmeasured_ending_and_a_rung_are_clipped_too ... ok
+test the_two_new_endings_read_as_sentences ... ok
+test an_engine_errors_html_page_does_not_escape_its_line ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\screen.rs (target\debug\deps\screen-96c014f0f3480097.exe)
+
+running 5 tests
+test an_empty_log_says_that_rather_than_drawing_a_healthy_board ... ok
+test the_reader_draws_the_run_from_the_log_alone ... ok
+test the_theme_key_relabels_the_whole_screen_by_replaying_it ... ok
+test a_stalled_attempt_is_marked_and_a_waiting_human_is_not ... ok
+test it_draws_at_the_sizes_a_real_terminal_comes_in ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\theme.rs (target\debug\deps\theme-ec11e7c07eda03d9.exe)
+
+running 5 tests
+test a_cause_is_lineage_and_the_line_says_which_attempt ... ok
+test a_theme_relabels_and_never_renames ... ok
+test every_state_has_its_own_label_in_every_theme ... ok
+test the_phases_and_the_mode_are_labelled_in_every_theme ... ok
+test classic_is_the_identity_map ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\view.rs (target\debug\deps\view-9ad83dfae48fc913.exe)
+
+running 8 tests
+test a_transition_alone_is_enough_to_draw_a_card ... ok
+test review_minutes_are_summed_from_the_log ... ok
+test an_attempts_events_are_its_tasks_heartbeat ... ok
+test a_log_that_cannot_be_read_is_shown_and_never_swallowed ... ok
+test the_board_is_folded_from_the_log_and_nothing_else ... ok
+test replay_is_the_live_view_at_a_different_position ... ok
+test the_pulse_is_the_clock_the_state_contract_names ... ok
+test the_feed_is_bounded_and_keeps_the_tail ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\abcc_vcs-06ee737fc0bbe737.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\cycle_cost.rs (target\debug\deps\cycle_cost-ba032da7e114d412.exe)
+
+running 1 test
+test measure_the_checkpoint_cycle ... ignored, writes into a real repository; run explicitly
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\isolation.rs (target\debug\deps\isolation-67fc656cdbb01160.exe)
+
+running 13 tests
+test a_sha_is_forty_hex_characters_and_nothing_else ... ok
+test checkpoint_refs_live_in_one_namespace ... ok
+test a_path_outside_a_repository_is_named_as_such ... ok
+test closing_a_worktree_removes_it_and_prunes_the_metadata ... ok
+test restore_puts_the_tree_back_to_a_snapshot ... ok
+test a_worktree_is_itself_a_repo_and_shares_the_common_dir ... ok
+test a_checkpoint_captures_untracked_files ... ok
+test two_worktrees_are_isolated_from_each_other_and_from_the_checkout ... ok
+test a_checkpoint_does_not_disturb_the_index_or_the_working_tree ... ok
+test a_worktree_opens_at_the_snapshot_it_was_given ... ok
+test a_rename_is_one_change_that_names_its_source ... ok
+test the_change_list_is_two_snapshots_and_excludes_ignored_output ... ok
+test a_checkpoint_survives_an_aggressive_gc_because_it_has_a_ref ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+
+   Doc-tests abcc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests abcc_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests abcc_drive
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests abcc_engine
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests abcc_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests abcc_tui
+
+running 1 test
+test crates\abcc-tui\src\lib.rs - (line 33) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.60s; merged doctests compilation took 0.52s
+   Doc-tests abcc_vcs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -48,7 +48,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use abcc_core::outcome::Why;
+use abcc_core::outcome::{Reading, Why};
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 use regex::RegexBuilder;
@@ -115,11 +115,10 @@ pub const MAX_EXEC_BUDGET: Duration = Duration::from_mins(15);
 /// per-language rung ladder, because the expensive part of the donors'
 /// abstraction is output parsers keyed to a *tool* rather than to a language.
 ///
-/// ⚠ **This is the two commands Skeleton needs and not that profile.** Reading a
-/// runner's output into counts is ADR-0009 §5's work — *ask the process, never
-/// the prose, and never derive a count that was not printed* — and it belongs to
-/// the Gate milestone with the rung ladder. Nothing here parses anything: the
-/// model is handed what the host watched, verbatim.
+/// ⚠ **Nothing here parses anything**, and that is still true now that the Gate
+/// reads these commands: the exit status is the verdict (ADR-0009 §5) and the
+/// text is only what an operator reads. Turning output into counts is
+/// `abcc_core::outcome`'s work and it lives there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Toolchain {
     pub name: &'static str,
@@ -127,6 +126,59 @@ pub struct Toolchain {
     pub witnesses: &'static [&'static str],
     pub test: &'static [&'static str],
     pub diagnostics: &'static [&'static str],
+    /// How this profile reads its test runner's ending (ADR-0009 §5). It is a
+    /// field rather than a match on [`Toolchain::name`] because a name match is
+    /// a second table keyed to the first.
+    pub reading: Reading,
+    /// 🚨 **The standard the repository declares for itself, or `None`.**
+    ///
+    /// This is the Gate's third rung and it is the one ADR-0008 argued against:
+    /// over 728 real agent attempts the linter was *strictly dominated by the
+    /// test suite in both languages*, so it was rejected as a rung. **F512 is
+    /// the counter-evidence, and it is from this repository.** Six working
+    /// `--version` implementations by the champion were checked out and put to
+    /// the compiler; `clippy -D warnings` refuses **6 of 6** on genuine
+    /// violations, and on two of them (runs 10 and 23) every test passes, so the
+    /// linter is the *only* rung that refuses them.
+    ///
+    /// The two claims are not in conflict, because they are about different
+    /// questions. ADR-0008 measured a linter as a **bug catcher** and it is a
+    /// poor one. This measures it as a **mergeability check**: a tree that fails
+    /// the repository's own declared standard cannot land there, whether or not
+    /// it is correct. See [`Standard`] for why it is declared by the repository
+    /// rather than by us.
+    pub standard: Option<Standard>,
+}
+
+/// A standard the repository declares, and the file that is the declaration.
+///
+/// 🚨 **The gate enforces what a repository asks for and nothing it does not.**
+/// A `cargo clippy -- -D warnings` imposed on a project that never opted into
+/// clippy is this tool having an opinion about somebody else's code, which is
+/// the shape of every donor gate that scores a language it has never heard of.
+/// So the rung is **declared** only when the witness is in the tree, and a
+/// workspace with no witness has three rungs rather than a failed fourth —
+/// an undeclared rung is not a missing measurement.
+///
+/// ⚠ **The witness is a file and not a manifest key.** A project that declares
+/// clippy only through `[lints.clippy]` in its `Cargo.toml` is not detected
+/// here, because detecting it needs a TOML parser this crate does not have, and
+/// grepping a manifest for a section header is a keyword count rather than a
+/// declaration. That is a stated gap, not an oversight: an operator whose
+/// project is in that shape sets the profile explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Standard {
+    /// Any one of these in the workspace root is the repository declaring it.
+    pub witnesses: &'static [&'static str],
+    pub command: &'static [&'static str],
+}
+
+impl Standard {
+    /// Whether this repository declares this standard.
+    #[must_use]
+    pub fn declared_at(&self, root: &Path) -> bool {
+        self.witnesses.iter().any(|w| root.join(w).exists())
+    }
 }
 
 /// The profiles, in the order they are looked for.
@@ -136,6 +188,13 @@ pub const TOOLCHAINS: &[Toolchain] = &[
         witnesses: &["Cargo.toml"],
         test: &["cargo", "test"],
         diagnostics: &["cargo", "check", "--all-targets"],
+        reading: Reading::Cargo,
+        // ⚠ `--all-targets` matters: without it clippy does not lint the test
+        // targets, and four of the six F512 implementations broke a test.
+        standard: Some(Standard {
+            witnesses: &["clippy.toml", ".clippy.toml"],
+            command: &["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
+        }),
     },
     // ⚠ `python` rather than `python3`, and that is measured rather than
     // stylistic: on this platform `python3` resolves to a Microsoft Store stub
@@ -146,6 +205,13 @@ pub const TOOLCHAINS: &[Toolchain] = &[
         witnesses: &["pyproject.toml", "setup.py", "pytest.ini", "tox.ini"],
         test: &["python", "-m", "pytest", "-q"],
         diagnostics: &["python", "-m", "compileall", "-q", "."],
+        reading: Reading::Python,
+        // 🚨 None, deliberately. Python has no single declared standard the way
+        // a cargo project has clippy: ruff, flake8, pylint and mypy are four
+        // different opinions, and picking one here would be this tool choosing a
+        // linter for somebody else's repository. A project that wants one names
+        // it in an operator-configured profile.
+        standard: None,
     },
 ];
 

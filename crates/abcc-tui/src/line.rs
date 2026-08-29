@@ -373,6 +373,12 @@ fn attempt_outcome_text(outcome: &AttemptOutcome) -> String {
         AttemptOutcome::SoftFailure { why } => format!("soft failure · {}", why_text(why)),
         AttemptOutcome::HardFailure { why } => format!("hard failure · {}", why_text(why)),
         AttemptOutcome::Uncertain { why } => format!("uncertain · {}", why_text(why)),
+        // ⚠ Clipped for F501's reason and more so: a rung's evidence is a
+        // compiler diagnostic, which is many lines with its own indentation.
+        // The whole of it is on the log and in the operator's question.
+        AttemptOutcome::Refused { rung, detail } => {
+            format!("refused by {rung} · {}", clip(detail))
+        }
     }
 }
 

@@ -11,6 +11,7 @@
 //! be sent; repeating any of them here would be paying for the same tokens twice
 //! and, worse, would put two versions of one instruction in front of the model.
 
+use abcc_core::outcome::Why;
 use abcc_store::TaskRow;
 
 /// What Recon is asked, opening the Localize phase.
@@ -45,20 +46,61 @@ pub fn change(row: &TaskRow, found: &str) -> String {
     )
 }
 
-/// The question the operator is left with when the attempt produced an artifact
-/// and nothing measured it.
+/// The question the operator is left with when the ladder could not see enough
+/// to say either way.
 ///
-/// 🚨 This sentence is the Skeleton milestone's own gap, written where an
-/// operator reads it. There is no gate yet — `Measure`, the structural rung, the
-/// acceptance test and Veto all arrive at Gate — so the honest ending of a
-/// working attempt is *unverified*, never *accomplished*. The day a rung exists
-/// this question stops being asked; nothing else about the driver changes.
+/// 🚨 **It names what was missing, one rung at a time.** `Green` is a claim about
+/// coverage, so a rung that could not run does not fail the attempt and does not
+/// quietly disappear — and the difference between *the suite is red* and *there
+/// was no suite* is the whole of ADR-0009. v1 cannot tell them apart at all: its
+/// dispatcher is gated on the word `passed`, which an all-red run does not
+/// contain, so eight real run-endings become three records.
+///
+/// ⚠ An empty `missing` is the case where no rung was asked at all. It is a
+/// different sentence, and it is chosen here rather than at the call site because
+/// the operator reads one paragraph either way.
 #[must_use]
-pub fn unverified(artifact: &str) -> String {
+pub fn unverified(artifact: &str, missing: &[(String, Why)]) -> String {
+    if missing.is_empty() {
+        return format!(
+            "Builders finished and no rung was asked about it. The change is \
+             snapshotted at {artifact}, so the work is unverified rather than \
+             accepted. Read it and say what should happen to the task."
+        );
+    }
+    let listed = missing
+        .iter()
+        .map(|(rung, why)| format!("  {rung}: {why}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
-        "Builders finished and nothing measured it. The change is snapshotted at \
-         {artifact}; this milestone has no gate, so the work is unverified rather \
-         than accepted. Read it and say what should happen to the task."
+        "Builders finished and the gate could not measure all of it. The change is \
+         snapshotted at {artifact}. What was missing:\n\n{listed}\n\nNothing here \
+         says the work is wrong and nothing says it is right. Read it and say what \
+         should happen to the task."
+    )
+}
+
+/// The question the operator is left with when a deterministic rung refused.
+///
+/// 🚨 **A refusal an operator cannot read is a refusal nobody can fix** (F505).
+/// So it names the rung, quotes the evidence the host actually watched, and names
+/// the snapshot that evidence is about — because a measurement is stamped with
+/// the sha it was taken at, and an operator reading a different tree is the
+/// failure mode ADR-0009 §6 exists for.
+///
+/// ⚠ It says *cannot land* rather than *is wrong*, and the distinction is real
+/// rather than diplomatic: on F512's runs 10 and 23 the champion's work compiles,
+/// prints `abcc 0.1.0` and passes every test, and it is refused for a function
+/// **one line** over this repository's own limit. The rung is right and the work
+/// is good, and only a person gets to decide what that combination means.
+#[must_use]
+pub fn refused(rung: &str, detail: &str, artifact: &str) -> String {
+    format!(
+        "The {rung} rung refused this change, so it cannot land unattended. The \
+         change is snapshotted at {artifact}, and this is what the check said:\n\n\
+         {detail}\n\nAnother attempt could fix it, you could fix it by hand, or you \
+         could take responsibility for it as it is. Say which."
     )
 }
 

@@ -6,15 +6,24 @@ is; this file is how to work in it.
 
 ## Commands
 
-The loop ladder, re-measured warm on the development box, 2026-08-29, at seven
-crates and 282 tests, with exit status asserted. Use the cheapest rung that
+The loop ladder, re-measured warm on the development box, 2026-08-30, at eight
+crates and 309 tests, with exit status asserted. Use the cheapest rung that
 answers the question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
-| after every edit | `cargo check --workspace --all-targets` | 0.40 s |
-| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.45 s |
-| once, before commit | `cargo test --workspace` | 11.2 s |
+| after every edit | `cargo check --workspace --all-targets` | 0.37 s |
+| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.46 s |
+| once, before commit | `cargo test --workspace` | 15.3 s |
+
+🚨 **Measure it with the output going to `/dev/null`, not into a shell
+variable.** The same `cargo test --workspace`, same build, back to back:
+**15.3 s redirected and 63.0 s captured** with `out=$(...)`, for 610 lines of
+output. The 47 s is this platform's pipe handling against 32 test binaries and
+the children they spawn, and it is not in the tests — the harness's own reported
+times sum to ~13 s either way. **An instrument that reads the output changes the
+number by 4×**, which is the same shape as F202 one level up: the pipe is the
+cost, not the work.
 
 🚨 **The middle rung used to end `&& cargo test --lib`, and that ran zero tests.**
 Every test in this workspace is an integration test under `tests/`, which
@@ -23,25 +32,31 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test endings --test lifecycle --test properties --test durability --test control --test heads --test http --test patch --test policy --test turn_loop --test workspace --test journal --test keys --test lines --test screen --test theme --test view --test cli --test confirm --test desk --test feed --test home`
-is **2.0 s** for 226 tests and covers everything that does not start a process.
+`cargo test --workspace --test endings --test lifecycle --test properties --test durability --test control --test heads --test http --test patch --test policy --test turn_loop --test workspace --test journal --test keys --test lines --test screen --test theme --test view --test cli --test confirm --test desk --test feed --test home --test reading`
+is **2.0 s** for 237 tests and covers everything that does not start a process.
 
 🚨 **That list is derived, not remembered — check it against `crates/*/tests/`
-whenever a test file is added.** The previous one claimed the same coverage and
+whenever a test file is added.** An earlier one claimed the same coverage and
 omitted five process-free targets and 57 tests (`abcc-core`'s `endings`,
 `lifecycle` and `properties`, `abcc-store`'s `durability`, and `abcc-tui`'s
 `lines`), so the cheap rung was quietly cheaper than it looked. **A list of
 names does not fail when the workspace grows; it just stops covering things.**
 The process bucket is exactly `child`, `exec`, `attempt`, `operator`,
-`isolation` and `cycle_cost`.
+`isolation`, `ladder`, `cycle_cost`, `durability_rate` and `live`.
 
-The full suite costs 11.2 s because `tests/child.rs` and `tests/exec.rs` spawn real
-children, and `abcc-vcs`, `abcc-drive` and `abcc`'s `tests/operator.rs` drive real git —
+The full suite costs 15.3 s because `tests/child.rs` and `tests/exec.rs` spawn real
+children, `abcc-vcs`, `abcc-drive` and `abcc`'s `tests/operator.rs` drive real git, and
+`abcc-gate`'s `tests/ladder.rs` (3.4 s, the most expensive single target) does both —
 that time is processes, not compilation, and it is the price of testing claims about an
 OS against the OS.
-⚠ `tests/http.rs` is 0.9 s of that subset and nearly all of it is deliberate
-sleeping: it drives a socket that writes when it is told to, because the claims
-it makes are about *when* bytes arrive.
+⚠ `tests/http.rs` is 0.9 s of the process-free subset and nearly all of it is
+deliberate sleeping: it drives a socket that writes when it is told to, because
+the claims it makes are about *when* bytes arrive.
+
+⚠ **`tests/live.rs` is not in the suite at any price.** It is `#[ignore]`d and
+points the gate at real checkpoint pairs, which means a cold `cargo` build per
+changed tree — **373 s and one 2.3 GB `target/` at a time** for the 25 attempts
+on this project's log. Run it deliberately, never in a loop.
 
 Run a single test by name (`cargo test <name>`) when you are iterating on one
 failure.
@@ -93,12 +108,39 @@ do not reformat around it.
 - **A model verdict is a report, never a gate.** Only deterministic phases may
   refuse — this is written as code in `AttemptPhase::may_refuse`, so wiring the
   Judge into a gate is an edit somebody can see rather than a quiet one.
-- 🚨 **The driver never says `Accomplished`, and that is not an omission.** There
-  is no gate until the Gate milestone, so `abcc-drive` ends a working attempt
-  `Uncertain { NoCheckerForArtifact }` and hands the task to the operator with a
-  question that names the snapshot. Do not "finish" this by mapping a model's
-  answer onto success: that is a claim standing where a measurement belongs,
-  which is the one defect ADR-0009 exists to prevent.
+- 🚨 **Only a measurement says `Accomplished`, and the measurement is
+  `Headline::Green`.** The Gate milestone made that word reachable and did not
+  make it cheap: `Green` requires **every declared rung to have produced a
+  measurement** and none of them to be red. What still cannot reach it is
+  anything a model wrote — its verdict is a `Claim`, and there is no function in
+  the workspace that turns one into an `Outcome`. Do not add one.
+- 🚨 **The conjunction is `Report::headline`, not code in `abcc-gate`.** ADR-0008's
+  `Accept ⇔ structural ∧ acceptance ∧ ¬Veto` is not implemented anywhere; the
+  gate produces the right `Outcome`s in the right order and the type does the
+  `∧`. That is why the Judge cannot vote when it arrives: a `Claim` attaches
+  through `Report::note` and there is nothing to wire it to.
+- 🚨 **The ladder stops at the first refusal and never at an absence.** A red is
+  a decision, and there is nothing after it worth a cold build; an absence is
+  not, so the rungs after it still run and the report says everything it saw.
+  This cannot produce a wrong `Green`, because `Green` means nothing refused,
+  which is the case where every rung ran.
+- 🚨 **A rung nobody declared is absent, not missing.** The standard rung
+  (`cargo clippy -- -D warnings`) is declared only when the repository carries
+  the witness for it — a `clippy.toml`. A workspace with no witness has three
+  rungs and a `Green` that means what it says, rather than a fourth `Unmeasured`
+  for a check nobody asked for. **The gate enforces what a repository asks for
+  and nothing it does not.**
+- 🚨 **The gate may not share a build cache** (F356): two trees with one package
+  name and one `CARGO_TARGET_DIR` make cargo print `Fresh`, run the *other*
+  tree's binary and report `ok. 0 passed` at exit 0. Nothing has to be done to
+  get this right — `CARGO_TARGET_DIR` is not on `ENV_ALLOWLIST`, so a rung child
+  never inherits one. Do not add it. The price is a cold build per attempt:
+  measured at **55 s and 2.3 GB** on this workspace.
+- 🚨 **A task may not go terminal while something is owed to a person.** A
+  refused attempt goes to `AwaitingOrders` and recommends a retry; those do not
+  disagree, because an operator prompt is exactly *here is what I would do, say
+  the word*. Landing a refusal on `Failed` would make the recommendation
+  unreachable and throw away work that is often one line from landing.
 - 🚨 **A phase asks again before it gives up on a missing answer** (ADR-0016,
   F503). The champion reasons to the end and emits five to nine tokens that trim
   to an empty string; across ten runs of one task the closing answer was missing

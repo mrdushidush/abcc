@@ -21,6 +21,7 @@ use std::thread;
 
 use abcc_core::attempt::Cause;
 use abcc_core::event::Event;
+use abcc_core::outcome::Outcome;
 use abcc_core::run::Mode;
 use abcc_core::seq::{Seq, TaskId, UnitId};
 use abcc_core::task::TaskState;
@@ -28,6 +29,7 @@ use abcc_drive::{Driver, Landed};
 use abcc_engine::control::ControlPoint;
 use abcc_engine::openai::OpenAiCompat;
 use abcc_engine::turn::{Limits, PhaseReport};
+use abcc_gate::Measured;
 use abcc_store::{Reconciled, Store};
 use abcc_tui::Theme;
 
@@ -223,6 +225,7 @@ fn report(landed: &Landed, out: &mut impl Write) -> Result<(), AppError> {
     } else {
         writeln!(out, "kept      nothing — the operator said kill")?;
     }
+    gate(landed.gate.as_ref(), out)?;
     writeln!(out, "task      {}", Theme::Command.state(&landed.state))?;
     if let Some(next) = &landed.next {
         writeln!(
@@ -233,12 +236,51 @@ fn report(landed: &Landed, out: &mut impl Write) -> Result<(), AppError> {
     if let TaskState::AwaitingOrders { .. } = landed.state {
         writeln!(
             out,
-            "\nNothing measured this work — there is no gate until the Gate milestone, so the\n\
-             attempt ended `Uncertain` rather than accomplished. Read the checkpoint, then:\n\
+            "\nThis work is not accepted. Read the checkpoint, then:\n\
              \n  abcc accept <task>   you have read it and take responsibility for it\n  \
              abcc reject <task>   it is not good and the task stops"
         )?;
     }
+    Ok(())
+}
+
+/// Every rung, then the conjunction they add up to.
+///
+/// 🚨 The rungs are printed **before** the headline rather than after it, because
+/// the headline is a summary of them and a summary read first is a summary that
+/// gets believed. ⚠ Nothing here is computed: the headline is
+/// `Report::headline_at`, the one function entitled to combine these.
+fn gate(measured: Option<&Measured>, out: &mut impl Write) -> Result<(), AppError> {
+    let Some(measured) = measured else {
+        // Stated rather than omitted, for the same reason a phase that did not
+        // run is stated: *not asked* and *asked and found nothing* are two
+        // different things and this is the first one.
+        writeln!(
+            out,
+            "gate      not asked — the attempt produced no artifact"
+        )?;
+        return Ok(());
+    };
+    for outcome in measured.report.outcomes() {
+        match outcome {
+            Outcome::Measured(m) => {
+                let mark = if m.exit == 0 { "  ok " } else { "REFUSED" };
+                writeln!(out, "  {mark:7} {:<11} exit {}", m.rung, m.exit)?;
+                for line in m.detail.lines().take(4) {
+                    writeln!(out, "          {line}")?;
+                }
+            }
+            Outcome::Unmeasured { rung, why } => {
+                writeln!(out, "  {:7} {rung:<11} {why}", "--")?;
+            }
+        }
+    }
+    let (measured_count, declared) = measured.report.measured_fraction();
+    writeln!(
+        out,
+        "gate      {} ({measured_count} of {declared} rung(s) measured)",
+        measured.headline
+    )?;
     Ok(())
 }
 

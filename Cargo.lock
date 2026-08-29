@@ -9,6 +9,7 @@ dependencies = [
  "abcc-core",
  "abcc-drive",
  "abcc-engine",
+ "abcc-gate",
  "abcc-store",
  "abcc-tui",
  "abcc-vcs",
@@ -34,6 +35,7 @@ version = "0.1.0"
 dependencies = [
  "abcc-core",
  "abcc-engine",
+ "abcc-gate",
  "abcc-store",
  "abcc-vcs",
  "tempfile",
@@ -53,6 +55,16 @@ dependencies = [
  "shared_child",
  "tempfile",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "abcc-gate"
+version = "0.1.0"
+dependencies = [
+ "abcc-core",
+ "abcc-engine",
+ "abcc-vcs",
+ "tempfile",
 ]
 
 [[package]]

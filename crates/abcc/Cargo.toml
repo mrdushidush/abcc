@@ -20,6 +20,7 @@ path = "src/main.rs"
 abcc-core = { workspace = true }
 abcc-drive = { workspace = true }
 abcc-engine = { workspace = true }
+abcc-gate = { workspace = true }
 abcc-store = { workspace = true }
 abcc-tui = { workspace = true }
 abcc-vcs = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
-name = "abcc-drive"
-description = "The attempt driver: Localize then Change, over the log, the repository and the engine."
+name = "abcc-gate"
+description = "Measure: the deterministic rungs, the veto, and the conjunction that is the whole of Accept."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,10 +11,7 @@ authors.workspace = true
 [dependencies]
 abcc-core = { workspace = true }
 abcc-engine = { workspace = true }
-abcc-gate = { workspace = true }
-abcc-store = { workspace = true }
 abcc-vcs = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

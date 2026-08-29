@@ -66,6 +66,23 @@ pub enum AttemptOutcome {
     /// Neither. The commonest member is the model stopping at the token cap with
     /// an empty payload, which is an absence and not a score.
     Uncertain { why: Why },
+    /// 🚨 **A deterministic rung refused. This is a measurement, not an
+    /// absence** — the host watched a checker run and watched it say no.
+    ///
+    /// It carries **no [`Why`]**, and that is the point. `Why` is the vocabulary
+    /// for a rung that produced *no* measurement: every one of its variants is a
+    /// sentence about something that did not happen, and putting a refusal in
+    /// there would put a failure into the enum whose whole job is to keep
+    /// failures and absences apart. So this carries what
+    /// [`Headline::Red`](crate::outcome::Headline::Red) carries — the rung's
+    /// name and the evidence — and `Success` is the precedent: the two
+    /// *definite* endings are the two that need no `Why`.
+    ///
+    /// ⚠ **Only a deterministic rung can put an attempt here.**
+    /// `AttemptPhase::may_refuse` is where that is said as code, and a model's
+    /// verdict is a `Claim`, which has no path to an `Outcome` and therefore
+    /// none to here (ADR-0009 §4, David 2026-08-28).
+    Refused { rung: String, detail: String },
 }
 
 impl AttemptOutcome {
@@ -76,7 +93,13 @@ impl AttemptOutcome {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            AttemptOutcome::SoftFailure { .. } | AttemptOutcome::Uncertain { .. }
+            AttemptOutcome::SoftFailure { .. }
+                | AttemptOutcome::Uncertain { .. }
+                // A refusal is the case another attempt most plainly could fix:
+                // the gate said what is wrong and where. ⚠ Retryable is not the
+                // same as *worth retrying* — the budget is 2 and it is the
+                // fleet's, not this function's.
+                | AttemptOutcome::Refused { .. }
         )
     }
 
@@ -87,6 +110,7 @@ impl AttemptOutcome {
             AttemptOutcome::SoftFailure { .. } => "SoftFailure",
             AttemptOutcome::HardFailure { .. } => "HardFailure",
             AttemptOutcome::Uncertain { .. } => "Uncertain",
+            AttemptOutcome::Refused { .. } => "Refused",
         }
     }
 }

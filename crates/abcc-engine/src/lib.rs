@@ -58,4 +58,4 @@ pub use provider::{
 };
 pub use tools::{Confinement, Denied, Destructive, Policy, Reach, Tier, ToolSpec};
 pub use turn::{Journal, Limits, PhaseEnded, PhaseReport, ToolResult, Tools, TurnLoop};
-pub use workspace::{Toolchain, Workspace};
+pub use workspace::{Standard, Toolchain, Workspace};
