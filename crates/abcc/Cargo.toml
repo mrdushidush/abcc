@@ -1,0 +1,39 @@
+[package]
+name = "abcc"
+description = "The command center: one binary over the log, the repository, the engine and the reader."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "abcc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "abcc"
+path = "src/main.rs"
+
+[dependencies]
+abcc-core = { workspace = true }
+abcc-drive = { workspace = true }
+abcc-engine = { workspace = true }
+abcc-store = { workspace = true }
+abcc-tui = { workspace = true }
+abcc-vcs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# ⚠ The one dependency this crate adds that the engine did not already need, and
+# it is spent on the model-confirmation check. `GET /v1/models` is a different
+# endpoint from the one `abcc-engine` posts to, and asking a server what it is
+# actually serving is the operator's question rather than the provider's.
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

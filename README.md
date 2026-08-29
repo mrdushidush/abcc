@@ -31,6 +31,31 @@ out of measurement rather than taste:
   those words because Windows does not offer the other thing. See
   [`SECURITY.md`](SECURITY.md) when it lands with the Posture milestone.
 
+## Using it, as far as it goes
+
+```
+abcc where                       where this repository's log and worktrees live
+abcc task "make one() return two"   put a task on the board
+abcc run --task t3               one attempt, Localize then Change
+abcc watch                       the reader, over the event log alone
+abcc accept t3 / abcc reject t3  the operator's two endings
+abcc review <sha> <minutes>      the measurement W13's ladder is defined in
+```
+
+The log and the attempt worktrees live **outside** the repository, in a
+per-checkout directory under the platform data directory; `abcc where` prints it
+and `--home` moves it. `abcc run` needs an OpenAI-compatible server on
+`ABCC_MODEL_BASE_URL` (default `http://127.0.0.1:1234`) and a model named by
+`--model` or `ABCC_MODEL`.
+
+🚨 **Two things it will not do**, and both are the design rather than a gap.
+It **refuses to run against a model it cannot confirm the server is holding** —
+LM Studio answers a request naming a model it does not have by using whichever
+model *is* loaded, so set `ABCC_MODEL_FINGERPRINT` to a substring of the id the
+server reports if the two do not match exactly. And it **never says
+`Accomplished`**: there is no gate before the Gate milestone, so a working
+attempt ends `Uncertain` and asks a person, which is what `abcc accept` answers.
+
 ## Relationship to ABCC v1
 
 This is the successor to

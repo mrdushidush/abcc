@@ -3,6 +3,23 @@
 version = 4
 
 [[package]]
+name = "abcc"
+version = "0.1.0"
+dependencies = [
+ "abcc-core",
+ "abcc-drive",
+ "abcc-engine",
+ "abcc-store",
+ "abcc-tui",
+ "abcc-vcs",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "abcc-core"
 version = "0.1.0"
 dependencies = [

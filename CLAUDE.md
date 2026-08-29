@@ -6,15 +6,15 @@ is; this file is how to work in it.
 
 ## Commands
 
-The loop ladder, re-measured warm on the development box, 2026-08-28, at six
-crates and 209 tests, with exit status asserted. Use the cheapest rung that
+The loop ladder, re-measured warm on the development box, 2026-08-29, at seven
+crates and 262 tests, with exit status asserted. Use the cheapest rung that
 answers the question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
-| after every edit | `cargo check --workspace --all-targets` | 0.37 s |
-| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.49 s |
-| once, before commit | `cargo test --workspace` | 10.5 s |
+| after every edit | `cargo check --workspace --all-targets` | 0.42 s |
+| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.46 s |
+| once, before commit | `cargo test --workspace` | 10.7 s |
 
 🚨 **The middle rung used to end `&& cargo test --lib`, and that ran zero tests.**
 Every test in this workspace is an integration test under `tests/`, which
@@ -23,11 +23,12 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch --test http --test journal --test view --test theme --test screen --test keys`
-is **1.6 s** for 118 tests and covers everything that does not start a process.
-The full suite costs 10.5 s because `tests/child.rs` and `tests/exec.rs` spawn real
-children, and `abcc-vcs` and `abcc-drive` drive real git — that time is processes, not
-compilation, and it is the price of testing claims about an OS against the OS.
+`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch --test http --test journal --test view --test theme --test screen --test keys --test cli --test confirm --test home --test desk`
+is **1.7 s** for 159 tests and covers everything that does not start a process.
+The full suite costs 10.7 s because `tests/child.rs` and `tests/exec.rs` spawn real
+children, and `abcc-vcs`, `abcc-drive` and `abcc`'s `tests/operator.rs` drive real git —
+that time is processes, not compilation, and it is the price of testing claims about an
+OS against the OS.
 ⚠ `tests/http.rs` is 0.9 s of that subset and nearly all of it is deliberate
 sleeping: it drives a socket that writes when it is told to, because the claims
 it makes are about *when* bytes arrive.
@@ -143,6 +144,34 @@ do not reformat around it.
   template renders as a result arriving from nowhere. That field exists because
   writing the real provider found the seam short — which is what `scripted.rs`
   is for.
+- 🚨 **The log and the worktrees never live inside the repository they are about.**
+  `abcc::home` computes a per-repository directory under the platform data
+  directory and **refuses** an explicit one that is inside the checkout. Two
+  independent reasons: a checkpoint stages the whole tree, so a log that changes
+  on every event would land in every snapshot and no two snapshots of unchanged
+  work would be equal; and git will not nest a worktree inside the tree it came
+  from. Do not add a `.abcc/` directory to a working tree.
+- 🚨 **Nothing runs against an unconfirmed model, and there is no `--force`.**
+  `abcc::confirm` asks the server what it is holding and matches it against what
+  was asked for, or against an operator-configured substring
+  (`ABCC_MODEL_FINGERPRINT`). It needs the fingerprint because LM Studio answers a
+  request naming a model it does not have **using whichever model is loaded**, and
+  the bare `llama-server` names models by GGUF path — so a match can be neither
+  assumed nor spelled, and only the operator can assert one. The verdict goes on
+  the log as a `Note`, which is the only place the run says which brain answered:
+  `ModelCallStarted` records the id that was *requested*.
+- **The console edge opens a second connection, and may write exactly one event
+  type.** ADR-0006 requires `ControlRequested` on the log *before* the channel is
+  poked, and the driver borrows the `Store` mutably for the whole of an attempt —
+  so `abcc::desk` holds its own connection and appends `ControlRequested` and
+  nothing else. `Store::apply` is still the one path that moves a task. Do not
+  widen what the desk writes.
+- 🚨 **`abcc accept` is how a working task reaches a terminal state, and it is not
+  `Accomplished`.** The driver leaves a working attempt in `AwaitingOrders`, which
+  is not terminal, because nothing measured the work. `accept` commandeers the
+  task and finishes it by hand — `Aborted { CompletedByOperator }` — and `reject`
+  is `Aborted { Operator }`. `Fail` is deliberately not reachable from
+  `AwaitingOrders`: it names an attempt, and by then the attempt is over.
 - **A stopped tool child is `Cancelled`, never `exit: 1`.** `TerminateProcess`
   hands back 1, so `Killer::kill` takes a `by` and `finish()` reads it — otherwise
   the record says *the tests failed* about work nobody ran.

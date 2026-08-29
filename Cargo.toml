@@ -7,6 +7,7 @@ members = [
     "crates/abcc-engine",
     "crates/abcc-drive",
     "crates/abcc-tui",
+    "crates/abcc",
 ]
 
 [workspace.package]
