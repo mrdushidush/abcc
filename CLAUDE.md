@@ -7,14 +7,14 @@ is; this file is how to work in it.
 ## Commands
 
 The loop ladder, re-measured warm on the development box, 2026-08-30, at eight
-crates and 309 tests, with exit status asserted. Use the cheapest rung that
+crates and 329 tests, with exit status asserted. Use the cheapest rung that
 answers the question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
-| after every edit | `cargo check --workspace --all-targets` | 0.37 s |
-| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.46 s |
-| once, before commit | `cargo test --workspace` | 15.3 s |
+| after every edit | `cargo check --workspace --all-targets` | 0.38 s |
+| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.42 s |
+| once, before commit | `cargo test --workspace` | 16.8 s |
 
 🚨 **Measure it with the output going to `/dev/null`, not into a shell
 variable.** The same `cargo test --workspace`, same build, back to back:
@@ -32,8 +32,8 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test endings --test lifecycle --test properties --test durability --test control --test heads --test http --test patch --test policy --test turn_loop --test workspace --test journal --test keys --test lines --test screen --test theme --test view --test cli --test confirm --test desk --test feed --test home --test reading`
-is **2.0 s** for 237 tests and covers everything that does not start a process.
+`cargo test --workspace --test endings --test lifecycle --test properties --test durability --test control --test heads --test http --test patch --test policy --test turn_loop --test workspace --test journal --test keys --test lines --test screen --test theme --test view --test cli --test confirm --test desk --test feed --test home --test reading --test judge`
+is **2.1 s** for 251 tests and covers everything that does not start a process.
 
 🚨 **That list is derived, not remembered — check it against `crates/*/tests/`
 whenever a test file is added.** An earlier one claimed the same coverage and
@@ -42,9 +42,10 @@ omitted five process-free targets and 57 tests (`abcc-core`'s `endings`,
 `lines`), so the cheap rung was quietly cheaper than it looked. **A list of
 names does not fail when the workspace grows; it just stops covering things.**
 The process bucket is exactly `child`, `exec`, `attempt`, `operator`,
-`isolation`, `ladder`, `cycle_cost`, `durability_rate` and `live`.
+`isolation`, `ladder`, `cycle_cost`, `durability_rate` and `live` — nine of the
+thirty-three targets, so the subset is the other twenty-four.
 
-The full suite costs 15.3 s because `tests/child.rs` and `tests/exec.rs` spawn real
+The full suite costs 16.8 s because `tests/child.rs` and `tests/exec.rs` spawn real
 children, `abcc-vcs`, `abcc-drive` and `abcc`'s `tests/operator.rs` drive real git, and
 `abcc-gate`'s `tests/ladder.rs` (3.4 s, the most expensive single target) does both —
 that time is processes, not compilation, and it is the price of testing claims about an
@@ -117,8 +118,31 @@ do not reformat around it.
 - 🚨 **The conjunction is `Report::headline`, not code in `abcc-gate`.** ADR-0008's
   `Accept ⇔ structural ∧ acceptance ∧ ¬Veto` is not implemented anywhere; the
   gate produces the right `Outcome`s in the right order and the type does the
-  `∧`. That is why the Judge cannot vote when it arrives: a `Claim` attaches
+  `∧`. That is why the Judge cannot vote now that it is here: a `Claim` attaches
   through `Report::note` and there is nothing to wire it to.
+- 🚨 **The Judge is built, it reports, and the rule runs in BOTH directions.** A4
+  is one model call, no tools (`Head::Commandos` is capped at `Tier::NoTools`, and
+  `NoTools` is the tool layer it gets), constrained to `judge::REVIEW`, over a
+  fresh body holding the task, the diff and the rungs. It cannot refuse — its
+  answer is a `Claim` and `AttemptPhase::may_refuse` is `!uses_model()`. **And
+  its own failure is not the attempt's**: a review that times out, says nothing
+  or comes back malformed leaves the ending exactly where the ladder put it,
+  which is `abcc-drive`'s rule 6 and is asserted by
+  `a_review_that_never_arrives_changes_nothing_about_the_ending`.
+- 🚨 **What the Judge reads is the whole of what it is worth, and the list is a
+  struct.** `judge::Dossier` has four fields and no fifth: same model, fresh
+  call, **11/12** reading the diff, **5/12** reading the author's completion
+  report, **0/3** when the report is added *alongside* the diff — the author's
+  prose is not merely unhelpful, it is subtractive (F280–F282). So neither
+  Builders' claim nor Recon's brief is in it, `Head::Commandos`' charter was
+  corrected to say so, and putting either back is a change to the type rather
+  than a change to a format string.
+- **The Judge is not asked about an empty diff, and the log says why.** The
+  structural rung refuses an unchanged tree on 16 of this project's 25 logged
+  attempts (F518), so *not asked* is the common case and a model call not made.
+  The other refusal is a diff over `judge::MAX_PATCH_CHARS`, which is **not**
+  truncated to fit: a review of part of a change is a review of a different
+  change and arrives indistinguishable from a review of the whole one.
 - 🚨 **The ladder stops at the first refusal and never at an absence.** A red is
   a decision, and there is nothing after it worth a cold build; an absence is
   not, so the rungs after it still run and the report says everything it saw.

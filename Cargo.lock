@@ -64,6 +64,8 @@ dependencies = [
  "abcc-core",
  "abcc-engine",
  "abcc-vcs",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

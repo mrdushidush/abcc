@@ -304,6 +304,43 @@ impl Repo {
         Ok(changes)
     }
 
+    /// The same change, as a patch: **the pre-image and the post-image in one
+    /// artifact.**
+    ///
+    /// 🚨 This is what the Judge reads, and it is a *diff* rather than a score
+    /// for a measured reason: pointwise scoring is 0 of 8, and pairwise against
+    /// the pre-image is 14 of 14 on the same defects and order-stable on 7 of 7
+    /// pairs (ADR-0008). A unified diff is the cheapest honest form of *show it
+    /// the other artifact* — the `-` lines are the pre-image and the `+` lines
+    /// are the post-image, in one pass over the same object database
+    /// [`changed_between`](Self::changed_between) already walked.
+    ///
+    /// ⚠ **Every flag here pins something an operator's git configuration can
+    /// change**, because the artifact a reviewer reads must not depend on whose
+    /// machine produced it: `diff.external` would answer a different question
+    /// entirely, `color.diff = always` would put escape sequences in the middle
+    /// of a prompt, and `diff.context` would silently move how much of the
+    /// pre-image is shown. `--find-renames` matches `changed_between` so the two
+    /// describe one change.
+    ///
+    /// # Errors
+    ///
+    /// Fails if git will not answer.
+    pub fn patch_between(&self, from: &Sha, to: &Sha) -> Result<String> {
+        run(
+            &self.root,
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--find-renames",
+                "--unified=3",
+                from.as_str(),
+                to.as_str(),
+            ],
+        )
+    }
+
     /// Put the working tree back to a snapshot. Measured at **0.06 s**.
     ///
     /// ⚠ This is exact *up to the repository's own text attributes* — see the

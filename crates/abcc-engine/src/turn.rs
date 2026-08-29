@@ -38,7 +38,7 @@ use crate::provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderError, Schema, ToolCall, TraceSignal, Turn,
     TurnStream,
 };
-use crate::tools::ToolSpec;
+use crate::tools::{Tier, ToolSpec};
 
 /// What a phase says to a model that answered with nothing (F503).
 ///
@@ -90,6 +90,48 @@ pub struct ToolResult {
 /// check that is not in the path.**
 pub trait Tools {
     fn run(&self, spec: &'static ToolSpec, call: &ToolCall) -> ToolResult;
+}
+
+/// The tool layer for a head that has none.
+///
+/// 🚨 **It exists so that "the Judge has no tools" is a fact about the call and
+/// not a fact about the argument somebody remembered to pass.**
+/// [`Head::Commandos`] is capped at [`Tier::NoTools`], so
+/// [`Policy::admits`](crate::tools::Policy::admits) refuses every name before
+/// the loop reaches this — handing the phase a real workspace would behave
+/// identically today and would put a tool layer within one edit of a role that
+/// is defined by not having one.
+///
+/// It answers rather than panicking, for the same reason `rung::undeclared`
+/// does: an unreachable arm that is somehow reached should cost a sentence an
+/// operator can read, not a worker.
+pub struct NoTools {
+    role: &'static str,
+}
+
+impl NoTools {
+    #[must_use]
+    pub const fn for_head(head: Head) -> NoTools {
+        NoTools {
+            role: head.call_sign(),
+        }
+    }
+}
+
+impl Tools for NoTools {
+    fn run(&self, spec: &'static ToolSpec, _call: &ToolCall) -> ToolResult {
+        let why = Why::Denied {
+            role: self.role.to_owned(),
+            tool: spec.name.to_owned(),
+            ceiling: Tier::NoTools.to_string(),
+        };
+        ToolResult {
+            text: why.to_string(),
+            exit: None,
+            elapsed_ms: 0,
+            unmeasured: Some(why),
+        }
+    }
 }
 
 /// The stops that are not the operator's.

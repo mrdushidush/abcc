@@ -17,7 +17,8 @@ use abcc_engine::provider::{Delta, Message, ProviderError, Role, TraceSignal};
 use abcc_engine::scripted::{Script, Scripted};
 use abcc_engine::tools::ToolSpec;
 use abcc_engine::{
-    Body, ControlPoint, Head, Keep, Limits, PhaseEnded, ToolCall, ToolResult, Tools, TurnLoop,
+    Body, ControlPoint, Head, Keep, Limits, NoTools, PhaseEnded, Schema, ToolCall, ToolResult,
+    Tools, TurnLoop,
 };
 
 const ATTEMPT: AttemptId = AttemptId::at(Seq::new(7));
@@ -191,6 +192,97 @@ fn the_head_never_moves_and_the_body_only_grows() {
 // ---------------------------------------------------------------------------
 // Denial
 // ---------------------------------------------------------------------------
+
+/// 🚨 **A role defined by having no tools is refused every one of them, and the
+/// tool layer is never reached.** The Judge is one model call with no tools
+/// (ADR-0002, ADR-0014 §1), which is why it is the phase that may not refuse —
+/// and `NoTools` makes the absence a fact about the call rather than a fact
+/// about the argument somebody remembered to pass.
+///
+/// ⚠ The absence is not a failure of the phase: the model asks, is told, and
+/// goes on to answer.
+#[test]
+fn the_review_head_is_refused_every_tool_and_the_tool_layer_is_never_reached() {
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "read_file", r#"{"path":"src/lib.rs"}"#),
+        Script::says(r#"{"assessment":"reviewed from what I was given","findings":[]}"#),
+    ]);
+    let tools = NoTools::for_head(Head::Commandos);
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("review this change");
+    let mut log: Vec<Event> = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Commandos,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    assert!(
+        matches!(ended, PhaseEnded::Answered { .. }),
+        "a denied tool ended the review: {ended:?}"
+    );
+    assert_eq!(ended.report().denials, 1);
+    assert_eq!(ended.report().tool_calls, 0);
+
+    let Some(Event::ToolCallEnded { unmeasured, .. }) =
+        log.iter().find(|e| e.kind() == "tool_call_ended")
+    else {
+        panic!("the call was not recorded")
+    };
+    match unmeasured {
+        Some(Why::Denied {
+            role,
+            tool,
+            ceiling,
+        }) => assert_eq!(
+            (role.as_str(), tool.as_str(), ceiling.as_str()),
+            ("Commandos", "read_file", "no-tools")
+        ),
+        other => panic!("expected Denied, got {other:?}"),
+    }
+}
+
+/// ⚠ The schema is part of the request, and a phase whose artifact has a declared
+/// shape that sends `None` produces prose that parses today and does not
+/// tomorrow — a failure that would look like the model's. So the seam is
+/// asserted rather than assumed.
+#[test]
+fn a_schema_reaches_the_provider_and_none_is_the_default() {
+    const SHAPE: Schema = Schema {
+        name: "a_shape",
+        json: r#"{"type":"object","additionalProperties":false,"required":[],"properties":{}}"#,
+    };
+    let provider = Scripted::new(vec![Script::says("{}"), Script::says("plain prose")]);
+    let tools = NoTools::for_head(Head::Commandos);
+    let (mut control, _handle) = ControlPoint::new();
+
+    let mut constrained = Body::opening("answer in the shape");
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Commandos,
+        ATTEMPT,
+        Some(SHAPE),
+        &mut constrained,
+        &mut control,
+        &mut |_: Event| {},
+    );
+    let mut free = Body::opening("answer however");
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Commandos,
+        ATTEMPT,
+        None,
+        &mut free,
+        &mut control,
+        &mut |_: Event| {},
+    );
+
+    let seen = provider.seen();
+    assert_eq!(seen[0].schema.map(|s| s.name), Some("a_shape"));
+    assert_eq!(seen[1].schema, None);
+}
 
 /// 🚨 ADR-0014's control, exercised through the loop rather than through the
 /// policy alone: Recon asks for a shell, is refused, and **is told** — on the log

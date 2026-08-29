@@ -13,7 +13,7 @@
 //! not depend on a `Store`; putting the composition inside `abcc-engine` would
 //! put `rusqlite` behind that trait and make the seam decorative.
 //!
-//! # The five rules this driver holds
+//! # The six rules this driver holds
 //!
 //! 1. 🚨 **Only a measurement says `Accomplished`.** The Gate milestone made
 //!    that word reachable and did not make it cheap: the driver runs
@@ -41,6 +41,14 @@
 //!    [`NextAction`] the fleet has not been built to receive yet — admission,
 //!    slots and retry budget 2 are the Fleet milestone — so the driver runs one
 //!    attempt and hands back its recommendation rather than acting on it.
+//! 6. 🚨 **The Judge reports and the Judge's failure is not the attempt's.**
+//!    [`Driver::judge`] runs after the ladder, reads what it measured, and
+//!    attaches an [`abcc_core::outcome::Claim`] to the same [`Report`] through
+//!    `Report::note` — which touches no `Outcome` and therefore no `Headline`.
+//!    So [`ending`] is computed from the phase and the measurements and would be
+//!    byte-for-byte the same if the review had never been asked for. A review
+//!    that times out, says nothing or comes back malformed costs the operator a
+//!    paragraph, never a verdict. See [`abcc_gate::judge`].
 
 use std::fs;
 use std::path::PathBuf;
@@ -53,10 +61,10 @@ use abcc_core::seq::{AttemptId, CheckpointId, PromptId, TaskId, UnitId};
 use abcc_core::task::{AbortReason, Command, Refused, TaskState};
 use abcc_engine::control::{ControlPoint, Keep, Watch};
 use abcc_engine::head::Head;
-use abcc_engine::provider::{Body, Provider};
-use abcc_engine::turn::{Limits, PhaseEnded, PhaseReport, Tools, TurnLoop};
+use abcc_engine::provider::{Body, Provider, Schema};
+use abcc_engine::turn::{Limits, NoTools, PhaseEnded, PhaseReport, Tools, TurnLoop};
 use abcc_engine::workspace::{Toolchain, Workspace};
-use abcc_gate::{Gate, Measured};
+use abcc_gate::{Gate, Measured, judge};
 use abcc_store::{Applied, Store, StoreError, TaskRow};
 use abcc_vcs::{Repo, Sha, VcsError, Worktree, checkpoint_ref};
 
@@ -122,6 +130,16 @@ pub struct Landed {
     /// operator's, because what happens after an operator stops something is the
     /// operator's and not the fleet's to propose.
     pub next: Option<NextAction>,
+    /// How the review went, when it was asked for.
+    ///
+    /// 🚨 **Nothing in [`Landed`] is computed from this**, and that is the
+    /// point: the review is a report. `None` is *not asked* — there was no
+    /// measured tree to read, git would not produce the diff, or the diff is
+    /// larger than [`judge::MAX_PATCH_CHARS`] — and an ending here that is not
+    /// [`PhaseEnded::Answered`] is a review that did not happen, which is a
+    /// different thing from a review that found nothing. What it *said* is on
+    /// [`Measured::report`]'s claims, because that is where a `Claim` lives.
+    pub judge: Option<PhaseEnded>,
 }
 
 /// One attempt, from `Queued` to wherever it honestly ends.
@@ -219,11 +237,14 @@ impl<'a> Driver<'a> {
         // the other would be a cold prefill wearing a warm one's clothes.
         let mut recon = Body::opening(brief::localize(&row));
         let localize = self.phase(
-            attempt,
-            AttemptPhase::Localize,
-            Head::Recon,
+            Call {
+                attempt,
+                phase: AttemptPhase::Localize,
+                head: Head::Recon,
+                tools: &opened.workspace,
+                schema: None,
+            },
             &mut recon,
-            &opened.workspace,
             control,
         )?;
 
@@ -231,11 +252,14 @@ impl<'a> Driver<'a> {
             PhaseEnded::Answered { text, .. } => {
                 let mut builders = Body::opening(brief::change(&row, text));
                 Some(self.phase(
-                    attempt,
-                    AttemptPhase::Change,
-                    Head::Builders,
+                    Call {
+                        attempt,
+                        phase: AttemptPhase::Change,
+                        head: Head::Builders,
+                        tools: &opened.workspace,
+                        schema: None,
+                    },
                     &mut builders,
-                    &opened.workspace,
                     control,
                 )?)
             }
@@ -244,7 +268,7 @@ impl<'a> Driver<'a> {
             PhaseEnded::Stopped { .. } | PhaseEnded::Unmeasured { .. } => None,
         };
 
-        self.land(&row, attempt, opened, &localize, change.as_ref())
+        self.land(&row, attempt, opened, &localize, change.as_ref(), control)
     }
 
     // -- the pieces --------------------------------------------------------
@@ -293,13 +317,17 @@ impl<'a> Driver<'a> {
     /// event the loop produced actually landed.
     fn phase(
         &mut self,
-        attempt: AttemptId,
-        phase: AttemptPhase,
-        head: Head,
+        call: Call<'_>,
         body: &mut Body,
-        tools: &dyn Tools,
         control: &mut ControlPoint,
     ) -> Result<PhaseEnded> {
+        let Call {
+            attempt,
+            phase,
+            head,
+            tools,
+            schema,
+        } = call;
         self.store
             .append(Event::AttemptPhaseEntered { attempt, phase })?;
 
@@ -308,14 +336,17 @@ impl<'a> Driver<'a> {
         let limits = self.limits;
 
         let mut journal = StoreJournal::new(self.store);
-        // ⚠ No schema. Schema-constrained decoding works and the donor uses it
-        // nowhere (W1 F86), but the thing a schema constrains is an artifact with
-        // a declared shape — the task set, a measurement — and Skeleton's
-        // artifact is prose an operator reads. It arrives with the Gate.
+        // 🚨 `None` for the two phases whose artifact is prose an operator
+        // reads, and [`judge::REVIEW`] for the one whose artifact has a declared
+        // shape. Schema-constrained decoding works and the donor uses it nowhere
+        // (W1 F86); what it buys here is that a finding without something
+        // runnable in it is unrepresentable rather than discouraged — and what
+        // it costs is 2.8x the decode and a token cap that has already eaten 17
+        // of 57 calls (ADR-0008).
         let ended = TurnLoop::new(provider, tools, model).limits(limits).run(
             head,
             attempt,
-            None,
+            schema,
             body,
             control,
             &mut journal,
@@ -332,6 +363,7 @@ impl<'a> Driver<'a> {
         opened: Opened,
         localize: &PhaseEnded,
         change: Option<&PhaseEnded>,
+        control: &mut ControlPoint,
     ) -> Result<Landed> {
         let task = row.id;
         let last = change.unwrap_or(localize);
@@ -359,12 +391,26 @@ impl<'a> Driver<'a> {
         // was taken at (ADR-0009 §6) — and it needs the worktree to still be
         // there, because that is the tree the checkers run in and the operator's
         // checkout must never be the thing a rung compiles.
-        let gate = match (kept.as_ref(), last) {
+        let mut gate = match (kept.as_ref(), last) {
             (Some(closing), PhaseEnded::Answered { .. }) => {
                 Some(self.gate(attempt, &opened, closing)?)
             }
             // An attempt that ended in an absence has nothing to measure, and an
             // attempt the operator stopped is not ours to judge.
+            _ => None,
+        };
+
+        // 🚨 **The Judge runs here, and nothing below reads what it said.** It
+        // needs the worktree alive for the diff and the measurements to already
+        // exist, which puts it in exactly one place; and `ending` a few lines
+        // down is computed from `last` and `gate.headline`, both of which are
+        // already fixed by the time this is called. `Report::note` adds a
+        // `Claim` and a `Claim` is not an `Outcome`, so this call cannot move
+        // the attempt however it goes.
+        let judged = match (gate.as_mut(), kept.as_ref()) {
+            (Some(measured), Some(closing)) => {
+                self.judge(row, attempt, &opened, closing, measured, control)?
+            }
             _ => None,
         };
 
@@ -428,6 +474,7 @@ impl<'a> Driver<'a> {
             kept: kept.map(|k| k.sha.to_string()),
             gate,
             next: ending.next,
+            judge: judged,
         })
     }
 
@@ -462,6 +509,106 @@ impl<'a> Driver<'a> {
             })?;
         }
         Ok(measured)
+    }
+
+    /// **A4 Judge: one model call, no tools, and it sees the measurements.**
+    ///
+    /// 🚨 **It cannot refuse, and not by discipline.** What it produces is an
+    /// [`abcc_core::outcome::Claim`], attached with `Report::note`, which touches
+    /// no `Outcome` and therefore no `Headline`; `AttemptPhase::may_refuse` is
+    /// `!uses_model()`; and there is no function in this workspace that converts
+    /// a `Claim` into an `Outcome`. There is nothing here to wire a vote into.
+    ///
+    /// 🚨 **And it cannot fail the attempt either**, which is the half that is
+    /// easy to get wrong: every way this can go badly returns `Ok`, because the
+    /// caller's `ending` was already decided by the ladder. A review that times
+    /// out, fills the window or comes back malformed leaves the attempt exactly
+    /// where the measurements put it.
+    ///
+    /// **Two things stop the call from being made at all**, and both are written
+    /// on the log rather than passed over in silence:
+    ///
+    /// * **an empty diff** — the structural rung has already refused, and there
+    ///   is nothing to review. It is not a saving invented here: on this
+    ///   project's 25 logged attempts the structural rung refuses **16** (F518),
+    ///   so this is the common case rather than the corner one.
+    /// * **a diff over [`judge::MAX_PATCH_CHARS`]** — see that constant for why
+    ///   it is not cut down to fit.
+    fn judge(
+        &mut self,
+        row: &TaskRow,
+        attempt: AttemptId,
+        opened: &Opened,
+        closing: &Kept,
+        measured: &mut Measured,
+        control: &mut ControlPoint,
+    ) -> Result<Option<PhaseEnded>> {
+        // 🚨 `Repo::open` on the worktree, for `Driver::gate`'s reason: it shares
+        // the git directory, so both snapshot shas resolve there.
+        let patch = Repo::open(opened.worktree.path())
+            .and_then(|repo| repo.patch_between(&opened.opening.sha, &closing.sha));
+        let patch = match patch {
+            Ok(patch) => patch,
+            // ⚠ Not an error and not an attempt-level `Why`. Nothing about the
+            // work is different because we could not produce a diff of it, and
+            // the ladder has already measured the same pair.
+            Err(e) => return self.not_asked(&format!("git would not produce the diff — {e}")),
+        };
+        if patch.trim().is_empty() {
+            return self
+                .not_asked("the two snapshots are identical, so there is no change to review");
+        }
+        if patch.len() > judge::MAX_PATCH_CHARS {
+            return self.not_asked(&format!(
+                "the diff is {} characters against a {}-character ceiling, and a review of \
+                 part of a change is a review of a different change",
+                patch.len(),
+                judge::MAX_PATCH_CHARS
+            ));
+        }
+
+        // 🚨 A **fresh body**, holding the task, the diff and the measurements —
+        // and nothing either model wrote in prose. Same model, fresh call:
+        // 11/12 reading the diff against 4/12 continuing the author's own
+        // conversation, with five empty payloads (F282).
+        let mut body = Body::opening(judge::brief(&judge::Dossier {
+            title: &row.title,
+            prompt: &row.prompt,
+            patch: &patch,
+            measured,
+        }));
+        let ended = self.phase(
+            Call {
+                attempt,
+                phase: AttemptPhase::Judge,
+                head: Head::Commandos,
+                tools: &NoTools::for_head(Head::Commandos),
+                schema: Some(judge::REVIEW),
+            },
+            &mut body,
+            control,
+        )?;
+
+        // The claim goes on the report and the report's headline was computed
+        // before this ran. Nothing else is done with it here.
+        if let PhaseEnded::Answered { text, .. } = &ended {
+            measured.report.note(judge::read(text));
+        }
+        Ok(Some(ended))
+    }
+
+    /// Say on the log why the one call was not made, and hand back `None`.
+    ///
+    /// A phase that did not run and a phase that ran and found nothing are two
+    /// different facts, and this is the first one. It is a `Note` rather than a
+    /// `PhaseEnded` because the phase was never entered: writing
+    /// `AttemptPhaseEntered` for a phase that did not happen would put a
+    /// contradiction on a log whose whole value is that it does not have any.
+    fn not_asked(&mut self, why: &str) -> Result<Option<PhaseEnded>> {
+        self.store.append(Event::Note {
+            text: format!("the Judge was not asked: {why}"),
+        })?;
+        Ok(None)
     }
 
     /// The closing snapshot, taken **in the worktree**.
@@ -529,6 +676,24 @@ impl<'a> Driver<'a> {
 /// Who a stop is attributed to. One constant, because every verb on the control
 /// channel came from the console and there is nobody else it could be.
 const OPERATOR: &str = "operator";
+
+/// One phase's worth of arguments, in one place.
+///
+/// It is a struct because the list stopped fitting: the Gate milestone added the
+/// schema, and a phase is now *which phase, whose head, what tools it may reach
+/// and what shape its answer has to be* — four facts that have to agree with
+/// each other, and a positional list of them is four chances to pass Recon's
+/// head with Builders' tools.
+#[derive(Clone, Copy)]
+struct Call<'a> {
+    attempt: AttemptId,
+    phase: AttemptPhase,
+    head: Head,
+    tools: &'a dyn Tools,
+    /// `None` for an artifact that is prose, [`judge::REVIEW`] for one with a
+    /// declared shape. See [`Driver::phase`].
+    schema: Option<Schema>,
+}
 
 /// The attempt's isolation, alive for as long as the attempt is.
 struct Opened {

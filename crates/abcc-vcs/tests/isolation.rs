@@ -183,6 +183,69 @@ fn the_change_list_is_two_snapshots_and_excludes_ignored_output() {
     assert_eq!(by("README.md"), ChangeKind::Deleted);
 }
 
+/// 🚨 **The Judge's pre-image and post-image, in one artifact.** ADR-0008's
+/// pairwise result is 14 of 14 against 0 of 8 pointwise, and what makes a diff
+/// pairwise is that both versions of every changed line are in it — so this
+/// asserts both directions rather than only that a diff came back.
+///
+/// ⚠ It also asserts the same ignore behaviour the change list has, because a
+/// review is where 3 MB of build output would actually cost something: it would
+/// arrive as prompt tokens.
+#[test]
+fn the_patch_carries_both_sides_of_every_change_and_no_ignored_output() {
+    let (_dir, root) = fixture();
+    let repo = Repo::open(&root).expect("open");
+
+    let before = repo
+        .checkpoint(&checkpoint_ref("m1", 1), "before")
+        .expect("checkpoint");
+
+    fs::write(root.join("src/lib.rs"), "pub fn one() -> u32 { 2 }\n").expect("write");
+    fs::create_dir_all(root.join("target/debug")).expect("mkdir");
+    fs::write(root.join("target/debug/subject.exe"), vec![0u8; 3_000_000]).expect("write");
+
+    let after = repo
+        .checkpoint(&checkpoint_ref("m1", 2), "after")
+        .expect("checkpoint");
+
+    let patch = repo.patch_between(&before, &after).expect("patch");
+    assert!(
+        patch.contains("-pub fn one() -> u32 { 1 }"),
+        "the pre-image is missing:\n{patch}"
+    );
+    assert!(
+        patch.contains("+pub fn one() -> u32 { 2 }"),
+        "the post-image is missing:\n{patch}"
+    );
+    assert!(patch.contains("src/lib.rs"), "{patch}");
+    assert!(!patch.contains("target/"), "build output leaked:\n{patch}");
+}
+
+/// Two snapshots of the same tree produce nothing, and *nothing* is empty rather
+/// than a header with no hunks under it. `abcc-drive` reads this to decide the
+/// Judge is not worth asking, so the emptiness has to be checkable.
+#[test]
+fn an_unchanged_tree_produces_an_empty_patch() {
+    let (_dir, root) = fixture();
+    let repo = Repo::open(&root).expect("open");
+    let before = repo
+        .checkpoint(&checkpoint_ref("m1", 1), "before")
+        .expect("checkpoint");
+    let after = repo
+        .checkpoint(&checkpoint_ref("m1", 2), "after")
+        .expect("checkpoint");
+    // 🚨 The two shas *differ* — a checkpoint is a commit, and two commits of one
+    // tree have different messages and different parents. So the emptiness a
+    // caller can act on is the patch's, never the shas'.
+    assert_ne!(before, after, "two checkpoints collapsed into one commit");
+    assert!(
+        repo.patch_between(&before, &after)
+            .expect("patch")
+            .is_empty(),
+        "an unchanged tree produced a patch"
+    );
+}
+
 /// A rename arrives as one change naming where it came from, not as an add and a
 /// delete. A reviewer reading "one file renamed" and a reviewer reading "one file
 /// added, one deleted" are being told different things.

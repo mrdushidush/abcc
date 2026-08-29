@@ -23,8 +23,8 @@ use std::time::Duration;
 use abcc_core::event::{Finish, Usage};
 
 use crate::provider::{
-    ApiRequest, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, ToolCall,
-    TurnStream,
+    ApiRequest, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Schema,
+    ToolCall, TurnStream,
 };
 
 /// One turn's worth of deltas, in the order a stream produces them.
@@ -230,6 +230,14 @@ pub struct Seen {
     pub model: String,
     pub budget: u32,
     pub messages: Vec<Message>,
+    /// The constrained-output contract this call was made under, if any.
+    ///
+    /// Kept for the same reason the head prefix is: it is part of the request
+    /// and it is the part a caller can get wrong invisibly. A phase whose
+    /// artifact has a declared shape and that sends `None` produces prose that
+    /// parses today and does not tomorrow, and the failure would look like the
+    /// model's.
+    pub schema: Option<Schema>,
 }
 
 /// A provider that replays [`Script`]s in order.
@@ -308,6 +316,7 @@ impl Provider for Scripted {
             model: req.model.to_owned(),
             budget: req.budget(),
             messages: req.body.messages().to_vec(),
+            schema: req.schema,
         });
         let script = self
             .scripts

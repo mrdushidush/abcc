@@ -28,7 +28,7 @@ use abcc_core::task::TaskState;
 use abcc_drive::{Driver, Landed};
 use abcc_engine::control::ControlPoint;
 use abcc_engine::openai::OpenAiCompat;
-use abcc_engine::turn::{Limits, PhaseReport};
+use abcc_engine::turn::{Limits, PhaseEnded, PhaseReport};
 use abcc_gate::Measured;
 use abcc_store::{Reconciled, Store};
 use abcc_tui::Theme;
@@ -226,6 +226,7 @@ fn report(landed: &Landed, out: &mut impl Write) -> Result<(), AppError> {
         writeln!(out, "kept      nothing — the operator said kill")?;
     }
     gate(landed.gate.as_ref(), out)?;
+    judge(landed, out)?;
     writeln!(out, "task      {}", Theme::Command.state(&landed.state))?;
     if let Some(next) = &landed.next {
         writeln!(
@@ -281,6 +282,45 @@ fn gate(measured: Option<&Measured>, out: &mut impl Write) -> Result<(), AppErro
         "gate      {} ({measured_count} of {declared} rung(s) measured)",
         measured.headline
     )?;
+    Ok(())
+}
+
+/// The one model call in the gate, and what it said.
+///
+/// 🚨 **Printed after the headline, and it is the only thing here that is.** The
+/// rungs come before their own summary because a summary read first is a summary
+/// that gets believed; the review comes after the verdict for the opposite
+/// reason — it did not contribute to it, and putting it above would read as
+/// though it had. Nothing in `landed` is computed from any of this.
+fn judge(landed: &Landed, out: &mut impl Write) -> Result<(), AppError> {
+    let Some(ended) = &landed.judge else {
+        // *Not asked* and *asked and found nothing* are different facts, and the
+        // reason it was not asked is on the log as a `Note`.
+        writeln!(out, "judge     not asked — see the log for why")?;
+        return Ok(());
+    };
+    phase(out, "judge   ", ended.report())?;
+    match ended {
+        // The claim lives on the gate's report, because a `Claim` attaches to a
+        // `Report` and to nothing else.
+        PhaseEnded::Answered { .. } => {
+            for claim in landed.gate.as_ref().map_or(&[][..], |g| g.report.claims()) {
+                writeln!(out, "\n{} — a report, and it decided nothing:\n", claim.by)?;
+                for line in claim.text.lines() {
+                    writeln!(out, "  {line}")?;
+                }
+            }
+        }
+        // ⚠ Said plainly, and it is not a failure of the attempt: the ending
+        // above was decided by the rungs and would be the same if this call had
+        // never been made.
+        PhaseEnded::Unmeasured { why, .. } => {
+            writeln!(out, "          no review: {why}")?;
+        }
+        PhaseEnded::Stopped { .. } => {
+            writeln!(out, "          no review: the operator stopped it")?;
+        }
+    }
     Ok(())
 }
 

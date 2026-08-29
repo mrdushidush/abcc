@@ -23,7 +23,9 @@ use abcc_core::task::{AbortReason, TaskState};
 use abcc_drive::{Driver, Landed};
 use abcc_engine::Head;
 use abcc_engine::control::{ControlHandle, ControlPoint};
-use abcc_engine::scripted::{Script, Scripted};
+use abcc_engine::provider::Role;
+use abcc_engine::scripted::{Script, Scripted, Seen};
+use abcc_engine::turn::PhaseEnded;
 use abcc_engine::workspace::Toolchain;
 use abcc_store::Store;
 use abcc_vcs::{Repo, Sha};
@@ -123,6 +125,34 @@ fn driven(
         .run(task, UnitId(0), Cause::Fresh, &mut control)
         .expect("run")
 }
+
+/// The same, handing back every request the provider saw, so a test can assert
+/// what a phase was *shown* rather than only what it produced.
+fn watched(
+    subject: &Subject,
+    store: &mut Store,
+    task: TaskId,
+    scripts: Vec<Script>,
+    toolchain: Option<Toolchain>,
+) -> (Landed, Vec<Seen>) {
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(scripts);
+    let repo = Repo::open(&subject.root).expect("open");
+    let mut driver = Driver::new(store, &repo, &provider, MODEL, &subject.worktrees);
+    if let Some(toolchain) = toolchain {
+        driver = driver.toolchain(toolchain);
+    }
+    let landed = driver
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+    (landed, provider.seen())
+}
+
+/// What the review script answers: the shape `judge::REVIEW` asks for, with one
+/// finding that carries something runnable.
+const REVIEWED: &str = r#"{"assessment":"It adds src/new.rs and leaves one() alone.",
+  "findings":[{"at":"src/new.rs:1","defect":"two() is never called",
+  "call":"cargo test","expected":"a test exercises two()","actual":"nothing does"}]}"#;
 
 /// A profile whose test command passes and whose standard is not declared, so a
 /// changed tree reaches `Green` on three rungs.
@@ -302,6 +332,12 @@ fn one_attempt_runs_localize_then_change_and_the_log_says_so() {
             // The closing snapshot is taken while the worktree still exists.
             "checkpoint_taken",
             "rung_recorded",
+            // 🚨 The Judge was not asked, and the log says so rather than
+            // staying quiet about it. Neither script wrote anything, so the
+            // structural rung refused an empty diff and there is no change to
+            // review — which is 16 of this project's own 25 logged attempts
+            // (F518), and therefore the common case rather than the corner one.
+            "note",
             "worktree_closed",
             "attempt_ended",
             "operator_prompted",
@@ -310,6 +346,10 @@ fn one_attempt_runs_localize_then_change_and_the_log_says_so() {
     );
     assert!(landed.change.is_some(), "the Change phase did not run");
     assert_eq!(landed.localize.turns, 1);
+    assert!(
+        landed.judge.is_none(),
+        "the Judge answered about a change that does not exist"
+    );
 }
 
 /// The Change phase is opened with what Recon reported, and it is a **new body
@@ -760,5 +800,198 @@ fn restarting_after_an_attempt_reconstructs_the_same_board() {
         reconciled.prompts_to_represent,
         vec![task],
         "the operator's question was not re-presented"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A4 Judge — one model call, no tools, and it decides nothing
+// ---------------------------------------------------------------------------
+
+/// What the Judge was actually shown, read off the wire rather than off the
+/// brief-building code: the diff, the measurements, `Head::Commandos`, no tools,
+/// and a schema.
+///
+/// 🚨 **And not one word either other unit wrote.** Same model, fresh call:
+/// 11/12 reading the diff, 5/12 reading the author's completion report, and
+/// **0/3** when the report is added alongside the diff — F281, the finding that
+/// says the author's prose is not merely unhelpful but *subtractive*.
+#[test]
+fn the_judge_is_shown_the_diff_and_the_measurements_and_nothing_either_model_said() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let mut scripts = changing();
+    scripts.push(Script::says(REVIEWED));
+    let (landed, seen) = watched(&subject, &mut store, task, scripts, Some(PASSING));
+
+    assert!(landed.judge.is_some(), "the Judge was not asked");
+    let call = seen.last().expect("no requests were made");
+    assert_eq!(call.head_key, "commandos");
+    assert!(
+        call.head_prefix.contains("You have none."),
+        "the review head advertises tools"
+    );
+    assert_eq!(
+        call.schema.map(|s| s.name),
+        Some("commandos_review"),
+        "the one phase with a declared artifact shape sent no schema"
+    );
+
+    // A fresh body: one message, and it is the brief.
+    assert_eq!(call.messages.len(), 1, "the Judge continued a conversation");
+    assert_eq!(call.messages[0].role, Role::User);
+    let brief = &call.messages[0].content;
+
+    assert!(brief.contains("src/new.rs"), "the diff is missing: {brief}");
+    assert!(
+        brief.contains("+pub fn two() -> u32 { 2 }"),
+        "the post-image is missing: {brief}"
+    );
+    assert!(brief.contains("acceptance"), "the measurements are missing");
+    assert!(
+        brief.contains("2 passed"),
+        "the evidence the host watched is missing"
+    );
+
+    for prose in ["src/lib.rs is the place", "wrote src/new.rs"] {
+        assert!(
+            !brief.contains(prose),
+            "the Judge was shown what another unit said: {prose}"
+        );
+    }
+}
+
+/// 🚨 **The whole point, asserted twice over.** The review is damning and the
+/// attempt is `Accomplished` anyway, because `Green` is a conjunction of
+/// measurements and what the model said is a `Claim` — which attaches to a
+/// `Report` and to nothing else.
+#[test]
+fn a_damning_review_does_not_refuse_a_green_tree() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let mut scripts = changing();
+    scripts.push(Script::says(REVIEWED));
+    let landed = driven(&subject, &mut store, task, scripts, Some(PASSING));
+
+    assert_eq!(landed.outcome, AttemptOutcome::Success);
+    assert!(matches!(landed.state, TaskState::Accomplished { .. }));
+
+    let gate = landed.gate.as_ref().expect("the gate did not run");
+    assert_eq!(gate.headline, Headline::Green { rungs: 3 });
+    assert!(gate.accepts(), "a report moved the conjunction");
+
+    // The claim reached the report, which is where a claim lives.
+    let claims = gate.report.claims();
+    assert_eq!(claims.len(), 1, "the review did not reach the report");
+    assert_eq!(claims[0].by, "Commandos");
+    assert!(
+        claims[0].text.contains("two() is never called"),
+        "{}",
+        claims[0].text
+    );
+    assert!(
+        claims[0].text.contains("cargo test"),
+        "a finding lost the thing that runs it"
+    );
+
+    // And on the log, verbatim, beside the two the working phases wrote.
+    let claimed: Vec<String> = store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::ClaimRecorded { claim, .. } => Some(claim.text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(claimed.len(), 3);
+    assert!(claimed[2].contains("never called"), "{}", claimed[2]);
+}
+
+/// The other half of the same rule, and the one that is easy to get wrong: **a
+/// review that fails is not an attempt that failed.** The provider runs out of
+/// script on the third call, so the Judge ends `Unmeasured`, and every fact about
+/// the attempt is the one the ladder produced.
+#[test]
+fn a_review_that_never_arrives_changes_nothing_about_the_ending() {
+    let subject = subject();
+
+    let mut with_review = Store::in_memory().expect("store");
+    let task = seed(&mut with_review);
+    let mut scripts = changing();
+    scripts.push(Script::says(REVIEWED));
+    let reviewed = driven(&subject, &mut with_review, task, scripts, Some(FAILING));
+
+    let mut without = Store::in_memory().expect("store");
+    let task = seed(&mut without);
+    let silent = driven(&subject, &mut without, task, changing(), Some(FAILING));
+
+    assert_eq!(reviewed.outcome, silent.outcome);
+    assert_eq!(
+        reviewed.gate.as_ref().map(|g| &g.headline),
+        silent.gate.as_ref().map(|g| &g.headline)
+    );
+    assert_eq!(reviewed.next, silent.next);
+    assert!(matches!(silent.state, TaskState::AwaitingOrders { .. }));
+    assert!(matches!(reviewed.state, TaskState::AwaitingOrders { .. }));
+
+    // The phase happened and produced nothing, which is a fact worth keeping.
+    assert!(
+        matches!(silent.judge, Some(PhaseEnded::Unmeasured { .. })),
+        "{:?}",
+        silent.judge
+    );
+    assert!(
+        silent
+            .gate
+            .as_ref()
+            .expect("gate")
+            .report
+            .claims()
+            .is_empty(),
+        "a review that did not happen left a claim"
+    );
+}
+
+/// ⚠ **The Judge is not asked about a change that does not exist**, and the log
+/// says why rather than staying quiet. The structural rung refuses an empty diff
+/// on 16 of this project's own 25 logged attempts (F518), so this is the common
+/// case — and each one is a model call not made.
+#[test]
+fn the_judge_is_not_asked_about_an_empty_diff_and_the_log_says_so() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (landed, seen) = watched(
+        &subject,
+        &mut store,
+        task,
+        vec![Script::says("found it"), Script::says("nothing to do")],
+        Some(PASSING),
+    );
+
+    assert!(landed.judge.is_none());
+    assert_eq!(seen.len(), 2, "a third call was made about an empty change");
+    assert!(
+        !seen.iter().any(|s| s.head_key == "commandos"),
+        "the review head was used"
+    );
+
+    let notes: Vec<String> = store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::Note { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notes.iter().any(|n| n.contains("the Judge was not asked")),
+        "{notes:?}"
     );
 }

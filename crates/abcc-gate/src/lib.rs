@@ -1,5 +1,5 @@
-//! **Measure** — the deterministic half of the gate, and the conjunction that is
-//! the whole of `Accept`.
+//! **The gate** — the deterministic rungs that may refuse, the conjunction that
+//! is the whole of `Accept`, and the one model call that may not.
 //!
 //! `PLAN.md` §3 calls the Gate *"the part that is actually the product"*, and
 //! ADR-0008 says what it is in one line:
@@ -26,11 +26,13 @@
 //!
 //! Two ADR clauses fall out of that rather than being enforced here:
 //!
-//! * **The Judge cannot vote.** Its verdict is an
-//!   [`abcc_core::outcome::Claim`], which attaches through `Report::note`, and
-//!   there is no function anywhere that converts a `Claim` into an `Outcome`.
-//!   ADR-0009 §4 is held by the type, so wiring the Judge into the gate is not
-//!   something a careless edit can do — there is nothing to wire it to.
+//! * **The Judge cannot vote**, and [`judge`] is now built and still cannot. Its
+//!   verdict is an [`abcc_core::outcome::Claim`], which attaches through
+//!   `Report::note`, and there is no function anywhere that converts a `Claim`
+//!   into an `Outcome`. ADR-0009 §4 is held by the type, so wiring the Judge
+//!   into the gate is not something a careless edit can do — there is nothing to
+//!   wire it to. ⚠ The rule runs the other way too: **the Judge's own failure is
+//!   not the attempt's**, which is `abcc-drive`'s rule 6.
 //! * **A rung that could not run does not disappear.** It is `Unmeasured(Why)`,
 //!   the headline is `Unverified`, and it lists what was missing. `Green` becomes
 //!   rarer and starts meaning something.
@@ -98,6 +100,7 @@ use abcc_engine::control::Watch;
 use abcc_engine::workspace::Toolchain;
 use abcc_vcs::{Change, Repo, Sha, VcsError};
 
+pub mod judge;
 mod rung;
 mod veto;
 
@@ -124,9 +127,15 @@ pub struct Measured {
     pub report: Report,
     /// The conjunction, computed at the sha the measurements were taken at.
     pub headline: Headline,
-    /// The change list, kept because it is the pre-image half of the Judge's
-    /// pairwise comparison (ADR-0008) and re-deriving it would be a second git
-    /// call for a fact this one already has.
+    /// The change list — what the structural rung read and what the console
+    /// names.
+    ///
+    /// ⚠ **Not the Judge's pre-image.** `git diff --name-status` answers *which
+    /// files*, and ADR-0008's pairwise result is 14 of 14 against *the other
+    /// artifact* — the lines, not their filenames. That is
+    /// [`abcc_vcs::Repo::patch_between`], which `abcc-drive` asks for separately
+    /// when it has a tree worth reviewing. An earlier version of this comment
+    /// claimed the two were one thing; a name list is not a pre-image.
     pub changed: Vec<Change>,
 }
 
