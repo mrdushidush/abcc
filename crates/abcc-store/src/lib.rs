@@ -158,13 +158,23 @@ impl Store {
         // Two of these are not defaults and one is not the WAL convention.
         // `query_row` rather than `execute` for journal_mode: it returns the
         // resulting mode, and a bare `execute` errors on the returned row.
+        //
+        // ⚠ The error is propagated rather than folded into a sentinel string.
+        // It used to be `unwrap_or_else(|_| "unknown")`, which discarded the one
+        // fact that mattered — *the file is not a database* — and then let the
+        // assertion below fire on the sentinel, so pointing the store at an
+        // ordinary file panicked in a debug build instead of returning the error
+        // rusqlite had already produced. An instrument whose failure is replaced
+        // by a value is an instrument that reports that value.
         let mode: String = self
             .conn
-            .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
-            .unwrap_or_else(|_| "unknown".to_owned());
+            .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         // An in-memory database cannot do WAL and reports `memory`; a file
         // database that silently stayed on the rollback journal would be running
-        // at 293 transitions/s, so it is worth not discovering that later.
+        // at 293 transitions/s, so it is worth not discovering that later. This
+        // stays an assertion because by here the file *is* a database and a
+        // rollback journal would be a fault in this configuration, not in the
+        // operator's argument.
         debug_assert!(
             mode == "wal" || mode == "memory",
             "journal_mode came back as {mode}"
