@@ -7,7 +7,7 @@
 
 use abcc_core::outcome::{Claim, Counts, Headline, Measurement, Outcome, Report, Why};
 use abcc_gate::Measured;
-use abcc_gate::judge::{self, Dossier, Finding, Review};
+use abcc_gate::judge::{self, Dossier, Finding, Review, RungView};
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -271,6 +271,81 @@ fn the_brief_does_not_show_the_headline() {
     assert!(
         !brief.contains(&m.headline.to_string()),
         "the reviewer was shown the verdict it is reviewing under"
+    );
+}
+
+/// 🚨 **F531: under [`RungView::Named`] a rung says it ran and says nothing
+/// about what it concluded.**
+///
+/// The failure this exists to answer is a reviewer reading `18 run / 18 passed`
+/// off the acceptance rung and writing *all eighteen discrepancies are resolved*
+/// about a tree with seven bad invoices in it. Under `Named` there is no count
+/// to borrow, no exit status and no captured output — and the absence still
+/// arrives as an absence, which is the property ADR-0009 will not give up.
+#[test]
+fn the_named_view_shows_that_a_rung_ran_and_not_what_it_concluded() {
+    let m = measured(vec![
+        green("structural", "1 file(s) changed: src/lib.rs"),
+        red("acceptance", "18 run / 7 failed: invoice totals disagree"),
+        Outcome::Unmeasured {
+            rung: "standard".to_owned(),
+            why: Why::CheckerNotOnHost {
+                binary: "clippy".to_owned(),
+            },
+        },
+    ]);
+    let brief = judge::brief_with(&dossier(&m), RungView::Named);
+
+    assert!(brief.contains("structural — measured"), "{brief}");
+    assert!(brief.contains("acceptance — measured"), "{brief}");
+    for borrowed in [
+        "exit 0",
+        "exit 101",
+        "2 run / 2 passed",
+        "18 run / 7 failed",
+        "1 file(s) changed",
+    ] {
+        assert!(
+            !brief.contains(borrowed),
+            "the view still hands back something to quote: {borrowed}"
+        );
+    }
+    // ⚠ The asymmetry, and it is the half that must survive: a reason no
+    // measurement exists cannot be read as a pass, so it stays under both views.
+    assert!(
+        brief.contains("clippy is not on this machine"),
+        "an absent rung lost its reason: {brief}"
+    );
+    assert!(brief.contains("no measurement"), "{brief}");
+}
+
+/// 🚨 **The two views differ in the rung block and nowhere else** — the probe
+/// changes one thing, so what it measures is that one thing. The task, the diff
+/// and every sentence of instruction are byte-identical.
+#[test]
+fn the_view_moves_the_rungs_and_nothing_else_in_the_brief() {
+    let m = measured(vec![green("acceptance", "2 passed in 0.01s")]);
+    let full = judge::brief_with(&dossier(&m), RungView::Full);
+    let named = judge::brief_with(&dossier(&m), RungView::Named);
+
+    assert_ne!(full, named, "the switch did nothing");
+    assert_eq!(
+        judge::brief(&dossier(&m)),
+        full,
+        "`brief` is no longer the shipped view"
+    );
+
+    let head = "## What the host already measured";
+    let tail = "These already ran";
+    let cut = |b: &str| {
+        let h = b.find(head).expect("the rung header");
+        let t = b.find(tail).expect("the sentence after the rungs");
+        (b[..h].to_owned(), b[t..].to_owned())
+    };
+    assert_eq!(
+        cut(&full),
+        cut(&named),
+        "the probe moved more than the rungs"
     );
 }
 

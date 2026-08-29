@@ -180,6 +180,50 @@ pub struct Dossier<'a> {
     pub measured: &'a Measured,
 }
 
+/// 🚨 **How much of each rung the dossier shows — F531's open question, as a
+/// type rather than an argument.**
+///
+/// The brief withholds the *headline* on purpose — a reviewer shown the decision
+/// is a reviewer asked to agree with it — and then shows every rung's `counts`
+/// and every character it captured. On the corpora's three **shams**, K's own
+/// tempting local fix that repairs the symptom the ticket named and leaves the
+/// defect, that output did the headline's job anyway: all three came back
+/// *"Defects: None found"* **citing the rungs as the proof**, and on one of them
+/// the reviewer turned the acceptance rung's `18 run / 18 passed` into *"the
+/// host's acceptance suite confirms all eighteen discrepancies are resolved"*
+/// about a tree where **7 of 18 invoices are still wrong**. Eighteen tests and
+/// eighteen invoices are not the same quantity — that is F517's defect class in
+/// the model's own voice, and it is the one place a report costs trust rather
+/// than minutes.
+///
+/// ⚠ **[`Full`](RungView::Full) is the default and it is what ships.**
+/// [`Named`](RungView::Named) exists to be measured against it on that same
+/// population before anything changes: [`brief`] still calls `Full`, no
+/// production caller passes a view at all, and the switch is reached only by
+/// `tests/corpus_review.rs` under `ABCC_JUDGE_RUNGS=named`. Three trees is an
+/// observation and not yet a number.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RungView {
+    /// Every rung with the exit status it ended on, its `counts` where it has
+    /// them, and the output it captured. **The shipped view**, and the one the
+    /// 121-tree run was measured under: recall 43 of 46 on the wrong trees, 0
+    /// confirmed false positives on 59 correct ones — and 0 of 3 on the shams.
+    #[default]
+    Full,
+    /// Which rungs ran, and whether each was measured. **No exit status, no
+    /// counts, no captured output** — so `measured` says a rung reached this
+    /// tree and says nothing whatever about what it concluded.
+    ///
+    /// ⚠ **An `Unmeasured` rung keeps its `why` under both views, and the
+    /// asymmetry is deliberate.** A reason that no measurement exists cannot be
+    /// read as a pass, so it cannot produce F531's failure at all; and
+    /// ADR-0009's whole subject is that *I did not measure that* must not arrive
+    /// in the same words as *I measured it and it was fine*. Under `Named` the
+    /// word `measured` no longer claims *fine*, so the two are still different
+    /// sentences — which is the property the ruling has to preserve.
+    Named,
+}
+
 /// One defect, with the thing that shows it.
 ///
 /// 🚨 **The last three fields are the finding.** A defect sentence on its own is
@@ -295,6 +339,19 @@ fn render(review: &Review) -> String {
 /// attached.
 #[must_use]
 pub fn brief(dossier: &Dossier<'_>) -> String {
+    brief_with(dossier, RungView::Full)
+}
+
+/// [`brief`], with F531's switch on how much of each rung it is shown.
+///
+/// 🚨 **Only the rung block moves.** The task, the diff and every sentence of
+/// prose are byte-identical across the two views, because a probe that changes
+/// two things at once measures neither. ⚠ One sentence is left standing that
+/// [`RungView::Named`] makes unanswerable — *where one of them refused and you
+/// know why, that belongs in the assessment* — and it is left there on purpose:
+/// correcting it is part of the ruling, not part of the measurement.
+#[must_use]
+pub fn brief_with(dossier: &Dossier<'_>, view: RungView) -> String {
     let Dossier {
         title,
         prompt,
@@ -325,7 +382,7 @@ pub fn brief(dossier: &Dossier<'_>) -> String {
          costs you nothing: you are not blocking this change and nothing you say here \
          accepts or refuses it. The host has already run the checks above and recorded what \
          it watched; a person reads what you write next to them.\n",
-        rungs = rungs(&measured.report)
+        rungs = rungs(&measured.report, view)
     )
 }
 
@@ -335,24 +392,30 @@ pub fn brief(dossier: &Dossier<'_>) -> String {
 /// ADR-0009's whole subject, and it is the half a reviewer is most likely to be
 /// missing: *the suite is red* and *there was no suite* are different facts
 /// about a change, and only one of them is about the change.
-fn rungs(report: &Report) -> String {
+fn rungs(report: &Report, view: RungView) -> String {
     if report.outcomes().is_empty() {
         return "Nothing. No rung ran against this tree.".to_owned();
     }
     let mut s = String::with_capacity(256);
     for outcome in report.outcomes() {
         match outcome {
-            Outcome::Measured(m) => {
-                let _ = write!(s, "- {} — exit {}", m.rung, m.exit);
-                if let Some(c) = m.counts {
-                    let _ = write!(
-                        s,
-                        ", {} run / {} passed / {} failed",
-                        c.run, c.passed, c.failed
-                    );
+            Outcome::Measured(m) => match view {
+                RungView::Full => {
+                    let _ = write!(s, "- {} — exit {}", m.rung, m.exit);
+                    if let Some(c) = m.counts {
+                        let _ = write!(
+                            s,
+                            ", {} run / {} passed / {} failed",
+                            c.run, c.passed, c.failed
+                        );
+                    }
+                    let _ = writeln!(s, "\n{}", indent(&m.detail));
                 }
-                let _ = writeln!(s, "\n{}", indent(&m.detail));
-            }
+                // 🚨 F531: a rung that ran, and nothing about what it concluded.
+                RungView::Named => {
+                    let _ = writeln!(s, "- {} — measured", m.rung);
+                }
+            },
             // ⚠ Named as an absence rather than folded in beside the failures.
             // The family's vocabulary for "I did not measure that" is the same
             // word as "I measured it and it was fine", and that is the design

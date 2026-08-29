@@ -73,7 +73,7 @@ use abcc_engine::provider::Body;
 use abcc_engine::turn::{NoTools, PhaseEnded, TurnLoop};
 use abcc_engine::{Head, Provider};
 use abcc_gate::Measured;
-use abcc_gate::judge::{self, Dossier, Finding, Review};
+use abcc_gate::judge::{self, Dossier, Finding, Review, RungView};
 use serde::Deserialize;
 
 /// One tree, as `tests/corpus.rs` wrote it down.
@@ -86,6 +86,34 @@ struct Written {
     patch: String,
     report: Report,
     headline: Headline,
+}
+
+/// 🚨 **F531's probe switch: how much of each rung the reviewer is shown.**
+///
+/// Default `full`, which is what [`judge::brief`] does and what the 121-tree run
+/// was measured under. `named` withholds every rung's exit status, `counts` and
+/// captured output — see [`RungView`], which carries why the question exists.
+/// ⚠ Nothing in production reads this; it is reached from this file only.
+fn rung_view() -> RungView {
+    match env::var("ABCC_JUDGE_RUNGS").unwrap_or_default().as_str() {
+        "" | "full" => RungView::Full,
+        "named" => RungView::Named,
+        other => panic!("ABCC_JUDGE_RUNGS is `full` or `named`, not `{other}`"),
+    }
+}
+
+/// Where this run writes, so a probe cannot be mistaken for the run it is
+/// compared against.
+///
+/// 🚨 Unset, the answers go to `reviews/` and `reviews.tsv` — the 121-tree run.
+/// Set, they go to `reviews-<tag>/` and `reviews-<tag>.tsv`, which is a
+/// **separate skip set**: the same tree can be asked again under a different
+/// view, or asked twice under the same one, without either answer overwriting
+/// the other. ⚠ Nothing here is sampled at temperature zero — the engine sends
+/// no `temperature`, no `top_p` and no `seed` — so *asked again under the same
+/// view* is the control a *different* view has to be read against.
+fn review_tag() -> String {
+    env::var("ABCC_REVIEW_TAG").unwrap_or_default()
 }
 
 fn out_dir() -> PathBuf {
@@ -150,6 +178,46 @@ fn restates_a_rung(f: &Finding) -> bool {
         || expects_a_status(&f.actual)
 }
 
+/// 🚨 **F535 — whether a review with an EMPTY findings array put a defect in
+/// its prose anyway.**
+///
+/// `q56-Q05` did exactly that: the `assessment` string carried the defect *and*
+/// the `call`/`expected`/`actual` triple ADR-0008 rule 2 asks for, with
+/// `findings: []` beside it — so the counter read a finding as a silence and the
+/// tree went down as a recall miss it was not. **Every `silent` column in this
+/// file counts empty arrays**, and an empty array is not the same fact as
+/// nothing said.
+///
+/// ⚠ Like [`restates_a_rung`] this is **a candidate, not a measurement.** It
+/// fires and the assessment is printed in full; reading it is a person's job.
+/// The schema cannot stop a model writing prose into a string field, so what is
+/// available is noticing. Scanned by hand over the 121-tree run it was **1 of 61
+/// silent reviews — 1 of 1 wrong, 0 of 57 correct, 0 of 3 sham** — which is what
+/// says the precision half was not quietly resting on it.
+fn prose_carries_a_defect(review: &Review) -> bool {
+    if !review.findings.is_empty() {
+        return false;
+    }
+    let a = review.assessment.to_lowercase();
+    let triple = a.contains("call:") && a.contains("expected:") && a.contains("actual:");
+    // ⚠ Every occurrence, not the first: an assessment can say the word in
+    // passing and then head a list with it. And the colon is required — `the
+    // defect is fixed` is prose about the change, `Defects: 1. …` is a report.
+    let listed = a.match_indices("defect").any(|(i, _)| {
+        let rest = &a[i + "defect".len()..];
+        let rest = rest.strip_prefix('s').unwrap_or(rest);
+        rest.strip_prefix(':').is_some_and(|r| {
+            // ⚠ Emphasis markers too, not just whitespace: the champion writes
+            // `**Defects:** None found`, and a rule that stops at the asterisk
+            // reads a clean bill of health as a hidden finding. Measured — it
+            // fired on `round_at_the_line (full-a)`, which says exactly that.
+            let r = r.trim_start_matches(|c: char| c.is_whitespace() || c == '*' || c == '_');
+            !r.starts_with("none") && !r.starts_with("no ")
+        })
+    });
+    triple || listed
+}
+
 fn verdict(headline: &Headline) -> &'static str {
     match headline {
         Headline::Green { .. } => "GREEN",
@@ -212,7 +280,14 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
     let dir = out_dir();
     let model = env::var("ABCC_MODEL").expect("set ABCC_MODEL to the model to ask");
     let url = env::var("ABCC_URL").unwrap_or_else(|_| "http://localhost:1234".to_owned());
-    let reviews = dir.join("reviews");
+    let view = rung_view();
+    let tag = review_tag();
+    let (leaf, table) = if tag.is_empty() {
+        ("reviews".to_owned(), "reviews.tsv".to_owned())
+    } else {
+        (format!("reviews-{tag}"), format!("reviews-{tag}.tsv"))
+    };
+    let reviews = dir.join(&leaf);
     fs::create_dir_all(&reviews).expect("the reviews directory");
 
     let provider = OpenAiCompat::new(&url).expect("the provider");
@@ -221,7 +296,7 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
 
     let all = dossiers(&dir);
     println!(
-        "\n### THE JUDGE OVER {} WRONG TREES — {model} at {url}\n",
+        "\n### THE JUDGE OVER {} TREES — {model} at {url}, rungs={view:?}, into {leaf}/\n",
         all.len()
     );
 
@@ -236,11 +311,11 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
             continue;
         }
 
-        rows.push(ask(&loop_, written, n, &path, slug));
+        rows.push(ask(&loop_, written, n, &path, slug, view));
     }
 
     summarise(&rows);
-    write_tsv(&dir.join("reviews.tsv"), &rows);
+    write_tsv(&dir.join(&table), &rows);
     assert_eq!(
         rows.len(),
         all.len(),
@@ -255,7 +330,14 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
 /// review that times out, says nothing or comes back malformed produces a row
 /// saying so, which is the record ADR-0008 wants and is not a failure of the
 /// tree.
-fn ask(loop_: &TurnLoop<'_>, written: &Written, n: usize, path: &Path, slug: &str) -> Row {
+fn ask(
+    loop_: &TurnLoop<'_>,
+    written: &Written,
+    n: usize,
+    path: &Path,
+    slug: &str,
+    view: RungView,
+) -> Row {
     // `changed` is not in the brief — `Dossier` carries the report and the
     // report carries the rungs — so it is not reconstructed. Putting a guessed
     // value there would be a field nobody reads that could still be wrong.
@@ -264,12 +346,15 @@ fn ask(loop_: &TurnLoop<'_>, written: &Written, n: usize, path: &Path, slug: &st
         headline: written.headline.clone(),
         changed: Vec::new(),
     };
-    let brief = judge::brief(&Dossier {
-        title: &written.title,
-        prompt: &written.prompt,
-        patch: &written.patch,
-        measured: &measured,
-    });
+    let brief = judge::brief_with(
+        &Dossier {
+            title: &written.title,
+            prompt: &written.prompt,
+            patch: &written.patch,
+            measured: &measured,
+        },
+        view,
+    );
     let mut body = Body::opening(brief.clone());
     let (mut control, _handle) = ControlPoint::new();
     // The log is kept in memory: the durable half is `abcc-drive`'s and this is
@@ -327,6 +412,10 @@ fn ask(loop_: &TurnLoop<'_>, written: &Written, n: usize, path: &Path, slug: &st
         "raw": text,
         "review": review,
         "brief_chars": brief.len(),
+        // 🚨 The artifact says which view produced it. A review file that
+        // does not know what it was asked under is one that gets compared
+        // against the wrong thing.
+        "rung_view": format!("{view:?}"),
     });
     fs::write(
         path,
@@ -353,6 +442,14 @@ fn ask(loop_: &TurnLoop<'_>, written: &Written, n: usize, path: &Path, slug: &st
 /// flag is a pointer to reading rather than a measurement.
 fn show(review: Option<&Review>, text: Option<&str>) {
     if let Some(r) = review {
+        // 🚨 F535 first and in full, because the summary line above it already
+        // said `0 finding(s)` and that line is the thing being contradicted.
+        if prose_carries_a_defect(r) {
+            println!("    ⚠ NO FINDINGS, BUT THE PROSE CARRIES ONE (F535) — assessment verbatim:");
+            for line in r.assessment.lines() {
+                println!("        {line}");
+            }
+        }
         println!("    assessment: {}", one_line(&r.assessment));
         for f in &r.findings {
             let mark = if restates_a_rung(f) {
