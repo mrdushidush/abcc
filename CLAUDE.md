@@ -166,6 +166,14 @@ do not reformat around it.
   so `abcc::desk` holds its own connection and appends `ControlRequested` and
   nothing else. `Store::apply` is still the one path that moves a task. Do not
   widen what the desk writes.
+- 🚨 **Only `abcc run` calls `Store::boot`.** Boot's orphan sweep tombstones the
+  attempt behind any slot-holding state and requeues its task — right for a
+  process that has just started, catastrophic for a second process standing beside
+  a live attempt, where `abcc board` would kill the run it was opened to look at.
+  Listing and operator commands open the log without reconciling it. The
+  consequence is that after a crash the board shows a task still `ENGAGING TARGET`
+  until the next run; that is the log telling the truth about itself, and it beats
+  a listing command that changes what it lists.
 - 🚨 **`abcc accept` is how a working task reaches a terminal state, and it is not
   `Accomplished`.** The driver leaves a working attempt in `AwaitingOrders`, which
   is not terminal, because nothing measured the work. `accept` commandeers the

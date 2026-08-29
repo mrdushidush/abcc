@@ -111,11 +111,9 @@ fn queue(subject: &Subject, prompt: &str) -> TaskId {
     store.tasks().expect("tasks").last().expect("one task").id
 }
 
-/// Walk a task to `AwaitingOrders` the way the driver does, without a model.
-///
-/// The lifecycle is the authority on the route, so this sends the same commands
-/// in the same order rather than writing a state anywhere.
-fn awaiting_orders(subject: &Subject, task: TaskId) -> (AttemptId, PromptId) {
+/// Walk a task to `Engaged` the way the driver does: a slot, an attempt, and the
+/// command that starts it.
+fn engaged(subject: &Subject, task: TaskId) -> AttemptId {
     let mut store = subject.store();
     store
         .apply(task, Lifecycle::Deploy { unit: UnitId(0) })
@@ -132,6 +130,16 @@ fn awaiting_orders(subject: &Subject, task: TaskId) -> (AttemptId, PromptId) {
     store
         .apply(task, Lifecycle::Engage { attempt })
         .expect("engage");
+    attempt
+}
+
+/// Walk a task to `AwaitingOrders` the way the driver does, without a model.
+///
+/// The lifecycle is the authority on the route, so this sends the same commands
+/// in the same order rather than writing a state anywhere.
+fn awaiting_orders(subject: &Subject, task: TaskId) -> (AttemptId, PromptId) {
+    let attempt = engaged(subject, task);
+    let mut store = subject.store();
     let asked = store
         .append(Event::OperatorPrompted {
             task,
@@ -185,6 +193,32 @@ fn a_task_with_no_title_is_titled_by_the_first_line_of_its_prompt() {
     let row = store.task(task).expect("task").expect("row");
     assert_eq!(row.title, "make one() return two");
     assert!(row.prompt.contains("nothing else"), "the prompt is whole");
+}
+
+#[test]
+fn a_listing_command_does_not_reconcile_a_live_attempt() {
+    // 🚨 `Store::boot`'s orphan sweep tombstones the attempt behind any
+    // slot-holding state and requeues its task. That is right for a process that
+    // has just started and catastrophic for a second one running beside a live
+    // attempt: `abcc board` would kill the run it was opened to look at. Only
+    // `abcc run` reconciles.
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+    engaged(&subject, task);
+
+    subject.run(Command::Board).expect("board");
+    subject.run(Command::Where).expect("where");
+
+    assert!(
+        matches!(subject.state(task), TaskState::Engaged { .. }),
+        "a listing command moved a live task: {:?}",
+        subject.state(task)
+    );
+    let kinds = subject.kinds();
+    assert!(
+        !kinds.contains(&"attempt_ended"),
+        "a listing command tombstoned a live attempt: {kinds:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

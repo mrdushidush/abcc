@@ -39,15 +39,29 @@ pub fn ground(invocation: &Invocation) -> Result<Ground, AppError> {
     Ok(Ground { repo, home })
 }
 
-/// Open the log for writing. Boot is replay and it runs every time.
+/// Open the log.
+///
+/// 🚨 **This does not call [`Store::boot`], and that is not an omission.** Boot's
+/// orphan sweep tombstones the attempt behind any slot-holding state and requeues
+/// its task — which is exactly right for a process that has just started, and
+/// exactly wrong for a second process running beside a live attempt. `abcc board`
+/// during a run would otherwise kill the run it was there to look at. Only
+/// [`crate::run::attempt`] reconciles, because only it is the run.
+///
+/// `Store::open` still rebuilds the projection, which is a fold over the log and
+/// writes no events.
+///
+/// ⚠ The consequence, stated rather than left to be found: after a crash the
+/// board shows the state the log last recorded — a task still `ENGAGING TARGET`
+/// with nothing behind it — until the next `abcc run` reconciles. That is the log
+/// telling the truth about itself, and it is better than a listing command that
+/// changes what it lists.
 ///
 /// # Errors
 ///
-/// [`AppError::Store`] if the log will not open or reconcile.
+/// [`AppError::Store`] if the log will not open.
 pub fn open_log(home: &Home) -> Result<Store, AppError> {
-    let mut store = Store::open(&home.log())?;
-    store.boot()?;
-    Ok(store)
+    Ok(Store::open(&home.log())?)
 }
 
 // ---------------------------------------------------------------------------
