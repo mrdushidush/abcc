@@ -1,11 +1,11 @@
-//! 🚨 **The Judge over the corpora's wrong trees — ADR-0008's own falsifier, on
-//! a population with an answer key.**
+//! 🚨 **The Judge over the corpora — ADR-0008's own falsifier, on a population
+//! with an answer key.**
 //!
-//! `tests/corpus.rs` produces one dossier per wrong tree: the title, the prompt,
-//! the patch and the measurements, which is exactly [`judge::Dossier`]'s field
-//! list. This asks the champion for a review of each one and writes down what
-//! came back. **It runs second and it reads that directory** — nothing here
-//! builds a tree or runs a rung.
+//! `tests/corpus.rs` produces one dossier per measured tree: the title, the
+//! prompt, the patch and the measurements, which is exactly
+//! [`judge::Dossier`]'s field list. This asks the champion for a review of each
+//! one and writes down what came back. **It runs second and it reads that
+//! directory** — nothing here builds a tree or runs a rung.
 //!
 //! # What this is for, and what it is not for
 //!
@@ -16,34 +16,39 @@
 //! the phase: *a reviewer that produces findings nobody can act on costs the
 //! operator the minutes W13 grades this project on.*
 //!
-//! Three questions, and the corpora answer them in three different halves:
+//! **121 trees in three populations**, and they ask three different questions —
+//! see [`population`]:
 //!
-//! 1. 🚨 **The 35 trees the ladder called `Green`** are the case the Judge exists
-//!    for: the donor's visible tests are happy-path and a wrong answer passes
-//!    them on purpose, so the deterministic gate accepts these and the hidden
-//!    reviewer tests reject them. **A finding here is the phase earning its
-//!    place.** ⚠ Recall is not scored automatically — `verify.sh` grades a
-//!    *tree*, and a reviewer's prose is not a tree — so what is written down is
-//!    the finding, and reading it against the answer key is a person's job.
-//! 2. 🚨 **The 13 the ladder refused** are F521's population. On the first live
-//!    review of a refused tree the champion spent finding 1 of 2 restating the
-//!    rung it had just been shown — `run: cargo clippy`, `expected: exit 0`,
-//!    `actual: exit 101` — which is volume with no information in it. The brief
-//!    now carries a sentence telling it not to. This is where that sentence is
-//!    put to a population instead of to one call. ⚠ The restatement flag below
-//!    is a **candidate** rule, and every candidate is printed verbatim so a
-//!    person decides. A keyword count is not a finding count.
-//! 3. **The 11 it could not measure** — 8 shell trees with no test and 3 rust
-//!    fixtures that ship none — are where the Judge is the *only* reader there
-//!    has ever been.
+//! * **59 `wrong`.** The 35 the ladder called `Green` are the case the Judge
+//!   exists for: the donor's visible tests are happy-path and a wrong answer
+//!   passes them on purpose, so the deterministic gate accepts them and the
+//!   hidden reviewer tests reject them. **A finding there is the phase earning
+//!   its place.** The 13 it refused are **F521**'s population — on the first
+//!   live review of a refused tree the champion spent finding 1 of 2 restating
+//!   the rung it had just been shown, which is volume with no information in it.
+//! * **3 `sham`.** The corpus's own tempting local fix. Every rung passes and the
+//!   answer key still fails it, so here the Judge is not a second opinion — it is
+//!   the only opinion there is.
+//! * **59 `correct`.** 🚨 **A finding here is a candidate false positive.** The
+//!   falsifier is whether these reports are worth an operator's minutes, and a
+//!   reviewer that finds something on a tree that is fine spends them for
+//!   nothing. It cannot fail one — the headline was computed before this ran.
+//!
+//! ⚠ **Recall is not scored automatically and neither is precision.**
+//! `verify.sh` grades a *tree* and a reviewer's prose is not a tree, so what is
+//! written down is the finding; reading it against the answer key is a person's
+//! job. The restatement flag below is a **candidate** rule for the same reason,
+//! and every candidate is printed verbatim. A keyword count is not a finding
+//! count.
 //!
 //! # It is restartable, on purpose
 //!
-//! One call is 25 s and 122 s measured, so 59 of them is between half an hour and
-//! two. A dossier whose review file already exists is skipped, so an interrupted
-//! run resumes rather than starting over and a single task can be re-asked by
-//! deleting one file. ⚠ **Sequential, and `--parallel 1` on the server**: two
-//! turns in flight push each other past the 90 s idle gap.
+//! One call is 25 s and 122 s measured, so 121 of them is a couple of hours. A
+//! dossier whose review file already exists is skipped, so an interrupted run
+//! resumes rather than starting over, a single task can be re-asked by deleting
+//! one file, and a population added later costs only its own calls. ⚠
+//! **Sequential, and `--parallel 1` on the server**: two turns in flight push
+//! each other past the 90 s idle gap.
 //!
 //! # Running it
 //!
@@ -153,10 +158,36 @@ fn verdict(headline: &Headline) -> &'static str {
     }
 }
 
+/// 🚨 **Which tier of the corpus this tree is, taken from the dossier's own
+/// filename.**
+///
+/// The three are different questions and averaging them would answer none:
+///
+/// * **`wrong`** — a first attempt that is wrong. *Did the reviewer see it?*
+/// * **`sham`** — the corpus's own tempting local fix, which fixes the symptom
+///   the ticket named. Only the K suite ships one, so there are 3. *Did the
+///   reviewer see past it?*
+/// * **`correct`** — the answer key's right answer. 🚨 **A finding here is a
+///   candidate false positive**, and that is the number the exit criterion's
+///   second clause actually needs: the falsifier is whether these reports are
+///   worth an operator's minutes, and a reviewer that finds something on a tree
+///   that is fine spends them for nothing. ADR-0008's **1 of 34** is borrowed
+///   from Phase 1; 48 correct trees is this project's own.
+fn population(slug: &str) -> &'static str {
+    if slug.ends_with("-correct") {
+        "correct"
+    } else if slug.ends_with("-sham") {
+        "sham"
+    } else {
+        "wrong"
+    }
+}
+
 /// One reviewed tree, as the table carries it.
 struct Row {
     id: String,
     lang: String,
+    population: &'static str,
     ladder: &'static str,
     ending: String,
     findings: usize,
@@ -199,13 +230,13 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
         let path = reviews.join(format!("{slug}.json"));
         if path.exists() {
             println!("=== {} — already reviewed, skipped", written.id);
-            if let Some(row) = row_from(&path, written) {
+            if let Some(row) = row_from(&path, written, slug) {
                 rows.push(row);
             }
             continue;
         }
 
-        rows.push(ask(&loop_, written, n, &path));
+        rows.push(ask(&loop_, written, n, &path, slug));
     }
 
     summarise(&rows);
@@ -224,7 +255,7 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
 /// review that times out, says nothing or comes back malformed produces a row
 /// saying so, which is the record ADR-0008 wants and is not a failure of the
 /// tree.
-fn ask(loop_: &TurnLoop<'_>, written: &Written, n: usize, path: &Path) -> Row {
+fn ask(loop_: &TurnLoop<'_>, written: &Written, n: usize, path: &Path, slug: &str) -> Row {
     // `changed` is not in the brief — `Dossier` carries the report and the
     // report carries the rungs — so it is not reconstructed. Putting a guessed
     // value there would be a field nobody reads that could still be wrong.
@@ -306,6 +337,7 @@ fn ask(loop_: &TurnLoop<'_>, written: &Written, n: usize, path: &Path) -> Row {
     Row {
         id: written.id.clone(),
         lang: written.lang.clone(),
+        population: population(slug),
         ladder: verdict(&written.headline),
         ending,
         findings,
@@ -346,7 +378,7 @@ fn show(review: Option<&Review>, text: Option<&str>) {
 
 /// Re-read a review written by an earlier run, so a resumed run still summarises
 /// the whole population rather than only the part it did itself.
-fn row_from(path: &Path, written: &Written) -> Option<Row> {
+fn row_from(path: &Path, written: &Written, slug: &str) -> Option<Row> {
     let text = fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     let review: Option<Review> = serde_json::from_value(v.get("review")?.clone())
@@ -362,6 +394,7 @@ fn row_from(path: &Path, written: &Written) -> Option<Row> {
     Some(Row {
         id: written.id.clone(),
         lang: written.lang.clone(),
+        population: population(slug),
         ladder: verdict(&written.headline),
         ending: v
             .get("ending")
@@ -389,34 +422,65 @@ fn one_line(s: &str) -> String {
     }
 }
 
-fn summarise(rows: &[Row]) {
-    println!("\n--- THE JUDGE OVER THE WRONG TREES ---");
+/// One block of the table: how many trees, how many answered, how much volume.
+///
+/// 🚨 **`silent` is the column the correct half is about.** A tree the reviewer
+/// answered about and found nothing on is the *good* outcome there and the *bad*
+/// one on a wrong tree, so it is reported rather than averaged into a rate whose
+/// direction depends on which half you are reading.
+fn block(label: &str, group: &[&Row]) {
+    if group.is_empty() {
+        return;
+    }
+    let answered = group.iter().filter(|r| r.ending == "answered").count();
+    let findings: usize = group.iter().map(|r| r.findings).sum();
+    let restated: usize = group.iter().map(|r| r.restatements).sum();
+    let silent = group
+        .iter()
+        .filter(|r| r.ending == "answered" && r.findings == 0)
+        .count();
+    let mut secs: Vec<f32> = group.iter().map(|r| r.seconds).collect();
+    secs.sort_by(f32::total_cmp);
+    let median = secs[secs.len() / 2];
     println!(
-        "{:<12} {:>6} {:>9} {:>9} {:>13} {:>9}",
-        "ladder", "trees", "answered", "findings", "restatement?", "median s"
+        "{label:<22} {:>6} {answered:>9} {findings:>9} {silent:>7} {restated:>13} {median:>9.0}",
+        group.len()
     );
-    for ladder in ["GREEN", "RED", "UNVERIFIED"] {
-        let group: Vec<&Row> = rows.iter().filter(|r| r.ladder == ladder).collect();
-        if group.is_empty() {
+}
+
+fn summarise(rows: &[Row]) {
+    println!("\n--- THE JUDGE OVER THE CORPORA ---");
+    println!(
+        "{:<22} {:>6} {:>9} {:>9} {:>7} {:>13} {:>9}",
+        "population / ladder",
+        "trees",
+        "answered",
+        "findings",
+        "silent",
+        "restatement?",
+        "median s"
+    );
+    for pop in ["correct", "wrong", "sham"] {
+        let all: Vec<&Row> = rows.iter().filter(|r| r.population == pop).collect();
+        if all.is_empty() {
             continue;
         }
-        let answered = group.iter().filter(|r| r.ending == "answered").count();
-        let findings: usize = group.iter().map(|r| r.findings).sum();
-        let restated: usize = group.iter().map(|r| r.restatements).sum();
-        let mut secs: Vec<f32> = group.iter().map(|r| r.seconds).collect();
-        secs.sort_by(f32::total_cmp);
-        let median = secs[secs.len() / 2];
-        println!(
-            "{ladder:<12} {:>6} {answered:>9} {findings:>9} {restated:>13} {median:>9.0}",
-            group.len()
-        );
+        block(&format!("{pop} (all)"), &all);
+        for ladder in ["GREEN", "RED", "UNVERIFIED"] {
+            let group: Vec<&Row> = all.iter().copied().filter(|r| r.ladder == ladder).collect();
+            block(&format!("  {pop} / {ladder}"), &group);
+        }
     }
     let answered = rows.iter().filter(|r| r.ending == "answered").count();
     let findings: usize = rows.iter().map(|r| r.findings).sum();
     let restated: usize = rows.iter().map(|r| r.restatements).sum();
     let wall: f32 = rows.iter().map(|r| r.seconds).sum();
+    let silent = rows
+        .iter()
+        .filter(|r| r.ending == "answered" && r.findings == 0)
+        .count();
     println!(
-        "{:<12} {:>6} {answered:>9} {findings:>9} {restated:>13} {:>9}",
+        "{:<22} {:>6} {answered:>9} {findings:>9} {silent:>7} {restated:>13} {:>9}",
         "TOTAL",
         rows.len(),
         ""
@@ -433,23 +497,19 @@ fn summarise(rows: &[Row]) {
         let share = 100.0 * rt as f64 / ct as f64;
         println!("reasoning share of completion: {share:.1}%");
     }
-    let zero = rows
-        .iter()
-        .filter(|r| r.ending == "answered" && r.findings == 0)
-        .count();
-    println!("answered with no findings at all: {zero}");
 }
 
 fn write_tsv(path: &Path, rows: &[Row]) {
     let mut s = String::from(
-        "task\tlang\tladder\tending\tfindings\trestatement_candidates\tseconds\tprompt_tokens\tcompletion_tokens\treasoning_tokens\n",
+        "task\tlang\tpopulation\tladder\tending\tfindings\trestatement_candidates\tseconds\tprompt_tokens\tcompletion_tokens\treasoning_tokens\n",
     );
     for r in rows {
         let _ = writeln!(
             s,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}",
             r.id,
             r.lang,
+            r.population,
             r.ladder,
             r.ending,
             r.findings,

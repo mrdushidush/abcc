@@ -593,6 +593,25 @@ fn the_gate_refuses_no_correct_tree_the_corpora_ship() {
         if let Headline::Red { rung, detail } = &walked.measured.headline {
             false_fails.push(format!("{} ({rung}: {})", task.id, first_line(detail)));
         }
+        if let Some(dir) = &out {
+            // 🚨 A dossier for the RIGHT answer too, and it is not idle. The exit
+            // criterion has two clauses and the second is *report volume*; the
+            // falsifier it feeds is whether a report is worth an operator's
+            // minutes. That needs the rate on trees that are **fine** as much as
+            // the rate on trees that are not — ADR-0008 quotes 1 of 34 false from
+            // Phase 1, borrowed, and 48 correct trees is this project's own.
+            // The Judge still cannot fail one: `Headline` was computed before any
+            // of this and no `Claim` becomes an `Outcome`.
+            let named = Task {
+                slug: format!("{}-correct", task.slug),
+                id: format!("{} (correct)", task.id),
+                dir: task.dir.clone(),
+                lang: task.lang.clone(),
+                title: task.title.clone(),
+                prompt: task.prompt.clone(),
+            };
+            write_dossier(dir, &named, &walked);
+        }
         rows.push(Row {
             id: task.id.clone(),
             lang: task.lang.clone(),
