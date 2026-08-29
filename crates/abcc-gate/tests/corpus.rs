@@ -306,6 +306,11 @@ fn solution_paths(task: &Task) -> Vec<PathBuf> {
     out
 }
 
+/// Whether this task ships a `sham/` — the corpus's own **local wrong answer**.
+fn has_sham(task: &Task) -> bool {
+    task.dir.join("sham").is_dir()
+}
+
 fn walk(dir: &Path, base: &Path, into: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -649,6 +654,93 @@ fn what_the_ladder_says_about_the_wrong_trees_the_corpora_ship() {
     );
     if let Some(dir) = &out {
         write_tsv(&dir.join("wrong.tsv"), &rows);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The hardest tier the corpora ship
+// ---------------------------------------------------------------------------
+
+/// 🚨 **The shams — `fixture` → `fixture`+`sham`, and this is the tier the whole
+/// argument turns on.**
+///
+/// Only the K suite ships one (`point3 = "sound"` there, `"not_run"` in Q56), so
+/// it is **3 trees**. They are worth their own test anyway, because a sham is
+/// neither of the other two things: it is not a stub and it is not a naive first
+/// attempt, it is **the tempting local wrong answer** — a change that fixes the
+/// symptom the ticket reported and leaves the defect. The corpus says so in its
+/// own words:
+///
+/// * `finish_the_cancelled_status` — *"fixing `sla.py` alone … fixes exactly what
+///   the ticket described — SLA breaches drop from 6 to 2 — and leaves the
+///   service billing customers for four cancelled jobs and requeueing work an
+///   operator told it to stop."*
+/// * `round_at_the_line_not_the_total` — *"changing the rounding direction at the
+///   end — ceil instead of half-up — FIXES the reported invoice, which is what
+///   makes it tempting. It fails because the eight wrong totals differ in BOTH
+///   directions."*
+///
+/// 🚨 **The pair is deliberately the same shape as the correct one**: same
+/// `before`, an overlay on top, and for `round_at_the_line` **literally the same
+/// file** (`billing/pricing.py`) in both. So the sham row and the correct row for
+/// one task differ in exactly one thing — what the solution file says — which is
+/// as close to a controlled A/B as a corpus gets.
+///
+/// ⚠ There is no assertion, for the wrong half's reason. A `Green` here is the
+/// deterministic ladder accepting a change the answer key rejects, and it is
+/// expected: the sham passes the visible tests, which is what makes it tempting.
+#[test]
+#[ignore = "needs the corpora on disk"]
+fn what_the_ladder_says_about_the_shams_the_k_suite_ships() {
+    let tasks: Vec<Task> = tasks().into_iter().filter(has_sham).collect();
+    assert!(!tasks.is_empty(), "no task in either corpus ships a sham/");
+    let scratch = scratch_root();
+    let out = out_dir();
+    let mut rows: Vec<Row> = Vec::new();
+
+    println!(
+        "\n### SHAMS — fixture -> fixture+sham, {} task(s)\n",
+        tasks.len()
+    );
+    for task in &tasks {
+        let root = scratch.join(&task.slug).join("sham");
+        discard(&root);
+        let fixture = task.dir.join("fixture");
+        let sham = task.dir.join("sham");
+        let walked = walk_pair(
+            &root,
+            &task.lang,
+            &|tree| copy_tree(&fixture, tree),
+            &|tree| copy_tree(&sham, tree),
+        );
+        println!("=== {} [{}] ({:.1} s)", task.id, task.lang, walked.seconds);
+        show(&walked);
+        if let Some(dir) = &out {
+            // Its own slug, so the review stage picks it up beside the wrong
+            // trees rather than overwriting one.
+            let named = Task {
+                slug: format!("{}-sham", task.slug),
+                id: format!("{} (sham)", task.id),
+                dir: task.dir.clone(),
+                lang: task.lang.clone(),
+                title: task.title.clone(),
+                prompt: task.prompt.clone(),
+            };
+            write_dossier(dir, &named, &walked);
+        }
+        rows.push(Row {
+            id: task.id.clone(),
+            lang: task.lang.clone(),
+            verdict: verdict(&walked.measured.headline),
+            detail: absence(&walked.measured.headline),
+            seconds: walked.seconds,
+        });
+        discard(&root);
+    }
+
+    summarise("SHAMS", &rows);
+    if let Some(dir) = &out {
+        write_tsv(&dir.join("sham.tsv"), &rows);
     }
 }
 
