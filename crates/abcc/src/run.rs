@@ -181,11 +181,11 @@ fn confirm_model(
 ) -> Result<String, AppError> {
     let asked = ops::model_name(run.model.as_deref())?;
     let base = ops::base_url(run.base_url.as_deref());
-    let served = confirm::served_models(&base, ops::api_key().as_deref())?;
+    let listing = confirm::served(&base, ops::api_key().as_deref())?;
     let verdict = confirm::decide(
         &asked,
         ops::fingerprint_for(run.fingerprint.as_deref()).as_deref(),
-        &served,
+        &listing,
     );
     let note = verdict.note(&asked);
     store.append(Event::Note { text: note.clone() })?;

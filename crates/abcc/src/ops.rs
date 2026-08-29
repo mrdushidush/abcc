@@ -197,10 +197,20 @@ pub fn check(
 ) -> Result<(), AppError> {
     let asked = model_name(model)?;
     let base = base_url(url);
-    let served = confirm::served_models(&base, api_key().as_deref())?;
-    let verdict = confirm::decide(&asked, fingerprint_for(fingerprint).as_deref(), &served);
+    let listing = confirm::served(&base, api_key().as_deref())?;
+    let verdict = confirm::decide(&asked, fingerprint_for(fingerprint).as_deref(), &listing);
     writeln!(out, "server      {base}")?;
-    writeln!(out, "serving     [{}]", served.join(", "))?;
+    writeln!(
+        out,
+        "{:<11} [{}]",
+        match listing.evidence() {
+            // 🚨 F495: these are two different answers, so they get two different
+            // words. LM Studio's OpenAI listing is everything downloaded.
+            confirm::Evidence::Loaded => "loaded",
+            confirm::Evidence::Listed => "listed",
+        },
+        listing.ids().join(", ")
+    )?;
     writeln!(out, "{}", verdict.note(&asked))?;
     if verdict.confirmed() {
         Ok(())
