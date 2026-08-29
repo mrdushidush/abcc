@@ -7,14 +7,14 @@ is; this file is how to work in it.
 ## Commands
 
 The loop ladder, re-measured warm on the development box, 2026-08-29, at seven
-crates and 273 tests, with exit status asserted. Use the cheapest rung that
+crates and 282 tests, with exit status asserted. Use the cheapest rung that
 answers the question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
-| after every edit | `cargo check --workspace --all-targets` | 0.42 s |
-| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.46 s |
-| once, before commit | `cargo test --workspace` | 11.0 s |
+| after every edit | `cargo check --workspace --all-targets` | 0.40 s |
+| before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.45 s |
+| once, before commit | `cargo test --workspace` | 11.2 s |
 
 🚨 **The middle rung used to end `&& cargo test --lib`, and that ran zero tests.**
 Every test in this workspace is an integration test under `tests/`, which
@@ -23,9 +23,19 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch --test http --test journal --test view --test theme --test screen --test keys --test cli --test confirm --test home --test desk --test feed`
-is **1.9 s** for 169 tests and covers everything that does not start a process.
-The full suite costs 11.0 s because `tests/child.rs` and `tests/exec.rs` spawn real
+`cargo test --workspace --test endings --test lifecycle --test properties --test durability --test control --test heads --test http --test patch --test policy --test turn_loop --test workspace --test journal --test keys --test lines --test screen --test theme --test view --test cli --test confirm --test desk --test feed --test home`
+is **2.0 s** for 226 tests and covers everything that does not start a process.
+
+🚨 **That list is derived, not remembered — check it against `crates/*/tests/`
+whenever a test file is added.** The previous one claimed the same coverage and
+omitted five process-free targets and 57 tests (`abcc-core`'s `endings`,
+`lifecycle` and `properties`, `abcc-store`'s `durability`, and `abcc-tui`'s
+`lines`), so the cheap rung was quietly cheaper than it looked. **A list of
+names does not fail when the workspace grows; it just stops covering things.**
+The process bucket is exactly `child`, `exec`, `attempt`, `operator`,
+`isolation` and `cycle_cost`.
+
+The full suite costs 11.2 s because `tests/child.rs` and `tests/exec.rs` spawn real
 children, and `abcc-vcs`, `abcc-drive` and `abcc`'s `tests/operator.rs` drive real git —
 that time is processes, not compilation, and it is the price of testing claims about an
 OS against the OS.
@@ -89,6 +99,27 @@ do not reformat around it.
   question that names the snapshot. Do not "finish" this by mapping a model's
   answer onto success: that is a claim standing where a measurement belongs,
   which is the one defect ADR-0009 exists to prevent.
+- 🚨 **A phase asks again before it gives up on a missing answer** (ADR-0016,
+  F503). The champion reasons to the end and emits five to nine tokens that trim
+  to an empty string; across ten runs of one task the closing answer was missing
+  from **8 of 10 phases**, and **one nudge recovered 5 of 5**. `Limits::nudges`
+  is 2, the sentence lives in `NO_ANSWER` at the *end* of the body — never the
+  head, F81 — and exhausting it still ends the phase `Why::SaidNothing`. Every
+  nudge is an `Event::PhaseNudged`. ⚠ Do not treat a first empty answer as a
+  verdict: the same head and brief produced 2,008- and 3,431-character claims on
+  the runs that worked, so it is a sample.
+- 🚨 **A `Finish::Length` turn ends the phase and NONE of its tool calls run**
+  (ADR-0016, F506). A payload cut mid-token is a fragment and a tool call cut
+  mid-argument is not a request: twice the last call arrived with a
+  **zero-character** argument string and was recorded as the model failing its
+  own schema, and appending that turn is what produced both contentless HTTP
+  500s. `content_empty` and the F498 comparison select *which* `Why` — never
+  whether there is one. ⚠ `a422` was 8,209 + 8,192 = 16,401 against a 32,768
+  window, so do not reach for the context window to explain a 500.
+- **A refused tool call keeps its arguments on the log; a successful one does
+  not, and a denied one does not either** (F505). Five `apply_patch` refusals
+  were once undiagnosable after the fact. The denial case stays empty because
+  ADR-0014's control is the class — see `Why::Denied`.
 - **A failure before `AttemptStarted` leaves the task `Deployed`.** That state's
   contract *is* "a slot is held and no attempt has started" — it is reaped on the
   spin-up bound and requeued by boot — so the driver does not invent a third
