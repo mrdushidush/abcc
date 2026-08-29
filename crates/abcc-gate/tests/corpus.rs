@@ -332,6 +332,34 @@ fn walk(dir: &Path, base: &Path, into: &mut Vec<PathBuf>) {
 // Building one tree
 // ---------------------------------------------------------------------------
 
+/// 🚨 **Copy a tree, normalising every text file's line endings to LF.**
+///
+/// **F529, and it is not tidying.** Measured across both corpora: all **164**
+/// fixture files are LF, all **57** Q56 overlay files are LF, and **9 K-suite
+/// overlay files are CRLF** — `jobs/sla.py`, `billing/pricing.py` and seven
+/// others. An overlay whose line endings differ from the file it replaces makes
+/// `git diff` report **every line as changed**: `billing/pricing.py`'s sham is a
+/// six-line change and the diff was **94 deletions and 96 insertions, 5,587
+/// characters**.
+///
+/// That is invisible to the deterministic rungs — the structural rung counts
+/// files and the acceptance rung runs the real file, so nothing in
+/// `correct.tsv` or `wrong.tsv` moved — and it is **not** invisible to the
+/// Judge, which is shown the diff and whose entire design rests on it:
+/// ADR-0008 rule 1 is *the `-` lines are the pre-image and the `+` lines are the
+/// post-image*, measured at **14 of 14** pairwise against **0 of 8** pointwise.
+/// A whole-file rewrite hands the model both images with the six lines that
+/// matter hidden in 190, which is the pointwise case wearing a diff's clothes.
+///
+/// ⚠ **Normalising is the honest fix and hiding it would not be.** Both sides
+/// get the same treatment, so no difference is manufactured *and none is
+/// concealed*: a real attempt edits a file in place and keeps its endings, so
+/// the mixed endings are an artifact of how the corpus was assembled rather than
+/// a property of any change. The alternative — leaving it — measures the
+/// importer's text editor.
+///
+/// A file containing a NUL byte is copied verbatim, which is git's own test for
+/// whether a file is text.
 fn copy_tree(from: &Path, to: &Path) {
     let mut files = Vec::new();
     walk(from, from, &mut files);
@@ -340,7 +368,22 @@ fn copy_tree(from: &Path, to: &Path) {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).expect("a directory for a copied file");
         }
-        fs::copy(from.join(&rel), &dst).expect("copying a corpus file");
+        let bytes = fs::read(from.join(&rel)).expect("reading a corpus file");
+        if bytes.contains(&0) {
+            fs::write(&dst, bytes).expect("copying a corpus file");
+        } else {
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+                    i += 1;
+                    continue;
+                }
+                out.push(bytes[i]);
+                i += 1;
+            }
+            fs::write(&dst, out).expect("copying a corpus file");
+        }
     }
 }
 
