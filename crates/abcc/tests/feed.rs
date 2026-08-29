@@ -304,3 +304,65 @@ fn an_empty_log_is_an_empty_board_and_says_nothing_else() {
     assert_eq!(reader.view().mode(), None);
     assert_eq!(reader.view(), &View::new(Theme::Command));
 }
+
+// ---------------------------------------------------------------------------
+// the instrument
+// ---------------------------------------------------------------------------
+
+/// Fold a **real** log — one an actual run wrote — and print the board.
+///
+/// `#[ignore]`d and pointed by `ABCC_LOG`, the same shape as `abcc-store`'s
+/// `durability_rate` and `abcc-vcs`'s `cycle_cost`: an instrument that is kept
+/// because the claim it checks is about a log this workspace did not synthesise.
+///
+/// ```text
+/// ABCC_LOG=%LOCALAPPDATA%/abcc/<repo>/log.sqlite \
+///   cargo test -p abcc --test feed -- --ignored --nocapture
+/// ```
+///
+/// 🚨 It opens the log through [`StoreFeed`] and reads `event` alone. It cannot
+/// consult the `task` projection, because nothing in scope can — which is the
+/// point: whatever it prints came out of the log.
+#[test]
+#[ignore = "needs a real log; pass ABCC_LOG"]
+fn the_reader_shows_a_real_run_from_the_log_alone() {
+    let Ok(path) = std::env::var("ABCC_LOG") else {
+        panic!("set ABCC_LOG to a log an actual run wrote");
+    };
+    let feed = StoreFeed::open(Path::new(&path)).expect("open the real log");
+    let reader = folded(&feed);
+    let view = reader.view();
+
+    println!(
+        "{} events, mode {:?}, version {:?}, pid {:?}",
+        view.events(),
+        view.mode(),
+        view.version(),
+        view.pid()
+    );
+    let (minutes, changes) = view.review();
+    println!("review {minutes} min over {changes} change(s)");
+    for card in view.cards() {
+        println!(
+            "  {:<6} {:<22} attempts {} last seq {}  {}",
+            card.id.to_string(),
+            // The theme's word for the state, not `label()` — that is the card's
+            // title, which is already the last column.
+            Theme::Command.state(&card.state),
+            card.attempts,
+            card.last_seq,
+            card.label()
+        );
+        if let Some(question) = &card.question {
+            println!("         asks: {question}");
+        }
+    }
+    println!("-- the last 12 feed lines --");
+    let feed_lines: Vec<_> = view.feed().iter().collect();
+    for line in feed_lines.iter().rev().take(12).rev() {
+        println!("  {}", line.text);
+    }
+
+    assert!(view.events() > 0, "the log is empty");
+    assert!(!view.cards().is_empty(), "no task came out of the log");
+}
