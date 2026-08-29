@@ -26,11 +26,11 @@
 //!
 //! Two ADR clauses fall out of that rather than being enforced here:
 //!
-//! * **The Judge cannot vote.** Its verdict is a [`Claim`], which attaches
-//!   through `Report::note`, and there is no function anywhere that converts a
-//!   `Claim` into an `Outcome`. ADR-0009 §4 is held by the type, so wiring the
-//!   Judge into the gate is not something a careless edit can do — there is
-//!   nothing to wire it to.
+//! * **The Judge cannot vote.** Its verdict is an
+//!   [`abcc_core::outcome::Claim`], which attaches through `Report::note`, and
+//!   there is no function anywhere that converts a `Claim` into an `Outcome`.
+//!   ADR-0009 §4 is held by the type, so wiring the Judge into the gate is not
+//!   something a careless edit can do — there is nothing to wire it to.
 //! * **A rung that could not run does not disappear.** It is `Unmeasured(Why)`,
 //!   the headline is `Unverified`, and it lists what was missing. `Green` becomes
 //!   rarer and starts meaning something.
@@ -89,10 +89,10 @@
 //! gate that can fail to answer is a gate with a fourth outcome nobody
 //! declared**, and the caller would have to invent a meaning for it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use abcc_core::outcome::{Claim, Headline, Outcome, Report, Why};
+use abcc_core::outcome::{Headline, Outcome, Report, Why};
 use abcc_engine::Standard;
 use abcc_engine::control::Watch;
 use abcc_engine::workspace::Toolchain;
@@ -273,16 +273,6 @@ impl<'a> Gate<'a> {
         }
     }
 
-    /// Attach what a model said about this work. It changes no verdict, and
-    /// there is deliberately no path from here to an [`Outcome`].
-    ///
-    /// This is the seam the Judge arrives on. It is here now, unused by the
-    /// deterministic rungs, so that the shape of *report, never vote* exists
-    /// before there is a model call that might be tempted to.
-    pub fn note(report: &mut Report, claim: Claim) {
-        report.note(claim);
-    }
-
     /// One of the two process rungs: look up its command, run it, read the
     /// ending the profile's way.
     fn run_rung(&self, rung: Rung, sha: &str) -> Outcome {
@@ -346,13 +336,4 @@ fn why_from_vcs(error: &VcsError) -> Why {
 /// The path a change names, relative to the workspace, for a human to read.
 fn paths(changes: &[Change]) -> Vec<&str> {
     changes.iter().map(|c| c.path.as_str()).collect()
-}
-
-/// Where a rung's children run. Exposed for the tests that assert the gate never
-/// reaches outside the worktree it was opened on.
-impl Gate<'_> {
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
 }

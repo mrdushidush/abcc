@@ -577,7 +577,7 @@ const EVIDENCE_CHARS: usize = 2_000;
 /// 🚨 **F517: the last line of a green run of this repository's own suite says
 /// `test result: ok. 0 passed`.** `cargo test --workspace` prints **44**
 /// `test result:` lines here — one per target — and the last of them belongs to
-/// an empty doc-test target. [`counts_from`] gets the verdict right because it
+/// an empty doc-test target. `counts_from` gets the verdict right because it
 /// sums every one of them (281 passed, 0 failed, exit 0); the *sentence* stored
 /// beside those counts was the single most misleading line in 720 lines of
 /// output, and it is F357's defect — *"tests: 0 passed"* on a crate that has
