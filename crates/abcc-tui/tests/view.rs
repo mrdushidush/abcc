@@ -2,7 +2,7 @@
 //! else, and these are the claims that says.
 
 use abcc_core::attempt::{AttemptOutcome, Cause};
-use abcc_core::event::{Event, Finish, Logged, Usage};
+use abcc_core::event::{CallShape, Composition, Event, Finish, Logged, Usage};
 use abcc_core::outcome::Why;
 use abcc_core::run::{AttemptPhase, Mode};
 use abcc_core::seq::{AttemptId, MissionId, PromptId, Seq, TaskId, UnitId};
@@ -106,6 +106,18 @@ fn the_attempt_runs(log: &mut Replay, task: TaskId, attempt: AttemptId, engaged:
         finish: Finish::ToolCalls,
         ttfb_ms: 1_034,
         elapsed_ms: 3_200,
+        // A turn that was USED: it asked for a tool and the tool ran, so the
+        // arguments are not kept here — F505 has them if the call failed, and
+        // the tree has them if it did not.
+        composition: Some(Composition {
+            text_chars: 0,
+            reasoning_chars: 612,
+            calls: vec![CallShape {
+                tool: "read_file".to_string(),
+                argument_chars: 44,
+                arguments: None,
+            }],
+        }),
     });
     log.advance(2).push(Event::ToolCallStarted {
         attempt,

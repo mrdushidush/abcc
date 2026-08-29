@@ -78,6 +78,37 @@ impl Script {
         ])
     }
 
+    /// 🚨 **F511's shape, and it is the one the live runs actually produced.**
+    ///
+    /// A turn that spends its whole budget assembling **one enormous tool call**
+    /// and is cut mid-argument. Five consecutive Change phases ended here, each
+    /// with 89–204 characters of answer, 359–1,811 of trace, and 94–98% of the
+    /// completion in arguments — which the usage block reports as a single
+    /// number and therefore cannot tell apart from a model writing an essay.
+    ///
+    /// ⚠ `content_empty: false`, because there *was* a little text: this is the
+    /// case F506 widened `TruncatedAtCap` to cover, and the case that fell
+    /// through both guards before it did.
+    #[must_use]
+    pub fn cut_assembling_a_call(budget: u32, tool: &str, arguments: &str) -> Script {
+        Script(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Reasoning("weighing it up ".repeat(8))),
+            Ok(Delta::Text("Writing the file now.".to_owned())),
+            Ok(Delta::ToolCall(ToolCall {
+                id: "call-cut".to_owned(),
+                tool: tool.to_owned(),
+                arguments: arguments.to_owned(),
+            })),
+            Ok(Delta::Closed {
+                usage: usage(64, budget, Some(96)),
+                finish: Finish::Length {
+                    content_empty: false,
+                },
+            }),
+        ])
+    }
+
     /// A turn whose reasoning trace is still open when the answer is due — the
     /// signal ADR-0010 §7 asks for at token 200.
     ///

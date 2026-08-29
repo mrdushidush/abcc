@@ -253,12 +253,46 @@ impl<'a> TurnLoop<'a> {
         self
     }
 
-    /// Run one phase to an ending.
+    /// Run one phase to an ending, and write that ending down.
     ///
     /// `body` is borrowed rather than owned because a retry is the same body with
     /// the failure appended (ADR-0010) — handing it back is what makes the fix
     /// round *this phase with different feedback* rather than a new phase.
+    ///
+    /// 🚨 **The [`Event::PhaseEnded`] is recorded HERE, at the single exit, and
+    /// not at the four places a phase can end** (F513). The report used to be
+    /// returned and printed and nothing else, so `trace` — which exists only in
+    /// flight — was lost on every run. One writer at one exit is also why the
+    /// count cannot drift from the ending it describes.
     pub fn run(
+        &self,
+        head: Head,
+        attempt: AttemptId,
+        schema: Option<Schema>,
+        body: &mut Body,
+        control: &mut ControlPoint,
+        journal: &mut dyn Journal,
+    ) -> PhaseEnded {
+        let ended = self.drive(head, attempt, schema, body, control, journal);
+        let r = ended.report();
+        journal.record(Event::PhaseEnded {
+            attempt,
+            by: head.call_sign().to_owned(),
+            turns: r.turns,
+            tool_calls: r.tool_calls,
+            denials: r.denials,
+            prompt_tokens: r.prompt_tokens,
+            completion_tokens: r.completion_tokens,
+            reasoning_tokens: r.reasoning_tokens,
+            trace: r.trace,
+            elapsed_ms: r.elapsed_ms,
+        });
+        ended
+    }
+
+    /// The phase itself. Separate from [`run`](Self::run) only so that every one
+    /// of its exits is funnelled through a single recording point.
+    fn drive(
         &self,
         head: Head,
         attempt: AttemptId,
@@ -510,15 +544,7 @@ impl<'a> TurnLoop<'a> {
             });
         };
 
-        journal.record(Event::ModelCallEnded {
-            attempt,
-            usage,
-            finish: finish.clone(),
-            ttfb_ms: acc.ttfb_ms,
-            elapsed_ms: elapsed_ms(started),
-        });
-
-        Drained::Turn(Turn {
+        let turn = Turn {
             trace: acc.trace(usage.completion_tokens),
             text: acc.text,
             reasoning_chars: acc.reasoning_chars,
@@ -528,7 +554,22 @@ impl<'a> TurnLoop<'a> {
             ttfb_ms: acc.ttfb_ms,
             elapsed_ms: elapsed_ms(started),
             budget: head.budget(),
-        })
+        };
+
+        // 🚨 F511. Recorded *after* the turn exists rather than beside the
+        // stream, because whether the payload is about to be thrown away is a
+        // question only the assembled turn can answer — and that answer is what
+        // decides whether the arguments are kept.
+        journal.record(Event::ModelCallEnded {
+            attempt,
+            usage,
+            finish: turn.finish.clone(),
+            ttfb_ms: turn.ttfb_ms,
+            elapsed_ms: turn.elapsed_ms,
+            composition: Some(turn.composition()),
+        });
+
+        Drained::Turn(turn)
     }
 }
 

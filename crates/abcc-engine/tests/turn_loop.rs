@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use abcc_core::event::{Control, Event, Finish, Usage};
+use abcc_core::event::{Composition, Control, Event, Finish, Usage};
 use abcc_core::outcome::Why;
 use abcc_core::seq::{AttemptId, Seq};
 use abcc_engine::provider::{Delta, Message, ProviderError, Role, TraceSignal};
@@ -86,7 +86,14 @@ fn a_phase_that_answers_records_the_call_and_the_claim() {
     }
     assert_eq!(
         kinds(&log),
-        ["model_call_started", "model_call_ended", "claim_recorded"]
+        [
+            "model_call_started",
+            "model_call_ended",
+            "claim_recorded",
+            // F513: every exit of the phase writes its accounting, including the
+            // one that succeeded. A record that counts only failures under-reports.
+            "phase_ended",
+        ]
     );
     // 🚨 What the model said is a Claim. There is no path from here to an
     // Outcome, and the loop does not build one.
@@ -492,7 +499,10 @@ fn a_pause_lets_the_round_in_flight_finish() {
             "model_call_started",
             "model_call_ended",
             "tool_call_started",
-            "tool_call_ended"
+            "tool_call_ended",
+            // A phase the operator stopped still spent tokens, so it still
+            // reports — the same reason `PhaseReport` is returned on a stop.
+            "phase_ended",
         ]
     );
 }
@@ -1004,4 +1014,247 @@ fn a_turn_cut_at_our_cap_mid_tool_call_runs_nothing_and_ends_the_phase() {
         "the fragment was admitted: {:?}",
         kinds(&log)
     );
+}
+
+// ---------------------------------------------------------------------------
+// F511 — where a completion went
+// ---------------------------------------------------------------------------
+
+/// Pull the composition off the one `ModelCallEnded` in a log.
+///
+/// ⚠ The double unwrap is the point: the field is `Option` so that events
+/// written before it existed still replay (boot is replay), and every event
+/// written *now* must carry one. A `None` here is a regression, not a shrug.
+fn composition(log: &[Event]) -> Composition {
+    log.iter()
+        .find_map(|e| match e {
+            Event::ModelCallEnded { composition, .. } => Some(composition.clone()),
+            _ => None,
+        })
+        .expect("no model call was recorded")
+        .expect("a model call was recorded without saying what it was made of")
+}
+
+/// 🚨 **F511.** The usage block says 8,192 tokens and nothing about where they
+/// went. This is the turn that made that gap matter: five live Change phases
+/// spent 94–98% of the budget on **one tool call's arguments** and were cut, and
+/// from `completion_tokens` alone that is indistinguishable from a model writing
+/// prose instead of calling a tool. Reading the totals got it backwards once.
+#[test]
+fn a_completion_is_split_into_text_reasoning_and_arguments() {
+    let huge = "x".repeat(30_000);
+    let provider = Scripted::new(vec![Script::cut_assembling_a_call(
+        8192,
+        "write_file",
+        &huge,
+    )]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log: Vec<Event> = Vec::new();
+
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let c = composition(&log);
+    assert_eq!(c.text_chars, 21, "the answer was tiny and it must say so");
+    assert_eq!(c.calls.len(), 1);
+    assert_eq!(c.calls[0].tool, "write_file");
+    assert_eq!(c.calls[0].argument_chars, 30_000);
+    // 🚨 The whole point, as an inequality rather than a pair of numbers: the
+    // arguments dwarf everything a reader of the usage block could have seen.
+    assert!(
+        c.calls[0].argument_chars > (c.text_chars + c.reasoning_chars) * 10,
+        "a turn whose budget went into arguments must not read as a turn that talked: {c:?}"
+    );
+}
+
+/// 🚨 The other half of F505's rule, applied to a new path: keep the text
+/// **exactly when the log is the only copy of it**. A cut turn runs none of its
+/// calls (F506), so nothing else will ever say what was being written — and the
+/// front of a cut argument is where the path is.
+#[test]
+fn a_discarded_turn_keeps_the_arguments_it_was_cut_writing() {
+    let provider = Scripted::new(vec![Script::cut_assembling_a_call(
+        8192,
+        "apply_patch",
+        "{\"path\":\"crates/abcc/src/cli.rs\",\"diff\":\"@@ -1,2 +1,3 @@",
+    )]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log: Vec<Event> = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let PhaseEnded::Unmeasured { why, .. } = &ended else {
+        panic!("a turn cut at the cap is not an answer: {ended:?}");
+    };
+    assert!(matches!(why, Why::TruncatedAtCap { .. }), "{why:?}");
+
+    let c = composition(&log);
+    let kept = c.calls[0]
+        .arguments
+        .as_deref()
+        .expect("the fragment was discarded with no copy of what it was writing");
+    assert!(
+        kept.contains("crates/abcc/src/cli.rs"),
+        "the file being written must survive the cut: {kept}"
+    );
+    // F506 still holds: the fragment is recorded, and it is never run.
+    assert!(
+        !kinds(&log).contains(&"tool_call_started"),
+        "a cut call was admitted: {:?}",
+        kinds(&log)
+    );
+}
+
+/// ⚠ The inverse, and it is what keeps the log from becoming a second copy of
+/// the workspace: a call that actually ran needs no copy here. Its arguments are
+/// on `ToolCallEnded` if it failed (F505) and in the tree if it did not.
+#[test]
+fn a_turn_that_is_used_does_not_copy_its_arguments() {
+    let args = "{\"path\":\"src/lib.rs\"}";
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "read_file", args),
+        Script::says("src/lib.rs line 1."),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log: Vec<Event> = Vec::new();
+
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let c = composition(&log);
+    assert_eq!(c.calls.len(), 1);
+    assert_eq!(
+        c.calls[0].argument_chars,
+        u32::try_from(args.chars().count()).expect("fits"),
+        "the size is always kept"
+    );
+    assert!(
+        c.calls[0].arguments.is_none(),
+        "a call that ran was copied into the log as well as the tree"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F513 — the phase's accounting reaches the log
+// ---------------------------------------------------------------------------
+
+/// 🚨 **F513.** `PhaseReport` was built on every ending, printed, and never
+/// written down — and `trace` is computed **in flight**, so it is recoverable
+/// from no other event. Two `OpenAt200` observations exist in this project's
+/// whole history and both survive only because a person read them off a
+/// terminal. This test is the reason there will be a third.
+#[test]
+fn the_trace_signal_reaches_the_log_and_not_only_the_terminal() {
+    let provider = Scripted::new(vec![Script::trace_still_open(640)]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log: Vec<Event> = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL)
+        .limits(Limits {
+            nudges: 0,
+            ..Limits::default()
+        })
+        .run(
+            Head::Commandos,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+
+    let logged = log
+        .iter()
+        .find_map(|e| match e {
+            Event::PhaseEnded { trace, by, .. } => Some((*trace, by.clone())),
+            _ => None,
+        })
+        .expect("the phase ended and wrote no accounting");
+    assert_eq!(logged.0, TraceSignal::OpenAt200);
+    assert_eq!(logged.1, "Commandos", "the log must name who spent this");
+    // The log and the returned report are the same fact, which is the only way
+    // the printed summary and the durable record cannot drift apart.
+    assert_eq!(logged.0, ended.report().trace);
+}
+
+/// Every exit writes exactly one accounting — including the exit that worked.
+/// A record that counts only failures under-reports, and two writers for one
+/// ending is two numbers that can disagree.
+#[test]
+fn a_phase_writes_its_accounting_exactly_once_however_it_ends() {
+    for (name, scripts) in [
+        ("answered", vec![Script::says("done")]),
+        ("cut", vec![Script::truncated_at_cap(8192)]),
+        (
+            "used a tool then answered",
+            vec![
+                Script::calls("c1", "read_file", "{\"path\":\"src/lib.rs\"}"),
+                Script::says("done"),
+            ],
+        ),
+    ] {
+        let provider = Scripted::new(scripts);
+        let tools = Recorder::default();
+        let (mut control, _handle) = ControlPoint::new();
+        let mut body = Body::opening("go");
+        let mut log: Vec<Event> = Vec::new();
+
+        let ended = TurnLoop::new(&provider, &tools, MODEL)
+            .limits(Limits {
+                nudges: 0,
+                ..Limits::default()
+            })
+            .run(
+                Head::Builders,
+                ATTEMPT,
+                None,
+                &mut body,
+                &mut control,
+                &mut |e: Event| log.push(e),
+            );
+
+        let written: Vec<&Event> = log
+            .iter()
+            .filter(|e| matches!(e, Event::PhaseEnded { .. }))
+            .collect();
+        assert_eq!(written.len(), 1, "{name}: {:?}", kinds(&log));
+        let Event::PhaseEnded {
+            turns,
+            tool_calls,
+            elapsed_ms: _,
+            ..
+        } = written[0]
+        else {
+            unreachable!()
+        };
+        let r = ended.report();
+        assert_eq!((*turns, *tool_calls), (r.turns, r.tool_calls), "{name}");
+    }
 }

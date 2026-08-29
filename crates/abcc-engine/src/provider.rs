@@ -35,7 +35,12 @@
 use std::fmt;
 use std::time::Duration;
 
-use abcc_core::event::{Finish, Usage};
+/// Re-exported so this module still *names* the signal it computes: `trace()`
+/// below is the only thing that can produce one, and it does so from deltas that
+/// are gone by the end of the turn. It is defined in `abcc-core` because it has
+/// to be writable to the log — see [`abcc_core::Event::PhaseEnded`] (F513).
+pub use abcc_core::event::TraceSignal;
+use abcc_core::event::{CallShape, Composition, Finish, Usage};
 use abcc_core::outcome::Why;
 use serde::{Deserialize, Serialize};
 
@@ -398,25 +403,6 @@ impl ProviderError {
 // The turn, drained
 // ---------------------------------------------------------------------------
 
-/// ADR-0010 §7's one in-flight signal: **at token 200, has the reasoning trace
-/// closed?**
-///
-/// 🚨 **It is a stop, not a score.** It feeds `Uncertain` and the next action,
-/// and it never becomes a number displayed next to an answer — where a human
-/// wants a confidence number, they get the verifier's result, which is 547 ms
-/// and checkable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "trace", rename_all = "snake_case")]
-pub enum TraceSignal {
-    /// The provider reported no reasoning trace at all. Not the same as a trace
-    /// of length zero.
-    Absent,
-    /// The trace had closed by the time the turn reached 200 completion tokens.
-    Closed,
-    /// It had not. This turn is far likelier to end at the ceiling with nothing.
-    OpenAt200,
-}
-
 /// What one turn produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Turn {
@@ -512,5 +498,31 @@ impl Turn {
     #[must_use]
     pub fn wants_tools(&self) -> bool {
         !self.tool_calls.is_empty()
+    }
+
+    /// 🚨 **F511: what this completion was made of, for the log.**
+    ///
+    /// The arguments are carried **only when this turn is about to be
+    /// discarded** — which is [`uncertain`](Self::uncertain), the same question
+    /// the caller is about to ask. A discarded turn runs none of its tool calls
+    /// (F506), so the log is the only place its payload can survive; a turn that
+    /// is used needs no copy, because a call that fails records its own
+    /// arguments (F505) and a call that succeeds is visible in the tree.
+    #[must_use]
+    pub fn composition(&self) -> Composition {
+        let discarded = self.uncertain().is_some();
+        Composition {
+            text_chars: u32::try_from(self.text.chars().count()).unwrap_or(u32::MAX),
+            reasoning_chars: u32::try_from(self.reasoning_chars).unwrap_or(u32::MAX),
+            calls: self
+                .tool_calls
+                .iter()
+                .map(|c| CallShape {
+                    tool: c.tool.clone(),
+                    argument_chars: u32::try_from(c.arguments.chars().count()).unwrap_or(u32::MAX),
+                    arguments: discarded.then(|| c.arguments.clone()),
+                })
+                .collect(),
+        }
     }
 }

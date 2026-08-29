@@ -19,7 +19,7 @@
 use std::fmt::Write as _;
 
 use abcc_core::attempt::{AttemptOutcome, Cause};
-use abcc_core::event::{Control, Event, Finish, Logged};
+use abcc_core::event::{Control, Event, Finish, Logged, TraceSignal};
 use abcc_core::outcome::{Outcome, Why};
 use abcc_core::run::DowngradeReason;
 use abcc_core::seq::{Seq, TaskId};
@@ -184,6 +184,34 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
         // being asked twice in a row with no tool call between.
         Event::PhaseNudged { attempt, by, left } => {
             format!("{attempt} · {by} said nothing; asked again ({left} left)")
+        }
+        // 🚨 F513. The trace signal is named only when it is the one worth
+        // naming: ADR-0010 §7 calls it a stop rather than a score, and a line
+        // that prints "trace closed" on every phase teaches an operator to stop
+        // reading the word. Denials likewise — zero is the expected number.
+        Event::PhaseEnded {
+            attempt,
+            by,
+            turns,
+            tool_calls,
+            denials,
+            prompt_tokens,
+            completion_tokens,
+            elapsed_ms,
+            trace,
+            ..
+        } => {
+            let mut s = format!(
+                "{attempt} · {by} done · {turns} turn(s), {tool_calls} tool call(s) · \
+                 {prompt_tokens} in, {completion_tokens} out · {elapsed_ms} ms"
+            );
+            if *denials > 0 {
+                let _ = write!(s, " · {denials} denial(s)");
+            }
+            if matches!(trace, TraceSignal::OpenAt200) {
+                s.push_str(" · trace open at 200");
+            }
+            s
         }
         Event::ReviewRecorded {
             change,

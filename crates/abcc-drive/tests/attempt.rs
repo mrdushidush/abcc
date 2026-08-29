@@ -191,10 +191,14 @@ fn one_attempt_runs_localize_then_change_and_the_log_says_so() {
             "model_call_started",
             "model_call_ended",
             "claim_recorded",
+            // F513: the phase's accounting, written at the phase's single exit.
+            // It follows the claim because the claim is what ended the phase.
+            "phase_ended",
             "attempt_phase_entered",
             "model_call_started",
             "model_call_ended",
             "claim_recorded",
+            "phase_ended",
             // The closing snapshot is taken while the worktree still exists.
             "checkpoint_taken",
             "worktree_closed",

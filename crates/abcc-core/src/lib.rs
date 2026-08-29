@@ -35,7 +35,7 @@ pub mod seq;
 pub mod task;
 
 pub use attempt::{Attempt, AttemptOutcome, Cause, NextAction};
-pub use event::{Control, Event, Finish, Logged, Usage};
+pub use event::{CallShape, Composition, Control, Event, Finish, Logged, TraceSignal, Usage};
 pub use outcome::{Claim, Counts, Headline, Measurement, Outcome, Report, Why};
 pub use run::{AttemptPhase, DowngradeReason, MissionPhase, Mode};
 pub use seq::{AttemptId, CheckpointId, MissionId, PromptId, Seq, TaskId, UnitId};

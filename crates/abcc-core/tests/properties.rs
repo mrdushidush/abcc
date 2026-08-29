@@ -1,6 +1,7 @@
 //! The properties the outcome type holds, each written as the donor defect it
 //! exists to make unrepresentable.
 
+use abcc_core::event::Event;
 use abcc_core::outcome::{Claim, Counts, Headline, Measurement, Outcome, Report, Why};
 
 const SHA: &str = "0000000000000000000000000000000000000000";
@@ -218,4 +219,61 @@ fn every_outcome_round_trips_through_json() {
     let back: Report = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(r, back);
     assert_eq!(back.headline(), r.headline());
+}
+
+// ---------------------------------------------------------------------------
+// The log is durable, so this enum is a schema
+// ---------------------------------------------------------------------------
+
+/// 🚨 **A required field added to an event makes every event already on disk
+/// undeserializable, and boot is replay.**
+///
+/// This is not hypothetical and it is not a style point: `composition` (F511)
+/// was added as a required field, and the first live run afterwards refused to
+/// start — *the log: serializing an event: missing field `composition`* — over
+/// 1,200 rows written before it existed. `abcc run` could not boot at all.
+///
+/// ⚠ And the field is `Option` rather than a zeroed default for the same reason
+/// `Usage::reasoning_tokens` is: **not recorded is not the same as recorded
+/// zero.** A defaulted `Composition` would state that every historical turn
+/// produced no text, no trace and no tool calls — a false claim the log would
+/// then repeat to every reader forever, which is the shape of every
+/// instrument-that-reports-its-own-failure defect in this project.
+#[test]
+fn an_event_written_before_a_field_existed_still_replays() {
+    // A `model_call_ended` exactly as the log held it before F511.
+    let old = r#"{
+        "kind": "model_call_ended",
+        "attempt": 645,
+        "usage": {
+            "prompt_tokens": 8052,
+            "completion_tokens": 959,
+            "reasoning_tokens": 952,
+            "cached_tokens": null
+        },
+        "finish": { "finish": "stop" },
+        "ttfb_ms": 1034,
+        "elapsed_ms": 3200
+    }"#;
+
+    let event: Event = serde_json::from_str(old).expect("an old event must still replay");
+    let Event::ModelCallEnded {
+        composition, usage, ..
+    } = &event
+    else {
+        panic!("wrong variant: {event:?}");
+    };
+    assert!(
+        composition.is_none(),
+        "a turn nobody measured must read as unmeasured, never as a turn that produced nothing"
+    );
+    assert_eq!(usage.completion_tokens, 959);
+
+    // And the round trip does not invent one either: the field is skipped when
+    // absent, so replaying a log does not rewrite its history into a claim.
+    let back = serde_json::to_string(&event).expect("serialize");
+    assert!(
+        !back.contains("composition"),
+        "an absent measurement was written back as if it had been taken: {back}"
+    );
 }

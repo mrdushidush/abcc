@@ -12,7 +12,7 @@ use std::path::Path;
 
 use abcc::feed::StoreFeed;
 use abcc_core::attempt::{AttemptOutcome, Cause};
-use abcc_core::event::{Event, Finish, Usage};
+use abcc_core::event::{Composition, Event, Finish, Usage};
 use abcc_core::outcome::Why;
 use abcc_core::run::Mode;
 use abcc_core::seq::{AttemptId, MissionId, Seq, TaskId, UnitId};
@@ -77,6 +77,11 @@ fn seeded(path: &Path) -> TaskId {
             finish: Finish::Stop,
             ttfb_ms: 146,
             elapsed_ms: 2_400,
+            composition: Some(Composition {
+                text_chars: 41,
+                reasoning_chars: 700,
+                calls: Vec::new(),
+            }),
         })
         .expect("call");
     store

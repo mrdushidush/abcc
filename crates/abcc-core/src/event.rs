@@ -147,6 +147,66 @@ pub enum Event {
         /// set against.
         ttfb_ms: u64,
         elapsed_ms: u64,
+        /// 🚨 **F511: where the completion actually went.**
+        ///
+        /// [`Usage::completion_tokens`] is a total, and a total is the one thing
+        /// it is not safe to reason from here. Five live turns spent 94–98% of
+        /// their budget assembling **one enormous tool call** and were cut
+        /// mid-argument; from the usage block alone that is indistinguishable
+        /// from a model writing an essay instead of calling a tool — and reading
+        /// the totals got exactly that backwards once, because the stream counts
+        /// text and reasoning separately and counts **tool-call arguments as
+        /// neither**.
+        ///
+        /// ⚠ The answer was recoverable only by cross-reading
+        /// [`Event::LivenessMark`], which samples on a timer and so lands near
+        /// the end of a turn by luck rather than by construction. This field is
+        /// the same fact, measured on purpose.
+        ///
+        /// 🚨 **`Option`, and defaulted, because BOOT IS REPLAY.** The log is
+        /// durable and this enum is its schema: a required field added here
+        /// makes every event already on disk undeserializable, and the first
+        /// live run after this field was added refused to start with *missing
+        /// field `composition`* over 1,200 existing rows. ⚠ And it is `Option`
+        /// rather than a zeroed default for the same reason
+        /// [`Usage::reasoning_tokens`] is: **`None` means nobody counted, which
+        /// is not the same as counted zero** — a defaulted `Composition` would
+        /// say every historical turn produced no text, no trace and no calls,
+        /// which is a false statement the log would then repeat forever.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        composition: Option<Composition>,
+    },
+    /// 🚨 **F513: the phase's own accounting, which used to exist only on a
+    /// terminal.**
+    ///
+    /// The engine's `PhaseReport` was built on every ending, printed by
+    /// `abcc run`, and never written down — so ADR-0010 §7's *recording is what
+    /// produces the population* was not happening. [`TraceSignal`] is computed
+    /// **in flight** from the stream's deltas and cannot be reconstructed from
+    /// any other event: two `OpenAt200` observations exist in this project's
+    /// whole history and both survive only because a person read them off stdout
+    /// before the scrollback went.
+    ///
+    /// The counts *are* derivable by folding the raw events. They are here
+    /// anyway, because an accounting split across two mechanisms is an
+    /// accounting nobody checks.
+    PhaseEnded {
+        attempt: AttemptId,
+        /// The head's call sign, so the feed names who spent this. The phase is
+        /// deliberately not repeated here: it is the last
+        /// [`Event::AttemptPhaseEntered`] before this one, and a second copy is a
+        /// second thing that can disagree. Same shape as [`Event::PhaseNudged`].
+        by: String,
+        turns: u32,
+        tool_calls: u32,
+        denials: u32,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        /// `None` when no call in the phase reported one, which is different
+        /// from zero.
+        reasoning_tokens: Option<u32>,
+        trace: TraceSignal,
+        elapsed_ms: u64,
     },
 
     // -- tools -------------------------------------------------------------
@@ -287,6 +347,75 @@ pub enum Event {
     },
 }
 
+/// 🚨 **F511: what a completion was made OF, as opposed to how big it was.**
+///
+/// The three parts are counted separately because the stream produces them
+/// separately and because **only their sum is reported by the server**. A turn
+/// at the cap with 8,192 completion tokens, ~400 of them reasoning, looks like
+/// 7,700 tokens of prose in the usage block; in five live turns it was 7,700
+/// tokens of **one tool call's arguments**, which is the opposite failure and
+/// has the opposite fix.
+///
+/// ⚠ Characters, not tokens — this is counted at the seam where characters are
+/// what exist. A ratio of roughly four to one holds for this stack, and the
+/// point of the field is the *split*, not a second token count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Composition {
+    pub text_chars: u32,
+    /// The trace's size, never its content: it is the quantity that overran, and
+    /// it is not evidence of anything a person would want to read back.
+    pub reasoning_chars: u32,
+    /// One entry per tool call the turn asked for, in the order they arrived.
+    pub calls: Vec<CallShape>,
+}
+
+/// One tool call a turn asked for, sized — and, when the turn was thrown away,
+/// kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallShape {
+    pub tool: String,
+    pub argument_chars: u32,
+    /// 🚨 **The arguments, and only when this turn's payload was DISCARDED.**
+    ///
+    /// Same rule as [`Event::ToolCallEnded`]'s `arguments` (F505): keep the text
+    /// exactly when the log is the only copy of it. A turn cut at the cap never
+    /// runs its calls (F506), so nothing else in the log or the tree will ever
+    /// say what was being written — and the front of a cut argument is where the
+    /// path is, which is the whole diagnostic.
+    ///
+    /// ⚠ `None` for every turn that was used, deliberately: a call that ran has
+    /// its arguments on [`Event::ToolCallEnded`] if it failed, and its effect in
+    /// the tree if it did not. ⚠ Bounded by the head's own budget, because a
+    /// discarded payload is by definition at most one completion. ⚠ Not rendered
+    /// on the feed — F501, one event is one line, and this one can be a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+}
+
+/// ADR-0010 §7's one in-flight signal: **at token 200, has the reasoning trace
+/// closed?**
+///
+/// 🚨 **It is a stop, not a score.** It feeds `Uncertain` and the next action,
+/// and it never becomes a number displayed next to an answer — where a human
+/// wants a confidence number, they get the verifier's result, which is 547 ms
+/// and checkable.
+///
+/// ⚠ It lives here, in the log's vocabulary, because it is **computed in flight
+/// and derivable from nothing else**: by the time a turn has ended, the deltas
+/// that would answer the question are gone. A signal the log cannot hold is a
+/// signal whose population never gets built (F513).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "trace", rename_all = "snake_case")]
+pub enum TraceSignal {
+    /// The provider reported no reasoning trace at all. Not the same as a trace
+    /// of length zero.
+    Absent,
+    /// The trace had closed by the time the turn reached 200 completion tokens.
+    Closed,
+    /// It had not. This turn is far likelier to end at the ceiling with nothing.
+    OpenAt200,
+}
+
 /// What a model call cost. `reasoning_tokens` is logged on every call from day
 /// one (`PLAN.md` §5) — it is `None` when the provider did not report it, which
 /// is a different thing from zero.
@@ -389,6 +518,7 @@ impl Event {
             | Event::RungRecorded { attempt, .. }
             | Event::ClaimRecorded { attempt, .. }
             | Event::PhaseNudged { attempt, .. }
+            | Event::PhaseEnded { attempt, .. }
             | Event::OperatorPrompted { attempt, .. }
             | Event::LivenessMark { attempt, .. } => Some(*attempt),
             _ => None,
@@ -427,6 +557,7 @@ impl Event {
             Event::ControlApplied { .. } => "control_applied",
             Event::LivenessMark { .. } => "liveness_mark",
             Event::PhaseNudged { .. } => "phase_nudged",
+            Event::PhaseEnded { .. } => "phase_ended",
             Event::ReviewRecorded { .. } => "review_recorded",
             Event::Note { .. } => "note",
         }
