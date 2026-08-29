@@ -21,6 +21,7 @@ use abcc_core::outcome::Why;
 use abcc_core::seq::{MissionId, Seq, TaskId, UnitId};
 use abcc_core::task::{AbortReason, TaskState};
 use abcc_drive::{Driver, Landed};
+use abcc_engine::Head;
 use abcc_engine::control::{ControlHandle, ControlPoint};
 use abcc_engine::scripted::{Script, Scripted};
 use abcc_store::Store;
@@ -319,7 +320,7 @@ fn a_localize_that_produces_nothing_ends_the_attempt_before_builders_runs() {
 
     let (mut control, _handle) = ControlPoint::new();
     let provider = Scripted::new(vec![
-        Script::truncated_at_cap(8192),
+        Script::truncated_at_cap(Head::Recon.budget()),
         Script::says("never reached"),
     ]);
     let repo = Repo::open(&subject.root).expect("open");
@@ -332,7 +333,12 @@ fn a_localize_that_produces_nothing_ends_the_attempt_before_builders_runs() {
     assert_eq!(
         landed.outcome,
         AttemptOutcome::Uncertain {
-            why: Why::TruncatedAtCap { budget: 8192 }
+            // ⚠ The head's budget, NOT the script's: the `Why` is built from
+            // `Head::budget()`, so writing the number here twice is two things
+            // that can disagree. Raising the budget to 16384 is what found this.
+            why: Why::TruncatedAtCap {
+                budget: Head::Recon.budget()
+            }
         },
         "an empty payload at the cap became something other than an absence"
     );

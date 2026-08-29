@@ -263,12 +263,13 @@ pub struct ApiRequest<'a> {
 impl ApiRequest<'_> {
     /// Tokens this request will accept back.
     ///
-    /// **8192, from the head, for every model phase that emits a structured
-    /// artifact** — twice the largest successful completion observed (4,006).
-    /// No cap is safe by construction, because the quantity being bounded is the
-    /// reasoning trace, which varies 9,942–16,564 characters on identical input
-    /// and returned nothing in one call in five at four times the donor's cap
-    /// (F246).
+    /// **16384, from the head, for every model phase that emits a structured
+    /// artifact.** It was 8192; see [`Head::budget`] for the twenty runs that
+    /// falsified that number's justification. In short: the quantity that
+    /// actually overruns is not the reasoning trace but **one tool call's
+    /// arguments** (F511), and an overrun loses them entirely rather than
+    /// recording them, because a call cut mid-argument never becomes a call
+    /// (F515).
     #[must_use]
     pub fn budget(&self) -> u32 {
         self.head.budget()

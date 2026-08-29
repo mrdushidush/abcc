@@ -178,11 +178,16 @@ fn heads_exist_for_the_model_phases_and_only_those() {
     );
 }
 
-/// One budget, from the head, for every model phase — 8192, twice the largest
-/// successful completion observed.
+/// One budget, from the head, for every model phase — 16384, sized against the
+/// largest tool-call argument this stack has delivered intact (17,157 chars,
+/// ~4,300 tokens) rather than against the reasoning trace.
+///
+/// ⚠ It is asserted as **one** number across every head on purpose: a per-head
+/// budget would make the cap a thing to tune per phase, and the frozen head's
+/// whole point is that a phase's request shape is not a dial.
 #[test]
 fn every_head_carries_the_same_output_budget() {
     for head in Head::ALL {
-        assert_eq!(head.budget(), 8192, "{head}");
+        assert_eq!(head.budget(), 16384, "{head}");
     }
 }

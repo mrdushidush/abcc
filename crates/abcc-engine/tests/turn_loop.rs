@@ -292,7 +292,7 @@ fn a_refused_call_never_reads_as_started() {
 /// never reaches a caller as an artifact.
 #[test]
 fn an_empty_payload_at_the_cap_is_an_absence() {
-    let provider = Scripted::new(vec![Script::truncated_at_cap(8_192)]);
+    let provider = Scripted::new(vec![Script::truncated_at_cap(Head::Commandos.budget())]);
     let tools = Recorder::default();
     let (mut control, _handle) = ControlPoint::new();
     let mut body = Body::opening("review this diff");
@@ -307,7 +307,12 @@ fn an_empty_payload_at_the_cap_is_an_absence() {
     );
     match ended {
         PhaseEnded::Unmeasured { why, report } => {
-            assert_eq!(why, Why::TruncatedAtCap { budget: 8_192 });
+            assert_eq!(
+                why,
+                Why::TruncatedAtCap {
+                    budget: Head::Commandos.budget()
+                }
+            );
             assert_eq!(report.turns, 1, "the turn still happened and still cost");
         }
         other => panic!("expected Unmeasured, got {other:?}"),
@@ -681,11 +686,14 @@ fn a_length_finish_below_our_cap_is_the_servers_window_and_names_it() {
 /// from swallowing every truncation: a turn that spent **our whole cap** was cut
 /// by us, and stays [`Why::TruncatedAtCap`].
 ///
-/// ⚠ `Head::Builders` sends 8,192, and `truncated_at_cap` spends exactly that —
-/// so `completion < budget` is false and the overflow branch must not fire.
+/// ⚠ The fixture spends **exactly the head's budget**, so `completion < budget`
+/// is false and the overflow branch must not fire. It is written as
+/// `Head::budget()` rather than as the number: raising the budget from 8,192 to
+/// 16,384 turned the literal version of this test into a `ContextOverflow` test
+/// without changing a line of it.
 #[test]
 fn a_length_finish_at_our_own_cap_is_still_the_cap() {
-    let provider = Scripted::new(vec![Script::truncated_at_cap(8_192)]);
+    let provider = Scripted::new(vec![Script::truncated_at_cap(Head::Builders.budget())]);
     let tools = Recorder::default();
     let (mut control, _handle) = ControlPoint::new();
     let mut body = Body::opening("go");
@@ -702,7 +710,12 @@ fn a_length_finish_at_our_own_cap_is_still_the_cap() {
     let PhaseEnded::Unmeasured { why, .. } = &ended else {
         panic!("a turn cut at the cap produced no artifact: {ended:?}");
     };
-    assert_eq!(why, &Why::TruncatedAtCap { budget: 8_192 });
+    assert_eq!(
+        why,
+        &Why::TruncatedAtCap {
+            budget: Head::Builders.budget()
+        }
+    );
 }
 
 /// A short turn with a trace that closed is not the same thing, and neither is a
@@ -975,7 +988,9 @@ fn a_turn_cut_at_our_cap_mid_tool_call_runs_nothing_and_ends_the_phase() {
         Ok(Delta::Closed {
             usage: Usage {
                 prompt_tokens: 8_209,
-                completion_tokens: 8_192,
+                // Exactly the head's budget: below it this is the server's
+                // window (ContextOverflow), at it this is ours.
+                completion_tokens: Head::Builders.budget(),
                 reasoning_tokens: Some(0),
                 cached_tokens: None,
             },
@@ -1002,7 +1017,12 @@ fn a_turn_cut_at_our_cap_mid_tool_call_runs_nothing_and_ends_the_phase() {
     let PhaseEnded::Unmeasured { why, .. } = &ended else {
         panic!("a turn cut mid-tool-call is not an answer: {ended:?}");
     };
-    assert_eq!(why, &Why::TruncatedAtCap { budget: 8_192 });
+    assert_eq!(
+        why,
+        &Why::TruncatedAtCap {
+            budget: Head::Builders.budget()
+        }
+    );
     assert!(
         tools.ran.lock().expect("lock").is_empty(),
         "a fragment of a tool call was executed: {:?}",
@@ -1044,7 +1064,7 @@ fn composition(log: &[Event]) -> Composition {
 fn a_completion_is_split_into_text_reasoning_and_arguments() {
     let huge = "x".repeat(30_000);
     let provider = Scripted::new(vec![Script::cut_assembling_a_call(
-        8192,
+        Head::Builders.budget(),
         "write_file",
         &huge,
     )]);
@@ -1082,7 +1102,7 @@ fn a_completion_is_split_into_text_reasoning_and_arguments() {
 #[test]
 fn a_discarded_turn_keeps_the_arguments_it_was_cut_writing() {
     let provider = Scripted::new(vec![Script::cut_assembling_a_call(
-        8192,
+        Head::Builders.budget(),
         "apply_patch",
         "{\"path\":\"crates/abcc/src/cli.rs\",\"diff\":\"@@ -1,2 +1,3 @@",
     )]);
@@ -1211,7 +1231,10 @@ fn the_trace_signal_reaches_the_log_and_not_only_the_terminal() {
 fn a_phase_writes_its_accounting_exactly_once_however_it_ends() {
     for (name, scripts) in [
         ("answered", vec![Script::says("done")]),
-        ("cut", vec![Script::truncated_at_cap(8192)]),
+        (
+            "cut",
+            vec![Script::truncated_at_cap(Head::Builders.budget())],
+        ),
         (
             "used a tool then answered",
             vec![

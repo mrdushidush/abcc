@@ -145,14 +145,36 @@ impl Head {
 
     /// Tokens this head's calls accept back.
     ///
-    /// **8192 for every model phase that emits a structured artifact**, twice the
-    /// largest successful completion observed (4,006). No cap is safe by
-    /// construction — the quantity being bounded is the reasoning trace, which
-    /// varies 9,942–16,564 characters on identical input (F246) — so this is a
-    /// budget whose overrun is recorded, not a limit that is expected to hold.
+    /// **16384 for every model phase that emits a structured artifact.**
+    ///
+    /// 🚨 **It was 8192, and twenty live runs falsified the reason it was 8192.**
+    /// That number was *twice the largest successful completion observed
+    /// (4,006)*, chosen when the quantity being bounded was assumed to be the
+    /// reasoning trace — which varies 9,942–16,564 characters on identical input
+    /// (F246). The assumption was wrong about **what** overruns: nine turns hit
+    /// 8,192 exactly, and in every one of them the trace was tiny (96–431
+    /// tokens) and the answer text was 89–204 characters. The budget was going
+    /// into **one tool call's arguments** (F511).
+    ///
+    /// 🚨 **And the overrun is not recorded, because it cannot be.** The doc
+    /// used to say this was *a budget whose overrun is recorded, not a limit
+    /// expected to hold*. F515 killed that: a call cut mid-argument never
+    /// becomes a call, so the server returns the function name and **no
+    /// arguments at all** — three cut turns, three `apply_patch` calls, zero
+    /// characters captured each. There is nothing to record and nothing to
+    /// retry from. The overrun is total loss of the turn's work.
+    ///
+    /// The new number is sized against what actually fits through: the largest
+    /// `apply_patch` this stack has delivered intact is **17,157 characters**
+    /// (~4,300 tokens), in the same attempt a later call was cut. 16384 clears
+    /// that with room for the trace and the answer beside it.
+    ///
+    /// ⚠ **This is still a stop and not a promise.** A patch large enough to
+    /// exceed it will be lost the same way; what changed is that the limit now
+    /// sits above the observed working range instead of inside it.
     #[must_use]
     pub const fn budget(self) -> u32 {
-        8192
+        16384
     }
 
     /// 🚨 **The immutable system prefix.**
