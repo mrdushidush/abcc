@@ -82,6 +82,9 @@ fn a_tools_unmeasured_ending_and_a_rung_are_clipped_too() {
         unmeasured: Some(Why::EngineError {
             detail: REAL_500.to_owned(),
         }),
+        // F505 keeps the refused arguments on the log; F501 keeps them off the
+        // feed. A whole diff here must not widen the line.
+        arguments: Some(REAL_500.to_owned()),
     });
     assert_one_line(&tool);
 

@@ -543,14 +543,22 @@ fn an_open_trace_at_token_200_is_recorded() {
     let (mut control, _handle) = ControlPoint::new();
     let mut body = Body::opening("go");
 
-    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
-        Head::Commandos,
-        ATTEMPT,
-        None,
-        &mut body,
-        &mut control,
-        &mut |_: Event| {},
-    );
+    // ⚠ `nudges: 0` because this test is about the *signal*. With the default
+    // the phase would ask again (F503) and the script would run out, which
+    // would be a test of the fixture rather than of ADR-0010 §7.
+    let ended = TurnLoop::new(&provider, &tools, MODEL)
+        .limits(Limits {
+            nudges: 0,
+            ..Limits::default()
+        })
+        .run(
+            Head::Commandos,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |_: Event| {},
+        );
     assert_eq!(ended.report().trace, TraceSignal::OpenAt200);
     // 🚨 The signal is still a record and not a refusal: the phase does end,
     // but it ends naming **the empty answer** (F497) rather than the trace. No
@@ -575,7 +583,14 @@ fn an_open_trace_at_token_200_is_recorded() {
 /// Localize's empty answer became Change's *"What Recon reported"* input.
 #[test]
 fn a_phase_whose_model_said_nothing_is_unmeasured_rather_than_answered() {
-    let provider = Scripted::new(vec![Script::all_trace_no_answer(47, 42)]);
+    // Three, because the phase asks twice more before it gives up (F503). A
+    // model that says nothing three times running is the case this ending is
+    // for.
+    let provider = Scripted::new(vec![
+        Script::all_trace_no_answer(47, 42),
+        Script::all_trace_no_answer(47, 42),
+        Script::all_trace_no_answer(47, 42),
+    ]);
     let tools = Recorder::default();
     let (mut control, _handle) = ControlPoint::new();
     let mut body = Body::opening("go");
@@ -588,6 +603,13 @@ fn a_phase_whose_model_said_nothing_is_unmeasured_rather_than_answered() {
         &mut body,
         &mut control,
         &mut |e: Event| log.push(e),
+    );
+
+    assert_eq!(
+        kinds(&log).iter().filter(|k| **k == "phase_nudged").count(),
+        2,
+        "the phase gave up without asking again: {:?}",
+        kinds(&log)
     );
 
     let PhaseEnded::Unmeasured { why, .. } = &ended else {
@@ -774,4 +796,146 @@ fn nothing_in_a_body_can_be_a_system_message() {
         }
         assert!(!seen.head_prefix.is_empty(), "the system half is the head");
     }
+}
+
+/// 🚨 **F503, and the reason the nudge exists at all.** A model that says nothing
+/// once is a *sample*, not a verdict: across seven runs of one task the closing
+/// answer was missing five times and arrived twice — 2,008 and 3,431 characters
+/// — from the same head, brief, server and model.
+///
+/// So the phase asks again, and the recovered answer is an ordinary `Answered`
+/// with an ordinary claim. ⚠ The empty turn stays on the body: hiding it would
+/// ask the model to answer a question it cannot see it has already failed.
+#[test]
+fn a_phase_that_says_nothing_and_then_answers_is_answered() {
+    let provider = Scripted::new(vec![
+        Script::all_trace_no_answer(61, 52),
+        Script::says("crates/abcc/src/cli.rs, at the CliError enum."),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let PhaseEnded::Answered { text, .. } = &ended else {
+        panic!("the nudged answer did not become the phase's artifact: {ended:?}");
+    };
+    assert_eq!(text, "crates/abcc/src/cli.rs, at the CliError enum.");
+    assert_eq!(
+        kinds(&log).iter().filter(|k| **k == "phase_nudged").count(),
+        1,
+        "the repair left no trace on the log: {:?}",
+        kinds(&log)
+    );
+    // The absence and the question are both in the transcript the second turn
+    // saw — an empty assistant turn, then the user asking for the answer.
+    let roles: Vec<Role> = body.messages().iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        vec![Role::User, Role::Assistant, Role::User],
+        "the nudged body is not the conversation that happened: {roles:?}"
+    );
+    assert!(
+        body.messages()[1].content.is_empty(),
+        "the empty turn was rewritten rather than recorded"
+    );
+}
+
+/// A tool that refuses, the way `apply_patch` refused five times running.
+struct Refuses;
+
+impl Tools for Refuses {
+    fn run(&self, spec: &'static ToolSpec, _call: &ToolCall) -> ToolResult {
+        ToolResult {
+            text: format!("{}: the context is nowhere in the file", spec.name),
+            exit: None,
+            elapsed_ms: 1,
+            unmeasured: Some(Why::FailedBeforeRunning {
+                detail: "hunk 1 claims line 123 and its context is nowhere".to_owned(),
+            }),
+        }
+    }
+}
+
+/// 🚨 **F505.** A refused write is diagnosable from the log alone.
+///
+/// Five consecutive `apply_patch` refusals were once readable only as a class:
+/// the log carried the tool, the tier and the `Why`, and not the diff that was
+/// refused — so the only way to see it was to make the model produce it again.
+///
+/// ⚠ And the other half, which is what keeps the log from becoming a second copy
+/// of the workspace: **a call that succeeded carries no arguments.**
+#[test]
+fn a_refused_tool_call_keeps_its_arguments_and_a_successful_one_does_not() {
+    let patch = "--- a/crates/abcc/src/cli.rs\n+++ b/crates/abcc/src/cli.rs\n@@ -123,3 +123,4 @@\n";
+    let arguments = format!(
+        "{{\"diff\":{}}}",
+        serde_json::to_string(patch).expect("json")
+    );
+
+    let refused = Scripted::new(vec![
+        Script::calls("c1", "apply_patch", &arguments),
+        Script::says("I could not apply it."),
+    ]);
+    let mut log = Vec::new();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    TurnLoop::new(&refused, &Refuses, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let kept = log
+        .iter()
+        .find_map(|e| match e {
+            Event::ToolCallEnded {
+                arguments: Some(a), ..
+            } => Some(a.clone()),
+            _ => None,
+        })
+        .expect("the refused call kept nothing to diagnose");
+    assert!(
+        kept.contains("@@ -123,3 +123,4 @@"),
+        "the refused diff is not on the log: {kept}"
+    );
+
+    // The same call, admitted and run: nothing to keep.
+    let ok = Scripted::new(vec![
+        Script::calls("c1", "apply_patch", &arguments),
+        Script::says("done"),
+    ]);
+    let mut log = Vec::new();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    TurnLoop::new(&ok, &Recorder::default(), MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+    assert!(
+        log.iter().all(|e| !matches!(
+            e,
+            Event::ToolCallEnded {
+                arguments: Some(_),
+                ..
+            }
+        )),
+        "a successful call copied its arguments onto the log"
+    );
 }

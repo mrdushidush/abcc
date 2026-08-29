@@ -40,6 +40,21 @@ use crate::provider::{
 };
 use crate::tools::ToolSpec;
 
+/// What a phase says to a model that answered with nothing (F503).
+///
+/// 🚨 **It names the mechanism rather than scolding.** The observed failure is
+/// not refusal or confusion — the model reasons to the end and emits five to
+/// nine tokens that trim to an empty string, having apparently treated the
+/// thinking as the deliverable. So the sentence that matters is *the reasoning
+/// is not visible and the reply is*.
+///
+/// ⚠ It goes on the **end** of the body, never into the head. One token changed
+/// at the front costs the whole 79.7% prefix-cache saving (F81), which is the
+/// same reason [`crate::head::Head::prefix`] takes no arguments.
+const NO_ANSWER: &str = "Your last turn produced no reply text at all: the reasoning ended and \
+                         nothing was said. Only the reply is visible to anyone — the reasoning \
+                         is not, and it is not kept. Say the answer now, in the reply itself.";
+
 /// Where the loop writes what happened.
 ///
 /// A trait rather than a `Store`, because ADR-0006 makes the log the only thing
@@ -93,6 +108,18 @@ pub struct Limits {
     /// How long a stream may say nothing before the log says it is alive.
     /// ADR-0012 §5's bar is that no gap over ten seconds goes unmarked.
     pub liveness_gap: Duration,
+    /// 🚨 **F503: how many times a phase asks again when the model answers with
+    /// nothing.**
+    ///
+    /// A repair inside the phase, which is ADR-0010's shape — the body is
+    /// borrowed by [`TurnLoop::run`] precisely so a retry is *the same body with
+    /// the failure appended*. It is small because the failure it repairs is a
+    /// missing closing sentence rather than a missing capability: across seven
+    /// runs of one task the model produced no closing answer **five times**, and
+    /// twice it produced a 2,008- and a 3,431-character one from the same head,
+    /// brief, server and model. Exhausting it ends the phase
+    /// [`Why::SaidNothing`], which is the ruling this does not overturn.
+    pub nudges: u8,
 }
 
 impl Default for Limits {
@@ -103,6 +130,7 @@ impl Default for Limits {
             // 1.7-3.3x tighter than the 300 s inherited (F199).
             idle_gap: Duration::from_secs(90),
             liveness_gap: Duration::from_secs(10),
+            nudges: 2,
         }
     }
 }
@@ -241,6 +269,7 @@ impl<'a> TurnLoop<'a> {
     ) -> PhaseEnded {
         let started = Instant::now();
         let mut report = PhaseReport::default();
+        let mut nudges = self.limits.nudges;
 
         for _round in 0..self.limits.rounds {
             let turn = match self.one_turn(head, attempt, schema, body, control, journal) {
@@ -262,6 +291,26 @@ impl<'a> TurnLoop<'a> {
             // `Answered` afterwards is what put two zero-character claims on the
             // log and handed one of them to the next phase as its input.
             if let Some(why) = turn.said_nothing(head.call_sign()) {
+                // 🚨 F503: ask again before giving up. The model answers this
+                // brief sometimes and not others — 2 of 7 — so the first
+                // absence is a sample rather than a verdict, and the repair
+                // belongs *inside* the phase for the same reason a failed tool
+                // call does: the body is borrowed so that a retry is this
+                // conversation with the failure appended, not a new one.
+                if nudges > 0 {
+                    nudges -= 1;
+                    journal.record(Event::PhaseNudged {
+                        attempt,
+                        by: head.call_sign().to_owned(),
+                        left: nudges,
+                    });
+                    // The empty turn goes on the body as what it was. Hiding it
+                    // would ask the model to answer a question it cannot see it
+                    // has already failed.
+                    body.append(Message::assistant(turn.text.clone()));
+                    body.append(Message::user(NO_ANSWER));
+                    continue;
+                }
                 return Ending::Unmeasured(why).into_phase(report, started);
             }
 
@@ -377,6 +426,8 @@ impl<'a> TurnLoop<'a> {
                         exit: result.exit,
                         elapsed_ms: result.elapsed_ms,
                         unmeasured: result.unmeasured.clone(),
+                        // F505: what was refused, kept only when it was.
+                        arguments: result.unmeasured.is_some().then(|| call.arguments.clone()),
                     });
                     body.append(Message::tool_result(&call.id, result.text));
                 }
@@ -392,6 +443,13 @@ impl<'a> TurnLoop<'a> {
                             tool: call.tool.clone(),
                             ceiling: head.max_tier().to_string(),
                         }),
+                        // ⚠ `None`, and not an oversight. A denial is about the
+                        // *class* — ADR-0014's control is that the role does not
+                        // have this tool at all — and `ToolCall`'s own doc says
+                        // the arguments of a tool a role may not have are not
+                        // even parsed. Recording them here would invite exactly
+                        // the argument-level reasoning W7 ruled against.
+                        arguments: None,
                     });
                     // The model is told, in its own transcript. A refusal it
                     // cannot see is a refusal it asks for again.

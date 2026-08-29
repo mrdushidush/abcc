@@ -118,6 +118,7 @@ fn the_attempt_runs(log: &mut Replay, task: TaskId, attempt: AttemptId, engaged:
         exit: Some(0),
         elapsed_ms: 40,
         unmeasured: None,
+        arguments: None,
     });
     log.advance(165).push(Event::CheckpointTaken {
         task,

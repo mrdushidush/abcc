@@ -165,6 +165,20 @@ pub enum Event {
         /// Set when the tool produced no measurable ending — the class, never a
         /// generic failure.
         unmeasured: Option<crate::outcome::Why>,
+        /// 🚨 **F505: the arguments, and only when the call failed.**
+        ///
+        /// Five consecutive `apply_patch` refusals were once undiagnosable after
+        /// the fact, because the log carried the tool, the tier and the class
+        /// and not the thing that was refused — so the only way to see the patch
+        /// was to make the model produce it again. A refusal nobody can read is
+        /// a refusal nobody can fix.
+        ///
+        /// ⚠ `None` on success, deliberately: an argument string that is already
+        /// reflected in the tree is a copy of the work, and the log is not a
+        /// second copy of the workspace. ⚠ It is **not** rendered on the feed —
+        /// see F501; one event is one line, and this one can be a whole diff.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments: Option<String>,
     },
 
     // -- the gate ----------------------------------------------------------
@@ -232,6 +246,23 @@ pub enum Event {
     LivenessMark {
         attempt: AttemptId,
         note: String,
+    },
+    /// 🚨 **F503: the model produced no answer and was asked again.** A repair,
+    /// not an ending — the ending is [`Why::SaidNothing`] and it only arrives
+    /// when the nudges run out.
+    ///
+    /// It is on the log because it changes what the model was shown. Across
+    /// seven runs of one task the closing answer was missing **5 times**, and a
+    /// repair that frequent, left untraced, would make every later transcript a
+    /// record of a conversation nobody can reconstruct.
+    ///
+    /// [`Why::SaidNothing`]: crate::outcome::Why::SaidNothing
+    PhaseNudged {
+        attempt: AttemptId,
+        /// The head's call sign, so the feed names who went quiet.
+        by: String,
+        /// Nudges remaining after this one.
+        left: u8,
     },
     /// 🚨 The measurement W13's whole ladder is defined in. One column and one
     /// event type, trivial now and unrecoverable later.
@@ -357,6 +388,7 @@ impl Event {
             | Event::ToolCallEnded { attempt, .. }
             | Event::RungRecorded { attempt, .. }
             | Event::ClaimRecorded { attempt, .. }
+            | Event::PhaseNudged { attempt, .. }
             | Event::OperatorPrompted { attempt, .. }
             | Event::LivenessMark { attempt, .. } => Some(*attempt),
             _ => None,
@@ -394,6 +426,7 @@ impl Event {
             Event::ControlRequested { .. } => "control_requested",
             Event::ControlApplied { .. } => "control_applied",
             Event::LivenessMark { .. } => "liveness_mark",
+            Event::PhaseNudged { .. } => "phase_nudged",
             Event::ReviewRecorded { .. } => "review_recorded",
             Event::Note { .. } => "note",
         }

@@ -179,6 +179,12 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
         Event::ControlRequested { control, .. } => format!("operator: {}", control_text(control)),
         Event::ControlApplied { control, .. } => format!("applied: {}", control_text(control)),
         Event::LivenessMark { note, .. } => format!("alive · {}", clip(note)),
+        // F503. Named as a repair rather than a fault: the phase has not ended,
+        // and an operator reading the feed needs to know why the same head is
+        // being asked twice in a row with no tool call between.
+        Event::PhaseNudged { attempt, by, left } => {
+            format!("{attempt} · {by} said nothing; asked again ({left} left)")
+        }
         Event::ReviewRecorded {
             change,
             seconds,
