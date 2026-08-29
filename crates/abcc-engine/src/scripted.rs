@@ -80,6 +80,13 @@ impl Script {
 
     /// A turn whose reasoning trace is still open when the answer is due — the
     /// signal ADR-0010 §7 asks for at token 200.
+    ///
+    /// 🚨 **F502: it cannot be given an answer without destroying the signal.**
+    /// The first `Delta::Text` closes the trace, so `OpenAt200` is reachable
+    /// only by a turn that reasoned and then produced nothing — which is F497's
+    /// shape with a completion count above 200. The signal is therefore a
+    /// *weaker* detector of the same condition, and on the first clean run it
+    /// would have fired for Builders (582) and missed Recon (47) altogether.
     #[must_use]
     pub fn trace_still_open(completion_tokens: u32) -> Script {
         Script(vec![
@@ -88,6 +95,45 @@ impl Script {
             Ok(Delta::Closed {
                 usage: usage(64, completion_tokens, Some(completion_tokens)),
                 finish: Finish::Stop,
+            }),
+        ])
+    }
+
+    /// 🚨 **F497, as it actually arrived**: the budget goes into the trace, the
+    /// model stops cleanly, and the payload is empty.
+    ///
+    /// Both `ClaimRecorded` events on the first clean run were zero characters —
+    /// Recon at completion 47 / reasoning 42, Builders at 582 / 577 — so the
+    /// numbers here are the shape rather than an invention.
+    #[must_use]
+    pub fn all_trace_no_answer(completion_tokens: u32, reasoning_tokens: u32) -> Script {
+        Script(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Reasoning("thinking ".repeat(64))),
+            Ok(Delta::Closed {
+                usage: usage(64, completion_tokens, Some(reasoning_tokens)),
+                finish: Finish::Stop,
+            }),
+        ])
+    }
+
+    /// 🚨 **F496, as it actually arrived**: the conversation reached the
+    /// server's window, so generation stopped at `length` having spent *fewer*
+    /// completion tokens than the cap we sent.
+    ///
+    /// Run 1: 14,261 prompt + 2,123 completion = 16,384 exactly, against a
+    /// budget of 8,192. That inequality is the whole discriminator (F498) — with
+    /// `completion >= budget` this is our own cap and an ordinary truncation.
+    #[must_use]
+    pub fn filled_the_window(prompt_tokens: u32, completion_tokens: u32) -> Script {
+        Script(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Text("half a th".to_owned())),
+            Ok(Delta::Closed {
+                usage: usage(prompt_tokens, completion_tokens, Some(0)),
+                finish: Finish::Length {
+                    content_empty: false,
+                },
             }),
         ])
     }

@@ -61,3 +61,20 @@ pub fn unverified(artifact: &str) -> String {
          than accepted. Read it and say what should happen to the task."
     )
 }
+
+/// The question the operator is left with when the conversation filled the
+/// server's context window.
+///
+/// 🚨 It names the window **and the number the operator has to beat**, because
+/// the one action that fixes this is loading a larger one and the operator
+/// should not have to work out how much larger. The window is measured rather
+/// than guessed (F498) — see [`abcc_core::Why::ContextOverflow`].
+#[must_use]
+pub fn overflowed(window: u32, prompt_tokens: u32) -> String {
+    format!(
+        "The conversation filled the server's {window}-token window — {prompt_tokens} of it \
+         was prompt, and the reply was cut off part-way. Nothing here failed and nothing \
+         measured the work: the same attempt runs unchanged against a server holding a \
+         larger window. Load one and retry, or say what should happen to the task."
+    )
+}

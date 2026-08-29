@@ -123,6 +123,39 @@ pub enum Why {
     /// tool layer that could not answer. Attempt-level rather than rung-level,
     /// and it is here because ADR-0009 §7 makes this enum W3's failure class too.
     EngineError { detail: String },
+    /// 🚨 **F497: the model ended cleanly and produced no text.** Not a short
+    /// answer and not a truncation — `finish: stop`, and the payload empty.
+    ///
+    /// It is a member rather than an empty `Answered` because *"the model said
+    /// nothing"* and *"nothing measured what the model said"* are two different
+    /// sentences, and an empty string presented as an artifact tells the second
+    /// in place of the first. On the first clean run **both** `ClaimRecorded`
+    /// events were zero characters — Recon at completion 47 / reasoning 42,
+    /// Builders at 582 / 577 — so the budget went almost entirely into the
+    /// reasoning trace and the five tokens of answer never arrived. A live
+    /// positive control on the same server ruled out the parser.
+    SaidNothing {
+        by: String,
+        completion_tokens: u32,
+        /// ⚠ `None` is *not reported*, which is a different thing from zero —
+        /// and the difference matters here more than anywhere, because a large
+        /// reasoning count is the whole explanation for an empty answer.
+        reasoning_tokens: Option<u32>,
+    },
+    /// 🚨 **F496: the conversation filled the server's context window.** Not an
+    /// engine fault — nothing here is broken, and the same body works unchanged
+    /// against a server holding a larger window.
+    ///
+    /// It was recorded [`EngineError`] once, and so `HardFailure`, which asserts
+    /// *another attempt would repeat this unchanged* — the one thing that is not
+    /// true of it. The window is **observed rather than assumed** (F498): a turn
+    /// that finishes at `length` having spent fewer completion tokens than the
+    /// `max_tokens` we sent was not stopped by our cap, so the server stopped it,
+    /// and `prompt + completion` is therefore the window itself. Run 1:
+    /// 14,261 + 2,123 = 16,384 exactly, against a budget of 8,192.
+    ///
+    /// [`EngineError`]: Why::EngineError
+    ContextOverflow { window: u32, prompt_tokens: u32 },
 }
 
 impl fmt::Display for Why {
@@ -152,6 +185,30 @@ impl fmt::Display for Why {
                 ceiling,
             } => write!(f, "{role} may not use {tool} (capped at {ceiling})"),
             Why::EngineError { detail } => write!(f, "the turn loop failed: {detail}"),
+            Why::SaidNothing {
+                by,
+                completion_tokens,
+                reasoning_tokens,
+            } => match reasoning_tokens {
+                Some(reasoning) => write!(
+                    f,
+                    "{by} finished cleanly and said nothing ({completion_tokens} tokens out, \
+                     {reasoning} of them reasoning)"
+                ),
+                None => write!(
+                    f,
+                    "{by} finished cleanly and said nothing ({completion_tokens} tokens out, \
+                     no reasoning count reported)"
+                ),
+            },
+            Why::ContextOverflow {
+                window,
+                prompt_tokens,
+            } => write!(
+                f,
+                "the conversation filled the server's {window}-token window \
+                 ({prompt_tokens} of it prompt)"
+            ),
         }
     }
 }

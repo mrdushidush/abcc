@@ -255,6 +255,16 @@ impl<'a> TurnLoop<'a> {
                 return Ending::Unmeasured(why).into_phase(report, started);
             }
 
+            // 🚨 F497. Asked here rather than beside `uncertain` above because
+            // nothing about the turn is wrong: the model stopped cleanly, and
+            // the absence only exists once this text is about to become the
+            // phase's artifact. Writing the `ClaimRecorded` first and ending
+            // `Answered` afterwards is what put two zero-character claims on the
+            // log and handed one of them to the next phase as its input.
+            if let Some(why) = turn.said_nothing(head.call_sign()) {
+                return Ending::Unmeasured(why).into_phase(report, started);
+            }
+
             if !turn.wants_tools() {
                 let text = turn.text;
                 journal.record(Event::ClaimRecorded {

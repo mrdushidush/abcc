@@ -440,8 +440,32 @@ impl Turn {
     /// `finish_reason == "length"` with nothing in the payload — 17 of 57 judge
     /// calls were lost this way — is [`Why::TruncatedAtCap`], never a verdict and
     /// never a zero. A truncated stream is the same kind of nothing.
+    ///
+    /// 🚨 **F498: `length` is two different endings and the token counts tell
+    /// them apart.** The cap this turn was given is our own `max_tokens`; a
+    /// server that stops *below* it did not stop for our reason, and the only
+    /// other thing that ends a chat completion early is the context window. So
+    /// the window is not guessed at — it is `prompt + completion`, exactly, and
+    /// the [`overflow`](Why::ContextOverflow) branch is asked **first** because a
+    /// window cut with an empty payload is indistinguishable from a cap cut
+    /// until these two numbers are compared. Run 1 died at 14,261 + 2,123 =
+    /// 16,384 against a budget of 8,192, and was called an engine fault.
     #[must_use]
     pub fn uncertain(&self) -> Option<Why> {
+        if matches!(self.finish, Finish::Length { .. })
+            && self.usage.completion_tokens < self.budget
+        {
+            // ⚠ Saturating because these are two counts from the wire, and a
+            // provider that reports nonsense should not panic the run it is
+            // already failing.
+            return Some(Why::ContextOverflow {
+                window: self
+                    .usage
+                    .prompt_tokens
+                    .saturating_add(self.usage.completion_tokens),
+                prompt_tokens: self.usage.prompt_tokens,
+            });
+        }
         if self.finish.is_uncertain() {
             Some(Why::TruncatedAtCap {
                 budget: self.budget,
@@ -449,6 +473,26 @@ impl Turn {
         } else {
             None
         }
+    }
+
+    /// 🚨 **F497: the model ended cleanly and said nothing.**
+    ///
+    /// `finish: stop`, no tool calls, and an empty payload. It is asked
+    /// separately from [`uncertain`](Self::uncertain) because nothing about the
+    /// *turn* is wrong — the absence is only visible once the phase is about to
+    /// treat this text as its artifact.
+    ///
+    /// `by` is the head's call sign, which this type does not know; the caller
+    /// supplies it because it is the caller that is about to write the claim.
+    #[must_use]
+    pub fn said_nothing(&self, by: &str) -> Option<Why> {
+        (self.finish == Finish::Stop && self.text.trim().is_empty() && !self.wants_tools()).then(
+            || Why::SaidNothing {
+                by: by.to_owned(),
+                completion_tokens: self.usage.completion_tokens,
+                reasoning_tokens: self.usage.reasoning_tokens,
+            },
+        )
     }
 
     /// Whether this turn asked for tools rather than answering.

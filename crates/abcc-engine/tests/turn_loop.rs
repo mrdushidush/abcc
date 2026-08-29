@@ -552,10 +552,125 @@ fn an_open_trace_at_token_200_is_recorded() {
         &mut |_: Event| {},
     );
     assert_eq!(ended.report().trace, TraceSignal::OpenAt200);
+    // 🚨 The signal is still a record and not a refusal: the phase does end,
+    // but it ends naming **the empty answer** (F497) rather than the trace. No
+    // `Why` in this codebase is derived from a `TraceSignal`, which is what
+    // ADR-0010 §7 asks for and what this assertion pins.
+    let PhaseEnded::Unmeasured { why, .. } = &ended else {
+        panic!("a turn that reasoned and said nothing is not an answer: {ended:?}");
+    };
     assert!(
-        matches!(ended, PhaseEnded::Answered { .. }),
-        "the signal is a record at Skeleton, not a refusal"
+        matches!(why, Why::SaidNothing { .. }),
+        "the ending must name the absence, not the trace: {why:?}"
     );
+}
+
+/// 🚨 **F497.** The model stops cleanly and the payload is empty. That is an
+/// absence, and the phase must say so rather than hand the next phase an
+/// artifact that is zero characters long.
+///
+/// ⚠ This shape used to be [`Script::trace_still_open`], and the test above
+/// asserted `Answered` on it — which is exactly the defect that shipped: both
+/// `ClaimRecorded` events on the first clean run were empty strings, and
+/// Localize's empty answer became Change's *"What Recon reported"* input.
+#[test]
+fn a_phase_whose_model_said_nothing_is_unmeasured_rather_than_answered() {
+    let provider = Scripted::new(vec![Script::all_trace_no_answer(47, 42)]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let PhaseEnded::Unmeasured { why, .. } = &ended else {
+        panic!("an empty payload is an absence, not an answer: {ended:?}");
+    };
+    assert_eq!(
+        why,
+        &Why::SaidNothing {
+            by: "Recon".to_owned(),
+            completion_tokens: 47,
+            reasoning_tokens: Some(42),
+        }
+    );
+    // 🚨 And no claim on the log. An empty `ClaimRecorded` is the absence
+    // wearing the shape of an artifact, which is the whole of F497.
+    assert!(
+        !kinds(&log).contains(&"claim_recorded"),
+        "a phase that said nothing wrote a claim anyway: {:?}",
+        kinds(&log)
+    );
+}
+
+/// 🚨 **F496 and F498.** A `length` finish below our own cap was the server's
+/// window closing, and the window is `prompt + completion` exactly.
+///
+/// It reached the log once as `EngineError` → `HardFailure` — *another attempt
+/// would repeat this unchanged* — which is the one thing that is not true of a
+/// conversation that runs fine against a larger window.
+#[test]
+fn a_length_finish_below_our_cap_is_the_servers_window_and_names_it() {
+    let provider = Scripted::new(vec![Script::filled_the_window(14_261, 2_123)]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |_: Event| {},
+    );
+
+    let PhaseEnded::Unmeasured { why, .. } = &ended else {
+        panic!("filling the window is not an answer: {ended:?}");
+    };
+    assert_eq!(
+        why,
+        &Why::ContextOverflow {
+            window: 16_384,
+            prompt_tokens: 14_261,
+        },
+        "the window is measured from the two counts, not guessed"
+    );
+}
+
+/// The other half of the discriminator, which is what keeps the branch above
+/// from swallowing every truncation: a turn that spent **our whole cap** was cut
+/// by us, and stays [`Why::TruncatedAtCap`].
+///
+/// ⚠ `Head::Builders` sends 8,192, and `truncated_at_cap` spends exactly that —
+/// so `completion < budget` is false and the overflow branch must not fire.
+#[test]
+fn a_length_finish_at_our_own_cap_is_still_the_cap() {
+    let provider = Scripted::new(vec![Script::truncated_at_cap(8_192)]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |_: Event| {},
+    );
+
+    let PhaseEnded::Unmeasured { why, .. } = &ended else {
+        panic!("a turn cut at the cap produced no artifact: {ended:?}");
+    };
+    assert_eq!(why, &Why::TruncatedAtCap { budget: 8_192 });
 }
 
 /// A short turn with a trace that closed is not the same thing, and neither is a

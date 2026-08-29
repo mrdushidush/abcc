@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 
 use abcc_core::attempt::{AttemptOutcome, Cause};
 use abcc_core::event::{Control, Event, Finish, Logged};
-use abcc_core::outcome::Outcome;
+use abcc_core::outcome::{Outcome, Why};
 use abcc_core::run::DowngradeReason;
 use abcc_core::seq::{Seq, TaskId};
 use abcc_core::task::{AbortReason, Command, RequeueReason};
@@ -147,7 +147,7 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
             // child hands back 1 on Windows, and printing that as a failure is
             // the record saying *the tests failed* about work nobody ran.
             let ending = match (unmeasured, exit) {
-                (Some(why), _) => format!("no measurable ending: {why}"),
+                (Some(why), _) => format!("no measurable ending: {}", why_text(why)),
                 (None, Some(code)) => format!("exit {code}"),
                 (None, None) => "no exit status".to_string(),
             };
@@ -329,15 +329,31 @@ fn outcome_text(outcome: &Outcome) -> String {
                 m.exit
             )
         }
-        Outcome::Unmeasured { rung, why } => format!("{rung} · unmeasured: {why}"),
+        Outcome::Unmeasured { rung, why } => format!("{rung} · unmeasured: {}", why_text(why)),
     }
 }
 
 fn attempt_outcome_text(outcome: &AttemptOutcome) -> String {
     match outcome {
         AttemptOutcome::Success => "success".to_string(),
-        AttemptOutcome::SoftFailure { why } => format!("soft failure · {why}"),
-        AttemptOutcome::HardFailure { why } => format!("hard failure · {why}"),
-        AttemptOutcome::Uncertain { why } => format!("uncertain · {why}"),
+        AttemptOutcome::SoftFailure { why } => format!("soft failure · {}", why_text(why)),
+        AttemptOutcome::HardFailure { why } => format!("hard failure · {}", why_text(why)),
+        AttemptOutcome::Uncertain { why } => format!("uncertain · {}", why_text(why)),
     }
+}
+
+/// 🚨 **F501: a `Why` is free text wearing a sentence.**
+///
+/// Every variant that carries a `detail`, an `os_error` or a path is carrying
+/// something this program did not write — and [`Why::EngineError`] carried a
+/// provider's whole HTML error page, newlines included, straight onto the feed:
+/// ten unaligned rows out of the `seq · elapsed · text` columns and off the
+/// right edge of the frame. The module's first rule is *one event is one line*,
+/// and the three places a `Why` reaches the screen are the three that were not
+/// keeping it.
+///
+/// ⚠ The full text is not lost — it is on the log, and the operator's prompt
+/// carries the whole sentence when there is one to carry.
+fn why_text(why: &Why) -> String {
+    clip(&why.to_string())
 }

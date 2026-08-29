@@ -513,11 +513,23 @@ fn ending(last: &PhaseEnded, attempt: AttemptId, kept: Option<&Kept>) -> Ending 
                 landing: Landing::HandToOperator { question },
             }
         }
-        PhaseEnded::Unmeasured { why, .. } => Ending {
-            outcome: classify(why),
-            next: Some(next_after(why, attempt)),
-            landing: Landing::Failed,
-        },
+        PhaseEnded::Unmeasured { why, .. } => {
+            let next = next_after(why, attempt);
+            Ending {
+                outcome: classify(why),
+                // ⚠ The landing *follows* the next action rather than being
+                // asserted beside it. `Landing::Failed` under a
+                // `HandToOperator` would be the two disagreeing, which is the
+                // thing this struct's doc comment exists to prevent.
+                landing: match &next {
+                    NextAction::HandToOperator { question } => Landing::HandToOperator {
+                        question: question.clone(),
+                    },
+                    NextAction::Attempt { .. } | NextAction::Stop => Landing::Failed,
+                },
+                next: Some(next),
+            }
+        }
         PhaseEnded::Stopped { stop, .. } => Ending {
             outcome: AttemptOutcome::Uncertain {
                 why: Why::Cancelled {
@@ -561,7 +573,13 @@ fn classify(why: &Why) -> AttemptOutcome {
         | Why::BudgetExhausted { .. }
         | Why::Cancelled { .. }
         | Why::TruncatedAtCap { .. }
-        | Why::StaleMeasurement { .. } => AttemptOutcome::Uncertain { why: why.clone() },
+        | Why::StaleMeasurement { .. }
+        // 🚨 F497 and F496 are absences for the same reason as the nine above:
+        // neither says anything about the work. A phase that said nothing was
+        // not measured and did not fail, and a conversation that filled the
+        // window was cut off rather than judged.
+        | Why::SaidNothing { .. }
+        | Why::ContextOverflow { .. } => AttemptOutcome::Uncertain { why: why.clone() },
         // The stream went quiet. Another attempt on a less loaded box is a
         // plausible fix, which is what makes it soft.
         Why::Timeout { .. } => AttemptOutcome::SoftFailure { why: why.clone() },
@@ -582,8 +600,24 @@ fn next_after(why: &Why, attempt: AttemptId) -> NextAction {
         | Why::TruncatedAtCap { .. }
         | Why::FailedBeforeRunning { .. }
         | Why::StaleMeasurement { .. }
+        // The budget went into the reasoning trace and the answer never
+        // arrived. The trace's size varies 9,942–16,564 characters on
+        // *identical* input (F246), so a second sample is a plausible fix in
+        // exactly the way it is for `TruncatedAtCap` above.
+        | Why::SaidNothing { .. }
         | Why::Timeout { .. } => NextAction::Attempt {
             cause: Cause::Retry { of: attempt },
+        },
+        // 🚨 The one `Why` whose fix is neither another attempt nor giving up:
+        // the same body works against a larger window, and loading one is the
+        // operator's to do. Retrying against the same server repeats it
+        // unchanged; stopping throws away work that is one setting from
+        // running.
+        Why::ContextOverflow {
+            window,
+            prompt_tokens,
+        } => NextAction::HandToOperator {
+            question: brief::overflowed(*window, *prompt_tokens),
         },
         Why::NoCheckerForArtifact { .. }
         | Why::CheckerNotOnHost { .. }
