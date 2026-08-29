@@ -7,14 +7,14 @@ is; this file is how to work in it.
 ## Commands
 
 The loop ladder, re-measured warm on the development box, 2026-08-29, at seven
-crates and 262 tests, with exit status asserted. Use the cheapest rung that
+crates and 273 tests, with exit status asserted. Use the cheapest rung that
 answers the question, and re-measure when the workspace grows again.
 
 | when | command | ~time |
 |---|---|---|
 | after every edit | `cargo check --workspace --all-targets` | 0.42 s |
 | before proposing a change | `cargo clippy --all-targets -- -D warnings` | 0.46 s |
-| once, before commit | `cargo test --workspace` | 10.7 s |
+| once, before commit | `cargo test --workspace` | 11.0 s |
 
 🚨 **The middle rung used to end `&& cargo test --lib`, and that ran zero tests.**
 Every test in this workspace is an integration test under `tests/`, which
@@ -23,9 +23,9 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch --test http --test journal --test view --test theme --test screen --test keys --test cli --test confirm --test home --test desk`
-is **1.7 s** for 159 tests and covers everything that does not start a process.
-The full suite costs 10.7 s because `tests/child.rs` and `tests/exec.rs` spawn real
+`cargo test --workspace --test heads --test policy --test control --test turn_loop --test workspace --test patch --test http --test journal --test view --test theme --test screen --test keys --test cli --test confirm --test home --test desk --test feed`
+is **1.9 s** for 169 tests and covers everything that does not start a process.
+The full suite costs 11.0 s because `tests/child.rs` and `tests/exec.rs` spawn real
 children, and `abcc-vcs`, `abcc-drive` and `abcc`'s `tests/operator.rs` drive real git —
 that time is processes, not compilation, and it is the price of testing claims about an
 OS against the OS.
