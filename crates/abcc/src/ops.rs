@@ -14,6 +14,7 @@ use abcc_vcs::Repo;
 
 use crate::confirm::{self, FINGERPRINT_ENV, MODEL_ENV};
 use crate::feed::StoreFeed;
+use crate::pulse;
 use crate::{AppError, Home, Invocation, cli, operator};
 
 /// The repository and the state directory beside it, resolved together because
@@ -226,6 +227,24 @@ pub fn check(
         listing.ids().join(", ")
     )?;
     writeln!(out, "{}", verdict.note(&asked))?;
+    // 🚨 F539. The listing above is exactly the check that missed the only
+    // outage this project has had: it answered normally for 60 s while every
+    // completion returned nothing. So the check does not end on a listing any
+    // more \u2014 it asks for one real token.
+    //
+    // \u26a0 It **reports and never gates** (ADR-0010 \u00a74). A silent pulse does not
+    // change this command's exit status, because the ruling that only
+    // deterministic rungs may refuse is about the gate and the operator is the
+    // one who acts on a health report.
+    let beat = pulse::take(&base, &asked, api_key().as_deref());
+    writeln!(out, "pulse       {beat}")?;
+    if !beat.answered() {
+        writeln!(
+            out,
+            "            \u{26a0} the listing above answered and this did not. That is the shape \
+             of F539."
+        )?;
+    }
     if verdict.confirmed() {
         Ok(())
     } else {

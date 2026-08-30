@@ -35,7 +35,7 @@ use abcc_store::{Reconciled, Store};
 use abcc_tui::Theme;
 
 use crate::desk::{Desk, VERBS};
-use crate::{AppError, Invocation, cli, confirm, ops};
+use crate::{AppError, Invocation, cli, confirm, ops, pulse};
 
 /// Run one attempt and report where it landed.
 ///
@@ -197,6 +197,32 @@ pub(crate) fn confirm_model(
     let note = verdict.note(&asked);
     store.append(Event::Note { text: note.clone() })?;
     writeln!(out, "model {note}")?;
+
+    // 🚨 F539, on the path that spends the budget. A wedged server serves the
+    // right model and answers nothing, so the listing above confirms it and the
+    // run then spends both attempts against something that cannot reply. One
+    // token settles it before any of that is bought.
+    //
+    // \u26a0 It **reports and never gates** (ADR-0010 \u00a74): the sentence goes on the
+    // log and on the screen, and the run proceeds. A pulse that refused would be
+    // a statistical breaker's ruling applied to a measurement nobody asked to
+    // have applied \u2014 that call is David's, and the evidence for making it is
+    // the note this writes.
+    let beat = pulse::take(&base, &asked, ops::api_key().as_deref());
+    let beat_note = format!("pulse before the attempt: {beat}");
+    store.append(Event::Note {
+        text: beat_note.clone(),
+    })?;
+    writeln!(out, "{beat_note}")?;
+    if !beat.answered() {
+        writeln!(
+            out,
+            "\u{26a0} the model listing answered and one real token did not. F539 is the \
+             precedent:\n  the wedge took both slots down for 60 s with the listing healthy \
+             throughout."
+        )?;
+    }
+
     if verdict.confirmed() {
         Ok(asked)
     } else {

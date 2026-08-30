@@ -64,6 +64,7 @@
 //! something is that person's, and continuing to the next task would be the fleet
 //! deciding it was not stopped.
 
+pub mod breaker;
 pub mod budget;
 
 use abcc_core::attempt::{Cause, NextAction};

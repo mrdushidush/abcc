@@ -30,6 +30,7 @@
 
 use std::io::Write;
 
+pub mod breaker;
 pub mod cli;
 pub mod confirm;
 pub mod desk;
@@ -37,6 +38,7 @@ pub mod feed;
 pub mod fleet;
 pub mod home;
 pub mod ops;
+pub mod pulse;
 pub mod run;
 
 pub use cli::{Command, Invocation};
@@ -115,6 +117,9 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
         Command::Board => ops::board(invocation, out),
         Command::Run(run) => run::attempt(invocation, run, out),
         Command::Fleet(args) => fleet::sortie(invocation, args, out),
+        Command::Breaker { model, base_url } => {
+            breaker::report(invocation, model.as_deref(), base_url.as_deref(), out)
+        }
         Command::Watch { theme } => ops::watch(invocation, *theme),
         Command::Check {
             model,

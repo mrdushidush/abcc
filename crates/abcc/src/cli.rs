@@ -48,6 +48,16 @@ pub enum Command {
         base_url: Option<String>,
         fingerprint: Option<String>,
     },
+    /// 🚨 The breaker's report: one real token out of the server, and F374's
+    /// update rule over this log's own population.
+    ///
+    /// ⚠ It takes no `--fingerprint`. The fingerprint answers *which model*,
+    /// and this asks *can this server produce a token at all* — a wedged server
+    /// is serving the right model and answering nothing (F539).
+    Breaker {
+        model: Option<String>,
+        base_url: Option<String>,
+    },
     /// W13's ladder measurement.
     ///
     /// 🚨 Minutes go in and **seconds come out, here at the edge**. The ladder's
@@ -113,6 +123,7 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc fleet [options]                attempts until the board is quiet, one slot
   abcc watch [--theme command|classic]  the reader, over the log alone
   abcc check [--model M]              ask the server which model it is holding
+  abcc breaker [--model M]            one real token, and what the log says about retrying
   abcc review <change> <minutes> [--by W] [--boundary]
   abcc accept <task> [--note N]       the work is good; you take responsibility
   abcc reject <task> [--note N]       stop the task
@@ -187,6 +198,12 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
                 base_url,
                 fingerprint,
             }
+        }
+        "breaker" => {
+            let model = take_flag(&mut args, "--model")?;
+            let base_url = take_flag(&mut args, "--url")?;
+            no_positionals(&args, "breaker")?;
+            Command::Breaker { model, base_url }
         }
         "review" => {
             let by = take_flag(&mut args, "--by")?;
