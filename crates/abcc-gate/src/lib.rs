@@ -79,7 +79,8 @@
 //!
 //! The price is a cold build per attempt, and it was measured on this workspace
 //! at F512's run 10 rather than guessed: **`cargo test --workspace` 55 s and
-//! exit 0 across 44 targets, then `cargo clippy --all-targets -- -D warnings`
+//! exit 0 across 44 targets, then `cargo fmt --check` and
+//! `cargo clippy --all-targets -- -D warnings`
 //! 13 s and exit 101, for a `target/` of 2.3 GB.** ⚠ That last number is the one
 //! Fleet has to plan for: two slots is two of those on the operator's disk.
 //!
@@ -301,8 +302,21 @@ impl<'a> Gate<'a> {
         };
         let (argv, reading) = match rung {
             Rung::Acceptance => (toolchain.test, toolchain.reading),
+            // 🚨 The standard is a **conjunction** and has its own walk (F555):
+            // a repository's declared standard is not always one program, and
+            // the single command this used to be is what let a tree
+            // `cargo fmt --check` refuses reach MISSION ACCOMPLISHED.
             Rung::Standard => match self.standard() {
-                Some(standard) => (standard.command, abcc_core::outcome::Reading::ExitOnly),
+                Some(standard) => {
+                    return rung::standard(
+                        rung,
+                        sha,
+                        &self.root,
+                        standard.commands,
+                        &self.watch,
+                        self.budget,
+                    );
+                }
                 // Unreachable through `ladder`, and answered rather than
                 // asserted: a rung nobody declared has nothing to measure.
                 None => return rung::undeclared(rung),

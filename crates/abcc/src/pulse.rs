@@ -37,8 +37,26 @@
 //! [`abcc_fleet::breaker`] can compute a pass rate and *cannot* tell a hard task
 //! from a dead server. This can.
 //!
-//! ▶ It still **reports and never gates** (ADR-0010 §4). Nothing here returns a
-//! decision and no caller in this crate refuses on it.
+//! # ▶ 2026-08-30 — David's ruling: a silent pulse REFUSES a preflight
+//!
+//! It used to report and never gate, on the reading that ADR-0010 §4 covered
+//! it. It does not: §4 is aimed at the **rate**, a statistical verdict over a
+//! population, and the reason that may not refuse is that it cannot tell a hard
+//! task from a dead server. This can — it is a measurement, the same shape as a
+//! gate rung — so it may. **F539 is the cost of the old reading**: both attempts
+//! spent against a server whose listing answered normally throughout.
+//!
+//! Three limits on that, and each is deliberate:
+//!
+//! * ⚠ **Only a preflight.** `abcc breaker` still refuses nothing; it prints the
+//!   pulse beside the rate and the operator decides.
+//! * ⚠ **[`Pulse::NotTaken`] never refuses** — see [`Pulse::refuses`]. An
+//!   absence is not a failure, which is the rule the whole `Outcome` type
+//!   exists to hold.
+//! * ⚠ **The instrument had to be right first.** F550 is a live demonstration
+//!   that a health check can be confidently wrong about a healthy box, and it
+//!   was this one. Refusing on `message.content` would have stopped every run
+//!   on this machine.
 
 use std::time::{Duration, Instant};
 
@@ -205,4 +223,39 @@ fn clip(body: &str) -> String {
     }
     let head: String = body.chars().take(200).collect();
     format!("{head}\u{2026}")
+}
+
+/// What to tell an operator whose preflight was stopped by the pulse.
+///
+/// One function so that `run`, `fleet` and `check` cannot drift into three
+/// accounts of the same measurement. It names the numbers rather than the
+/// feeling: a healthy one-token completion on the champion is **243 ms**, and
+/// F539's wedge answered nothing for **60 s** with `/v1/models` healthy the
+/// whole time.
+#[must_use]
+pub fn refusal_advice(beat: &Pulse) -> String {
+    let head = match beat {
+        Pulse::Silent { after_ms, .. } => format!(
+            "the server is reachable and decoded nothing in {after_ms} ms. That is F539's shape \
+             exactly: a model listing that answers normally while every completion returns \
+             nothing. It took both slots down for 60 s."
+        ),
+        Pulse::Unreachable { after_ms, .. } => format!(
+            "the server did not answer a completion within {after_ms} ms, though the model \
+             listing did."
+        ),
+        // Unreachable by construction — `refuses` excludes both — and answered
+        // rather than asserted, because a panic here would be this file having
+        // an opinion about a caller it cannot see.
+        Pulse::Answered { .. } | Pulse::NotTaken => {
+            "the pulse did not refuse; nothing needed to be said".to_owned()
+        }
+    };
+    format!(
+        "{head}\n\n  {beat}\n\n\u{25b6} Nothing will be spent against a server that cannot \
+         decode a token. A healthy pulse on the champion is 243 ms. Reload the model \
+         (`lms load <id> -c 65536 --parallel 1 -y`), then `abcc check`.\n\u{26a0} This refusal \
+         is the pulse only. `abcc breaker` still reports and never gates \u{2014} the rate is a \
+         statistical verdict and ADR-0010 \u{a7}4 bars it from stopping anything."
+    )
 }

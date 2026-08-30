@@ -183,3 +183,78 @@ pub(crate) fn spawned(
     let out = format!("{}\n{}", finished.stdout, finished.stderr);
     reading.classify(&name, sha, exit, &out)
 }
+
+/// **The standard rung is a conjunction of commands, and the first refusal ends
+/// it.**
+///
+/// 🚨 **F555 is why this is a loop and not a call.** The rung used to be one
+/// command, `cargo clippy --all-targets -- -D warnings`, and a run reached
+/// MISSION ACCOMPLISHED on a tree `cargo fmt --check` refuses. Four green rungs
+/// and a Judge with no findings said a tree could land that could not land here.
+/// A repository's declared standard is not always one program, so the field
+/// that holds it is not always one command.
+///
+/// Two things this owes an operator, and both are why it does not simply return
+/// the last outcome:
+///
+/// * 🚨 **A red says which command.** `standard: exit 1` with clippy's name
+///   nowhere near it sends a reader to the compiler for a formatting refusal —
+///   F555 read backwards, and the same class as F492's *non-zero exit from the
+///   wrong program*.
+/// * **A green says what it checked.** The green is the sentence F555 caught
+///   lying, so it names every command it stands on rather than asserting a word.
+///
+/// ⚠ An [`Outcome::Unmeasured`] ends the walk too, and it is **not** a refusal:
+/// the rest of the ladder cannot be reported as passed once a command in it
+/// could not be run. That is the same rule [`crate::Gate::measure`] applies one
+/// level up.
+pub(crate) fn standard(
+    rung: Rung,
+    sha: &str,
+    root: &Path,
+    commands: &[&[&str]],
+    watch: &Watch,
+    budget: Duration,
+) -> Outcome {
+    let name = rung.name().to_owned();
+    if commands.is_empty() {
+        return Outcome::Unmeasured {
+            rung: name,
+            why: Why::NothingToRun {
+                detail: "the profile declared a standard with no commands".to_owned(),
+            },
+        };
+    }
+
+    let mut passed: Vec<String> = Vec::new();
+    for argv in commands {
+        let spelled = argv.join(" ");
+        // `ExitOnly`: a standard's verdict is its exit status. There is no
+        // `test result:` line to read and deriving a count from a linter's prose
+        // is what ADR-0009 §5 exists to forbid.
+        let outcome = spawned(rung, sha, root, argv, Reading::ExitOnly, watch, budget);
+        match outcome {
+            Outcome::Measured(m) if m.exit == 0 => passed.push(spelled),
+            Outcome::Measured(m) => {
+                return Outcome::Measured(Measurement {
+                    detail: format!("`{spelled}` refused\n{}", m.detail),
+                    ..m
+                });
+            }
+            // Named rather than a wildcard: `Unmeasured` is the arm that ends
+            // the walk without refusing, and a `_` here would silently swallow
+            // any variant added later.
+            unmeasured @ Outcome::Unmeasured { .. } => return unmeasured,
+        }
+    }
+
+    Outcome::Measured(Measurement {
+        rung: name,
+        sha: sha.to_owned(),
+        exit: 0,
+        // No counts: a standard has none, and `Counts` reads as a test result
+        // everywhere it is shown.
+        counts: None,
+        detail: format!("passed: {}", passed.join(", ")),
+    })
+}

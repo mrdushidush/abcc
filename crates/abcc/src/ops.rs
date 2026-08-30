@@ -230,26 +230,24 @@ pub fn check(
     // 🚨 F539. The listing above is exactly the check that missed the only
     // outage this project has had: it answered normally for 60 s while every
     // completion returned nothing. So the check does not end on a listing any
-    // more \u2014 it asks for one real token.
+    // more — it asks for one real token.
     //
-    // \u26a0 It **reports and never gates** (ADR-0010 \u00a74). A silent pulse does not
-    // change this command's exit status, because the ruling that only
-    // deterministic rungs may refuse is about the gate and the operator is the
-    // one who acts on a health report.
+    // ▶ **And a silent one fails this command.** That follows David's ruling of
+    // 2026-08-30 rather than extending it: `abcc check` already refuses on the
+    // *weaker* fault of an unconfirmed model, and a health command that exits 0
+    // about a server nothing can run against is a health check that lies to
+    // whatever script asked it. `harness/scripts/ping.sh` exits 1 on this same
+    // condition, and two health checks on one box disagreeing is worse than
+    // either answer alone.
     let beat = pulse::take(&base, &asked, api_key().as_deref());
     writeln!(out, "pulse       {beat}")?;
-    if !beat.answered() {
-        writeln!(
-            out,
-            "            \u{26a0} the listing above answered and this did not. That is the shape \
-             of F539."
-        )?;
+    if !verdict.confirmed() {
+        return Err(AppError::Refused(unconfirmed_advice()));
     }
-    if verdict.confirmed() {
-        Ok(())
-    } else {
-        Err(AppError::Refused(unconfirmed_advice()))
+    if beat.refuses() {
+        return Err(AppError::Refused(pulse::refusal_advice(&beat)));
     }
+    Ok(())
 }
 
 /// What to do about an unconfirmed model, said once and used by both callers.

@@ -203,31 +203,29 @@ pub(crate) fn confirm_model(
     // run then spends both attempts against something that cannot reply. One
     // token settles it before any of that is bought.
     //
-    // \u26a0 It **reports and never gates** (ADR-0010 \u00a74): the sentence goes on the
-    // log and on the screen, and the run proceeds. A pulse that refused would be
-    // a statistical breaker's ruling applied to a measurement nobody asked to
-    // have applied \u2014 that call is David's, and the evidence for making it is
-    // the note this writes.
+    // ▶ **And it now refuses** — David's ruling of 2026-08-30. See
+    // `pulse::refusal_advice` for why a measurement may stop a preflight where
+    // the rate beside it may not. The note reaches the log **before** the
+    // refusal, because the reason a run did not start is the most useful thing
+    // an otherwise empty log can carry.
     let beat = pulse::take(&base, &asked, ops::api_key().as_deref());
     let beat_note = format!("pulse before the attempt: {beat}");
     store.append(Event::Note {
         text: beat_note.clone(),
     })?;
     writeln!(out, "{beat_note}")?;
-    if !beat.answered() {
-        writeln!(
-            out,
-            "\u{26a0} the model listing answered and one real token did not. F539 is the \
-             precedent:\n  the wedge took both slots down for 60 s with the listing healthy \
-             throughout."
-        )?;
-    }
 
-    if verdict.confirmed() {
-        Ok(asked)
-    } else {
-        Err(AppError::Refused(ops::unconfirmed_advice()))
+    // ⚠ The model verdict is checked first and keeps its own advice. Both are
+    // fatal; that one is more specific, and an operator sent to reload a wedged
+    // server when the real fault is an unconfirmed model reloads the wrong
+    // thing.
+    if !verdict.confirmed() {
+        return Err(AppError::Refused(ops::unconfirmed_advice()));
     }
+    if beat.refuses() {
+        return Err(AppError::Refused(pulse::refusal_advice(&beat)));
+    }
+    Ok(asked)
 }
 
 pub(crate) fn limits_for(run: &cli::Run) -> Limits {

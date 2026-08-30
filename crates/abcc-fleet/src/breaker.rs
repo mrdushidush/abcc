@@ -336,10 +336,32 @@ fn clip(text: &str) -> String {
 
 impl Pulse {
     /// Whether the server generated a token. ⚠ **Not a gate** — it is what the
-    /// report prints, and the operator is the one who acts on it.
+    /// report prints, and `abcc breaker` acts on nothing.
     #[must_use]
     pub const fn answered(&self) -> bool {
         matches!(self, Pulse::Answered { .. })
+    }
+
+    /// 🚨 **Whether this pulse may stop a preflight — and it is deliberately
+    /// not the negation of [`Pulse::answered`].**
+    ///
+    /// David's ruling of 2026-08-30. ADR-0010 §4's *reports and never gates* is
+    /// aimed at the **rate**, which is a statistical verdict over a population
+    /// and cannot tell a hard task from a dead server. A pulse is the other
+    /// thing: the host asked for one token and watched what happened, which is
+    /// the shape of a gate rung, and F539 is the case for letting it refuse —
+    /// both attempts spent against a server that answered its listing normally
+    /// for 60 s and decoded nothing.
+    ///
+    /// ⚠ **[`Pulse::NotTaken`] is excluded, and that is the whole reason this
+    /// is a second method.** It is an *absence*: nobody asked, so nothing was
+    /// measured. Letting it refuse would be the one thing
+    /// [`abcc_core::outcome::Outcome`] exists to prevent — reading *nothing was
+    /// measured* as *something failed* — and it is the same rule the gate's
+    /// ladder applies to an `Unmeasured` rung.
+    #[must_use]
+    pub const fn refuses(&self) -> bool {
+        matches!(self, Pulse::Silent { .. } | Pulse::Unreachable { .. })
     }
 }
 

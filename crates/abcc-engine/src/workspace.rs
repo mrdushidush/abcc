@@ -170,7 +170,19 @@ pub struct Toolchain {
 pub struct Standard {
     /// Any one of these in the workspace root is the repository declaring it.
     pub witnesses: &'static [&'static str],
-    pub command: &'static [&'static str],
+    /// 🚨 **A conjunction of commands, in the order they run, and the first
+    /// refusal ends the rung.** It is a list rather than one command because
+    /// **F555** found the hole a single command leaves: the gate reported
+    /// MISSION ACCOMPLISHED about a tree `cargo fmt --check` refuses — all four
+    /// rungs green, the Judge with no findings, and one function whose
+    /// single-line body rustfmt reformats. The standard rung was spelled
+    /// `cargo clippy` and rustfmt was in **none of the four rungs**, so
+    /// ADR-0017's criterion — *a correct tree is one that could land* — was
+    /// being checked with part of the repository's own standard missing.
+    ///
+    /// ⚠ Cheapest first. Formatting is a parse and a print; clippy is a
+    /// compile. An operator waiting on a red wants the fast one to say so.
+    pub commands: &'static [&'static [&'static str]],
 }
 
 impl Standard {
@@ -189,11 +201,25 @@ pub const TOOLCHAINS: &[Toolchain] = &[
         test: &["cargo", "test"],
         diagnostics: &["cargo", "check", "--all-targets"],
         reading: Reading::Cargo,
-        // ⚠ `--all-targets` matters: without it clippy does not lint the test
-        // targets, and four of the six F512 implementations broke a test.
         standard: Some(Standard {
             witnesses: &["clippy.toml", ".clippy.toml"],
-            command: &["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
+            commands: &[
+                // 🚨 F555's rung. `--check` exits 1 and prints the diff it
+                // wanted, so the evidence an operator needs is the rung output
+                // ADR-0019 already keeps.
+                //
+                // ⚠ `--color=never`, and it is **measured rather than tidy**
+                // (F557): rustfmt colours its diff even when stdout is a plain
+                // file rather than a terminal — 5 lines carrying ESC on the
+                // one-line-body fixture — and this detail goes into a durable
+                // SQLite log and is re-rendered in the TUI. Clippy is left
+                // alone; changing what it prints is not what was ruled.
+                &["cargo", "fmt", "--check", "--", "--color=never"],
+                // ⚠ `--all-targets` matters: without it clippy does not lint
+                // the test targets, and four of the six F512 implementations
+                // broke a test.
+                &["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
+            ],
         }),
     },
     // ⚠ `python` rather than `python3`, and that is measured rather than

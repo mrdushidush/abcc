@@ -126,20 +126,43 @@ const SLOW: &[&str] = &["cmd", "/C", "ping -n 30 127.0.0.1 > NUL"];
 #[cfg(not(windows))]
 const SLOW: &[&str] = &["sh", "-c", "sleep 30"];
 
+#[cfg(windows)]
+const HOUSE_RULE: &[&str] = &["cmd", "/C", "echo error: a house rule & exit 101"];
+#[cfg(not(windows))]
+const HOUSE_RULE: &[&str] = &["sh", "-c", "echo 'error: a house rule'; exit 101"];
+
+#[cfg(windows)]
+const CLEAN: &[&str] = &["cmd", "/C", "echo clean"];
+#[cfg(not(windows))]
+const CLEAN: &[&str] = &["sh", "-c", "echo clean"];
+
+/// A second passing command, so a conjunction can be told from a single call.
+#[cfg(windows)]
+const ALSO_CLEAN: &[&str] = &["cmd", "/C", "echo formatted"];
+#[cfg(not(windows))]
+const ALSO_CLEAN: &[&str] = &["sh", "-c", "echo formatted"];
+
 const REFUSING_STANDARD: Standard = Standard {
     witnesses: &["standard.toml"],
-    #[cfg(windows)]
-    command: &["cmd", "/C", "echo error: a house rule & exit 101"],
-    #[cfg(not(windows))]
-    command: &["sh", "-c", "echo 'error: a house rule'; exit 101"],
+    commands: &[HOUSE_RULE],
 };
 
 const PASSING_STANDARD: Standard = Standard {
     witnesses: &["standard.toml"],
-    #[cfg(windows)]
-    command: &["cmd", "/C", "echo clean"],
-    #[cfg(not(windows))]
-    command: &["sh", "-c", "echo clean"],
+    commands: &[CLEAN],
+};
+
+/// 🚨 **F555's shape**: the repository declares two commands and the *first* is
+/// the one that refuses. A rung that ran only the last would call this green.
+const FIRST_REFUSES: Standard = Standard {
+    witnesses: &["standard.toml"],
+    commands: &[HOUSE_RULE, CLEAN],
+};
+
+/// Both pass, so the green can be asked what it stands on.
+const BOTH_PASS: Standard = Standard {
+    witnesses: &["standard.toml"],
+    commands: &[CLEAN, ALSO_CLEAN],
 };
 
 fn with_standard(test: &'static [&'static str], standard: Standard) -> Toolchain {
@@ -422,6 +445,80 @@ fn four_declared_rungs_all_green_is_a_green_of_four() {
 
     assert_eq!(measured.headline, Headline::Green { rungs: 4 });
     assert!(measured.accepts());
+}
+
+/// 🚨🚨 **F555, as a regression test: the standard is a conjunction, and the
+/// FIRST command's refusal is the rung's refusal.**
+///
+/// The finding was a run reaching MISSION ACCOMPLISHED on a tree
+/// `cargo fmt --check` refuses — all four rungs green, the Judge with no
+/// findings, and rustfmt in none of the rungs. The repair is that a standard
+/// holds a *list*, so the shape that has to hold is this one: the command that
+/// refuses is the one that runs first, and a rung that only looked at the last
+/// answer would report green.
+///
+/// ⚠ The detail is asserted, not just the exit. `standard: exit 1` that does not
+/// name its command sends a reader to the compiler for a formatting refusal.
+#[test]
+fn the_first_command_of_a_declared_standard_can_refuse_it() {
+    let (_dir, root) = fixture();
+    let repo = Repo::open(&root).expect("open");
+    let before = snapshot(&repo, 1);
+    fs::write(root.join("src/lib.rs"), "pub fn one() -> u32 { 2 }\n").expect("write");
+    fs::write(root.join("standard.toml"), "# this repository asks\n").expect("write");
+    let after = snapshot(&repo, 2);
+
+    let gate = Gate::open(&repo, &root).with_toolchain(with_standard(GREEN_SUITE, FIRST_REFUSES));
+    let measured = gate.measure(&before, &after);
+
+    assert_eq!(measured.refused_by(), Some("standard"));
+    assert!(!measured.accepts());
+
+    let Outcome::Measured(m) = &measured.report.outcomes()[3] else {
+        panic!("the standard rung produced no measurement");
+    };
+    assert_ne!(m.exit, 0);
+    assert!(
+        m.detail.contains(&HOUSE_RULE.join(" ")),
+        "a refused standard does not say which of its commands refused: {:?}",
+        m.detail
+    );
+    assert!(
+        m.detail.contains("a house rule"),
+        "the refusing command's own output was dropped: {:?}",
+        m.detail
+    );
+}
+
+/// **A green standard names every command it stands on.**
+///
+/// The counterpart to the test above, and it is the sentence F555 caught lying:
+/// a green that says only `standard` is a green an operator cannot check. This
+/// one has to be able to show that both commands ran.
+#[test]
+fn a_green_standard_names_every_command_it_passed() {
+    let (_dir, root) = fixture();
+    let repo = Repo::open(&root).expect("open");
+    let before = snapshot(&repo, 1);
+    fs::write(root.join("src/lib.rs"), "pub fn one() -> u32 { 2 }\n").expect("write");
+    fs::write(root.join("standard.toml"), "# this repository asks\n").expect("write");
+    let after = snapshot(&repo, 2);
+
+    let gate = Gate::open(&repo, &root).with_toolchain(with_standard(GREEN_SUITE, BOTH_PASS));
+    let measured = gate.measure(&before, &after);
+
+    assert_eq!(measured.headline, Headline::Green { rungs: 4 });
+    let Outcome::Measured(m) = &measured.report.outcomes()[3] else {
+        panic!("the standard rung produced no measurement");
+    };
+    for argv in [CLEAN, ALSO_CLEAN] {
+        assert!(
+            m.detail.contains(&argv.join(" ")),
+            "the green does not name `{}`: {:?}",
+            argv.join(" "),
+            m.detail
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

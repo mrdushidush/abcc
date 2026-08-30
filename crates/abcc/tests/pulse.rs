@@ -144,3 +144,83 @@ fn every_spelling_of_the_base_url_reaches_the_same_completions_endpoint() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 🚨 2026-08-30 — David's ruling: a silent pulse REFUSES a preflight
+// ---------------------------------------------------------------------------
+
+/// 🚨 **`refuses` is not `!answered`, and the gap between them is `NotTaken`.**
+///
+/// This is the assertion the ruling turns on. ADR-0010 §4 keeps the *rate* from
+/// gating because a statistical verdict cannot tell a hard task from a dead
+/// server; a pulse can, so it may refuse. But *nobody asked* is a third thing,
+/// and letting it refuse would read an absence as a failure — which is the one
+/// confusion `Outcome` exists to prevent, applied one level out.
+#[test]
+fn an_untaken_pulse_never_refuses_and_that_is_the_point_of_the_variant() {
+    assert!(!Pulse::NotTaken.answered());
+    assert!(
+        !Pulse::NotTaken.refuses(),
+        "an absence refused a preflight — nothing was measured, so nothing failed"
+    );
+
+    let silent = Pulse::Silent {
+        after_ms: 60_000,
+        detail: "HTTP 200 and nothing decoded".to_owned(),
+    };
+    let unreachable = Pulse::Unreachable {
+        after_ms: 20_000,
+        detail: "connection closed".to_owned(),
+    };
+    for measured in [&silent, &unreachable] {
+        assert!(measured.refuses(), "{measured}");
+        assert!(!measured.answered(), "{measured}");
+    }
+}
+
+/// The champion's own healthy body must not refuse anything.
+///
+/// ⚠ The same body as the F550 regression above, asserted through the new
+/// method: the ruling made a wrong instrument able to stop every run on this
+/// machine, so the instrument is re-checked at the place that now acts on it.
+#[test]
+fn the_champions_healthy_pulse_does_not_refuse_a_preflight() {
+    let pulse = pulse::read(CHAMPION_ONE_TOKEN, 243);
+    assert!(
+        !pulse.refuses(),
+        "a loaded, idle, fingerprint-confirmed champion would have stopped the run: {pulse}"
+    );
+}
+
+/// **The refusal has to be actionable**: what happened, the pulse itself, and
+/// the command that fixes it.
+#[test]
+fn a_refusal_says_what_happened_and_what_to_do_about_it() {
+    let silent = Pulse::Silent {
+        after_ms: 60_000,
+        detail: "HTTP 200 and nothing decoded: {}".to_owned(),
+    };
+    let advice = pulse::refusal_advice(&silent);
+
+    assert!(advice.contains("60000 ms"), "{advice}");
+    assert!(advice.contains("F539"), "{advice}");
+    assert!(advice.contains("lms load"), "{advice}");
+    // ⚠ The line that keeps the two halves of `abcc breaker` apart. A reader who
+    // learns the pulse can refuse will assume the rate can too.
+    assert!(
+        advice.contains("breaker") && advice.contains("never gates"),
+        "the refusal does not say the rate still cannot gate: {advice}"
+    );
+}
+
+/// An answered pulse produces no advice worth printing, and asking for it is not
+/// a panic.
+///
+/// ⚠ Answered rather than asserted, deliberately: `refusal_advice` cannot see
+/// its caller, and a `unreachable!()` here would be this function having an
+/// opinion about one.
+#[test]
+fn advice_for_a_pulse_that_did_not_refuse_is_a_sentence_and_not_a_panic() {
+    let advice = pulse::refusal_advice(&Pulse::NotTaken);
+    assert!(advice.contains("did not refuse"), "{advice}");
+}

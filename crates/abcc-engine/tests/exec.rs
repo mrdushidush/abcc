@@ -236,7 +236,56 @@ fn the_witness_file_is_what_detects_a_profile() {
             "{} cannot check",
             profile.name
         );
+        // A declared standard with no commands is a rung that cannot refuse
+        // anything, which is worse than an absent one: it reports green.
+        if let Some(standard) = profile.standard {
+            assert!(
+                !standard.commands.is_empty(),
+                "{} declares a standard with no commands",
+                profile.name
+            );
+            assert!(
+                standard.commands.iter().all(|c| !c.is_empty()),
+                "{} declares an empty command",
+                profile.name
+            );
+        }
     }
+}
+
+/// 🚨 **F555, pinned: rustfmt is in the cargo standard, and it runs first.**
+///
+/// The finding was a run reaching MISSION ACCOMPLISHED on a tree
+/// `cargo fmt --check` refuses — four green rungs, a Judge with no findings, and
+/// rustfmt in none of the rungs. David ruled on 2026-08-30 that the check is
+/// added to the cargo standard unconditionally, so this asserts the shape of the
+/// table rather than trusting a comment to hold it.
+///
+/// ⚠ `--color=never` is asserted too, and it is measured rather than tidy
+/// (F557): rustfmt colours its diff even when stdout is a plain file rather than
+/// a terminal, and this rung's output is written to a durable SQLite log and
+/// re-rendered in the TUI.
+#[test]
+fn the_cargo_standard_checks_formatting_first_and_asks_for_no_colour() {
+    let cargo = TOOLCHAINS
+        .iter()
+        .find(|t| t.name == "cargo")
+        .expect("the cargo profile");
+    let standard = cargo.standard.expect("cargo declares a standard");
+
+    let first = standard.commands.first().expect("at least one command");
+    assert_eq!(
+        first,
+        &["cargo", "fmt", "--check", "--", "--color=never"],
+        "the formatting check is not the cargo standard's first command"
+    );
+    assert!(
+        standard
+            .commands
+            .iter()
+            .any(|c| c.contains(&"clippy") && c.contains(&"--all-targets")),
+        "the cargo standard lost clippy"
+    );
 }
 
 /// The runner passes the profile's command through and hands back what the host

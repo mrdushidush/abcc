@@ -136,7 +136,10 @@ const RUST: Toolchain = Toolchain {
     reading: Reading::Cargo,
     standard: Some(Standard {
         witnesses: &["clippy.toml", ".clippy.toml"],
-        command: &["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
+        commands: &[
+            &["cargo", "fmt", "--check", "--", "--color=never"],
+            &["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
+        ],
     }),
 };
 
