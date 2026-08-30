@@ -1007,3 +1007,68 @@ fn a_live_turn_asks_for_a_tool_and_the_call_arrives_assembled() {
         assert!(arguments.is_object());
     }
 }
+
+/// 🚨 **F537: the same claim as
+/// `a_turn_whose_body_outlasts_the_budget_completes_while_every_gap_stays_inside_it`,
+/// with the payload changed from text to tool-call arguments — and it does not
+/// hold.**
+///
+/// Every gap on the wire is 120 ms against a 400 ms budget, so by the property
+/// that test pins, this turn must complete. It does not: `OpenAiCompat::fragment`
+/// folds an argument fragment into its slot and emits **no `Delta`**, and a
+/// `Delta::ToolCall` exists only once `finish_reason` arrives. The consumer's
+/// `recv_timeout(idle_gap)` therefore sees nothing at all while a model writes a
+/// long tool call, and the hang detector fires on a stream that is delivering
+/// bytes the whole time.
+#[test]
+fn a_turn_writing_only_tool_call_arguments_is_not_silent_and_must_not_read_as_a_hang() {
+    let gap = Duration::from_millis(120);
+    let mut pieces: Vec<(Duration, String)> = vec![(
+        gap,
+        chunk(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"apply_patch","arguments":"{\"patch\":\""}}]}}]}"#,
+        ),
+    )];
+    // Four more argument fragments, each one gap after the last. This is what a
+    // model writing a large diff looks like on the wire.
+    for i in 0..4 {
+        pieces.push((
+            gap,
+            chunk(&format!(
+                r#"{{"choices":[{{"delta":{{"tool_calls":[{{"index":0,"function":{{"arguments":"line{i} "}}}}]}}}}]}}"#
+            )),
+        ));
+    }
+    pieces.push((
+        gap,
+        chunk(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
+    ));
+    pieces.push((gap, chunk(USAGE)));
+    pieces.push((gap, "data: [DONE]\n\n".to_owned()));
+
+    let stub = Stub::new(vec![Reply::sse(pieces)]);
+    let provider = stub.provider();
+    let body = Body::opening("go");
+
+    let started = Instant::now();
+    let deltas = drain(&provider, &request(Head::Recon, &body, BUDGET));
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed > BUDGET,
+        "the body took {elapsed:?}, which is inside the budget — the test proves nothing"
+    );
+    if let Some(Err(ProviderError::IdleGap { after_ms })) = deltas.last() {
+        panic!(
+            "the stream delivered a fragment every {gap:?} and was called idle after {after_ms} ms"
+        );
+    }
+    let call = deltas
+        .iter()
+        .find_map(|d| match d {
+            Ok(Delta::ToolCall(c)) => Some(c),
+            _ => None,
+        })
+        .expect("one assembled tool call");
+    assert_eq!(call.tool, "apply_patch");
+}

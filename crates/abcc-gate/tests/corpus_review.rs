@@ -46,9 +46,16 @@
 //! One call is 25 s and 122 s measured, so 121 of them is a couple of hours. A
 //! dossier whose review file already exists is skipped, so an interrupted run
 //! resumes rather than starting over, a single task can be re-asked by deleting
-//! one file, and a population added later costs only its own calls. ⚠
-//! **Sequential, and `--parallel 1` on the server**: two turns in flight push
-//! each other past the 90 s idle gap.
+//! one file, and a population added later costs only its own calls.
+//!
+//! ⚠ **It runs sequentially against a `--parallel 1` server because that is what
+//! it was measured on, and NOT for the reason this comment used to give.** It
+//! said *two turns in flight push each other past the 90 s idle gap*; that had
+//! never been measured and **F545 measured it and it is false** — across 171
+//! model calls in four arms, the worst time to first byte under two concurrent
+//! attempts was 25.5 s and the worst of the whole session, **30.3 s, happened
+//! sequentially** on a 30k-token prompt. The variable is prompt size, not slot
+//! count. Running this corpus concurrently is untried, not forbidden.
 //!
 //! # Running it
 //!

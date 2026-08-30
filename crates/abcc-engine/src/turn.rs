@@ -559,10 +559,11 @@ impl<'a> TurnLoop<'a> {
                 journal.record(Event::LivenessMark {
                     attempt,
                     note: format!(
-                        "{} streaming: {} chars of answer, {} of trace",
+                        "{} streaming: {} chars of answer, {} of trace, {} of tool-call arguments",
                         head.key(),
                         acc.text.len(),
-                        acc.reasoning_chars
+                        acc.reasoning_chars,
+                        acc.tool_call_chars
                     ),
                 });
                 last_mark = Instant::now();
@@ -621,6 +622,9 @@ struct Accumulator {
     ttfb_ms: u64,
     text: String,
     reasoning_chars: usize,
+    /// Argument bytes seen in flight, which is a different quantity from the
+    /// assembled calls' lengths only when a turn is cut before its ending.
+    tool_call_chars: u32,
     saw_reasoning: bool,
     reasoning_open: bool,
     tool_calls: Vec<ToolCall>,
@@ -643,6 +647,13 @@ impl Accumulator {
             Delta::ToolCall(call) => {
                 self.reasoning_open = false;
                 self.tool_calls.push(call);
+            }
+            // 🚨 F537. Not content, and counted anyway: this is the only
+            // record that a turn spending its whole budget on one argument was
+            // working rather than hanging.
+            Delta::ToolCallProgress { chars } => {
+                self.reasoning_open = false;
+                self.tool_call_chars = self.tool_call_chars.saturating_add(chars);
             }
             Delta::Closed { usage, finish } => self.ended = Some((usage, finish)),
         }

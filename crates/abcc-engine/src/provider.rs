@@ -305,6 +305,20 @@ pub enum Delta {
     /// the record** (ADR-0011 §3).
     Reasoning(String),
     ToolCall(ToolCall),
+    /// 🚨 **F537: argument bytes for a tool call arrived.** Carries the count
+    /// and nothing else — the call itself is emitted whole, once, as
+    /// [`Delta::ToolCall`], because a half-written argument is not a request
+    /// (F506).
+    ///
+    /// It exists because **the idle gap is a claim about whether the stream is
+    /// delivering**, and without this a model writing one large tool call
+    /// delivers bytes continuously while producing no delta at all: a 90 s
+    /// `apply_patch` argument read as a 90 s hang on a server measured at 75%
+    /// GPU utilisation throughout. Assembling the call silently is what made the
+    /// hang detector a content detector.
+    ToolCallProgress {
+        chars: u32,
+    },
     /// The turn ended, and how.
     Closed {
         usage: Usage,

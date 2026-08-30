@@ -543,6 +543,7 @@ impl Parse {
     /// would concatenate two calls into one. A fragment whose `id` disagrees with
     /// the slot it addresses therefore opens a new slot.
     fn fragment(&mut self, fragment: &ToolCallFragment) {
+        let mut pushed = 0u32;
         let at = fragment
             .index
             .unwrap_or_else(|| self.calls.len().saturating_sub(1));
@@ -566,7 +567,15 @@ impl Parse {
             }
             if let Some(arguments) = &function.arguments {
                 slot.arguments.push_str(arguments);
+                pushed = u32::try_from(arguments.len()).unwrap_or(u32::MAX);
             }
+        }
+        // 🚨 F537. The assembled call is emitted once, at the ending; this
+        // says the stream is delivering *now*, which is the only question the
+        // idle gap asks. Without it a model writing one large argument is
+        // indistinguishable from a dead socket.
+        if pushed > 0 {
+            self.out.push(Ok(Delta::ToolCallProgress { chars: pushed }));
         }
     }
 
