@@ -44,7 +44,7 @@ use abcc_core::event::{CallShape, Composition, Finish, Usage};
 use abcc_core::outcome::Why;
 use serde::{Deserialize, Serialize};
 
-use crate::head::Head;
+use crate::head::Posting;
 
 /// Which provider answered. It goes on every model event, so the log says where
 /// a token came from rather than the caller's memory.
@@ -243,15 +243,19 @@ pub struct Schema {
 
 /// One turn's worth of request.
 ///
-/// The head is a [`Head`] rather than a string, so the prefix, the budget and the
-/// admitted tool set all arrive from one immutable place and cannot drift apart.
+/// The head is a [`Posting`] rather than a string, so the prefix, the budget and
+/// the admitted tool set all arrive from one immutable place and cannot drift
+/// apart. 🚨 It is a *posting* rather than a `Head` because a slot may cap the
+/// role running in it: the prefix a request sends and the policy the turn loop
+/// enforces have to be composed from the same ceiling, and a `Head` cannot carry
+/// one.
 #[derive(Debug, Clone, Copy)]
 pub struct ApiRequest<'a> {
     /// The model name, which is **configuration and never a constant** — the
     /// roster is three champions by axis and the price of the quality one is
     /// 4.9×, which is David's to spend per session (ADR-0011 §1).
     pub model: &'a str,
-    pub head: Head,
+    pub posting: Posting,
     pub body: &'a Body,
     pub schema: Option<Schema>,
     /// 🚨 The **per-read** budget, which is therefore also the idle-gap timeout.
@@ -264,7 +268,8 @@ impl ApiRequest<'_> {
     /// Tokens this request will accept back.
     ///
     /// **16384, from the head, for every model phase that emits a structured
-    /// artifact.** It was 8192; see [`Head::budget`] for the twenty runs that
+    /// artifact.** It was 8192; see [`Head::budget`](crate::Head::budget) for the
+    /// twenty runs that
     /// falsified that number's justification. In short: the quantity that
     /// actually overruns is not the reasoning trace but **one tool call's
     /// arguments** (F511), and an overrun loses them entirely rather than
@@ -272,7 +277,7 @@ impl ApiRequest<'_> {
     /// (F515).
     #[must_use]
     pub fn budget(&self) -> u32 {
-        self.head.budget()
+        self.posting.budget()
     }
 }
 

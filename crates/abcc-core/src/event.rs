@@ -136,6 +136,20 @@ pub enum Event {
         /// per attempt (ADR-0011) because prefix caching saves 79.7% of TTFT and
         /// one token changed at the *front* costs a full cold prompt.
         head: String,
+        /// 🚨 **The ceiling that was actually in force** — the slot's cap, or the
+        /// role's own, whichever was narrower (ADR-0014 §4).
+        ///
+        /// It is here because a slot cap changes what the model is *told* it
+        /// has, and without it a run under a cap and the same run without one
+        /// would differ in the prompt and agree in every event. Status is a
+        /// projection of the log alone, so a fact that reaches only the prompt
+        /// is a fact the log cannot reconstruct.
+        ///
+        /// ⚠ `#[serde(default)]` for the logs written before the cap existed,
+        /// where it reads as the empty string — *not recorded*, which is a
+        /// different thing from *no ceiling*.
+        #[serde(default)]
+        ceiling: String,
         /// Tokens the request declared it would accept back.
         budget: u32,
     },

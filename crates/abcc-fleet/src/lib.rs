@@ -34,6 +34,27 @@
 //!   held and no attempt has started*; it is reaped on the spin-up bound and
 //!   requeued by boot. F166 is v1 shipping a second recovery path that had never
 //!   run when it was needed, so this crate adds none.
+//! * 🚨 **The slot's tool ceiling** ([`Fleet::ceiling`]), which is the half of
+//!   ADR-0014 §4 that lives here: the ADR puts a ceiling on the *role*, and this
+//!   is the *slot's*, with the effective ceiling the narrower of the two. It is
+//!   a [`Tier`] and never a list of tool names — W7 proved four times, with four
+//!   mechanisms across three authors, that an argument check binds only the tool
+//!   that has an argument. **Deny the class.**
+//!
+//! # What a capped slot does, and the thing it deliberately does not do
+//!
+//! 🚨 A cap **narrows the head, it does not arm a trap.** `Head::posted` composes
+//! the prefix and the wire-level tool array from the effective ceiling, so a
+//! `Builders` in a read-only slot is *told* it has read-only tools and never asks
+//! for `run_tests`. The alternative — advertise the role's full set and refuse at
+//! the call — would spend a round teaching the model something the prompt could
+//! have said, on every attempt, forever.
+//!
+//! ⚠ The refusal is still there underneath, and it is what makes this a control
+//! rather than a request: a model that asks for a tool outside its ceiling gets
+//! `Why::Denied` in its transcript and the log gets a `ToolCallEnded` with no
+//! exit status. What it does **not** get is a dead attempt — a denial is a normal
+//! outcome inside a phase, not an ending.
 //!
 //! # The one thing a sortie stops for
 //!
@@ -52,6 +73,7 @@ use abcc_core::task::TaskState;
 use abcc_drive::{DriveError, Driver, Landed};
 use abcc_engine::control::ControlPoint;
 use abcc_engine::provider::Provider;
+use abcc_engine::tools::Tier;
 use abcc_engine::turn::Limits;
 use abcc_engine::workspace::Toolchain;
 use abcc_store::{Store, StoreError};
@@ -121,6 +143,7 @@ pub struct Fleet<'a> {
     unit: UnitId,
     limits: Limits,
     toolchain: Option<Toolchain>,
+    ceiling: Tier,
 }
 
 impl<'a> Fleet<'a> {
@@ -145,6 +168,9 @@ impl<'a> Fleet<'a> {
             unit: UnitId(0),
             limits: Limits::default(),
             toolchain: None,
+            // The slot allows whatever a role asks for, so the effective ceiling
+            // is the role's own and an operator who sets nothing sees no change.
+            ceiling: Tier::Exec,
         }
     }
 
@@ -161,6 +187,29 @@ impl<'a> Fleet<'a> {
     pub fn toolchain(mut self, toolchain: Toolchain) -> Fleet<'a> {
         self.toolchain = Some(toolchain);
         self
+    }
+
+    /// 🚨 **Cap every head that runs in this slot at `ceiling`.**
+    ///
+    /// The effective ceiling for a phase is the narrower of its role's and this,
+    /// so this can only ever take capability away: setting [`Tier::Exec`] is the
+    /// same as setting nothing, and setting [`Tier::NoTools`] leaves a fleet that
+    /// can read a repository and change nothing in it.
+    ///
+    /// It belongs to the fleet and not to a task for the same reason a toolchain
+    /// profile does — ADR-0008 calls that operator configuration — and it is one
+    /// value rather than one per role because the role already has its own and
+    /// two dials on the same quantity is F392's shape.
+    #[must_use]
+    pub fn ceiling(mut self, ceiling: Tier) -> Fleet<'a> {
+        self.ceiling = ceiling;
+        self
+    }
+
+    /// The ceiling this slot caps its heads at.
+    #[must_use]
+    pub fn slot_ceiling(&self) -> Tier {
+        self.ceiling
     }
 
     /// What the fleet would run next, folded out of the log.
@@ -249,7 +298,8 @@ impl<'a> Fleet<'a> {
                 self.worktrees.clone(),
             )
             .limits(self.limits)
-            .retry_available(retry_available);
+            .retry_available(retry_available)
+            .ceiling(self.ceiling);
             if let Some(toolchain) = &self.toolchain {
                 driver = driver.toolchain(*toolchain);
             }

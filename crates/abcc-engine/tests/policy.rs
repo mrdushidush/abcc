@@ -7,10 +7,18 @@
 //! [`Policy::admits`], the same call the turn loop makes.
 
 use abcc_engine::tools::{Destructive, Reach, TOOLS, ToolSpec, destructive_git, lookup};
-use abcc_engine::{Head, Policy, Tier};
+use abcc_engine::{Head, Policy, Posting, Tier};
 
 /// Every ceiling a role can actually be given, bottom to top.
-const CEILINGS: [Tier; 4] = [Tier::NoTools, Tier::Read, Tier::Write, Tier::Exec];
+const CEILINGS: [Tier; 4] = Tier::ALL;
+
+/// A head in a slot that caps nothing, which is what the role asked for on its
+/// own. ⚠ Spelled out at every call site below rather than hidden in a helper
+/// named `policy`, because the whole point of removing `Head::policy()` is that
+/// *which slot* is not a question a head can answer by itself.
+fn uncapped(head: Head) -> Posting {
+    head.posted(Tier::Exec)
+}
 
 fn exec_class() -> Vec<&'static ToolSpec> {
     TOOLS.iter().filter(|t| t.in_exec_class()).collect()
@@ -117,41 +125,175 @@ fn only_builders_reaches_the_exec_class() {
     for head in Head::ALL {
         let admits_exec = exec_class()
             .iter()
-            .any(|t| head.policy().admits(t.name).is_ok());
+            .any(|t| uncapped(head).policy().admits(t.name).is_ok());
         assert_eq!(
             admits_exec,
             head == Head::Builders,
             "{head} admits the exec class"
         );
     }
-    assert!(Head::Commandos.tools().is_empty());
+    assert!(uncapped(Head::Commandos).tools().is_empty());
     assert!(
-        Head::Recon.policy().admits("write_file").is_err(),
+        uncapped(Head::Recon).policy().admits("write_file").is_err(),
         "Recon is read-only and must not be able to edit"
     );
 }
 
 /// The advertised surface and the enforced surface are one list, not two that
 /// agree today.
+///
+/// ⚠ It runs over every **posting**, not every head: a slot cap is precisely the
+/// thing that could make the two lists diverge, so checking it only at the
+/// role's own ceiling would check it exactly where it cannot fail.
 #[test]
-fn a_head_admits_exactly_what_it_advertises() {
-    for head in Head::ALL {
-        for t in head.tools() {
+fn a_posting_admits_exactly_what_it_advertises() {
+    for posting in Posting::ALL {
+        for t in posting.tools() {
             assert!(
-                head.policy().admits(t.name).is_ok(),
-                "{head} advertises {} and refuses it",
+                posting.policy().admits(t.name).is_ok(),
+                "{posting} advertises {} and refuses it",
                 t.name
             );
         }
-        let advertised: Vec<&str> = head.tools().iter().map(|t| t.name).collect();
+        let advertised: Vec<&str> = posting.tools().iter().map(|t| t.name).collect();
         for t in TOOLS {
             if !advertised.contains(&t.name) {
                 assert!(
-                    head.policy().admits(t.name).is_err(),
-                    "{head} admits {} without advertising it",
+                    posting.policy().admits(t.name).is_err(),
+                    "{posting} admits {} without advertising it",
                     t.name
                 );
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The slot's ceiling — ADR-0014 §4's other half
+// ---------------------------------------------------------------------------
+
+/// 🚨 **A slot can only ever take capability away.**
+///
+/// The effective ceiling is the narrower of the role's and the slot's, so no
+/// slot setting anywhere can hand a role something its own ceiling refuses it.
+/// This is the property that makes `--ceiling` safe to expose on the command
+/// line at all.
+#[test]
+fn a_slot_narrows_a_role_and_can_never_widen_one() {
+    for head in Head::ALL {
+        for slot in Tier::ALL {
+            let posting = head.posted(slot);
+            assert!(
+                posting.ceiling() <= head.max_tier(),
+                "{posting} exceeds {head}'s own ceiling of {}",
+                head.max_tier()
+            );
+            assert!(
+                posting.ceiling() <= slot,
+                "{posting} exceeds the slot's ceiling of {slot}"
+            );
+            assert_eq!(
+                posting.ceiling(),
+                head.max_tier().min(slot),
+                "{head} in a {slot} slot"
+            );
+        }
+    }
+}
+
+/// ⚠ [`Tier::narrower`] is a discriminant comparison so that it can be `const`,
+/// and a discriminant comparison is only the same thing as the derived `Ord` for
+/// as long as the variants stay in order. All sixteen pairs, so reordering the
+/// enum fails here rather than silently widening a ceiling.
+#[test]
+fn narrower_agrees_with_ord_over_every_pair() {
+    for a in Tier::ALL {
+        for b in Tier::ALL {
+            assert_eq!(a.narrower(b), a.min(b), "{a} and {b}");
+            assert_eq!(a.narrower(b), b.narrower(a), "{a} and {b} out of order");
+        }
+    }
+}
+
+/// 🚨 **The falsifier the milestone asked for**: a slot capped at `read` takes
+/// the exec class away from `Builders`, which is the only head that reaches it.
+///
+/// ⚠ And note what the refusal *is*. `Why::Denied` is a normal outcome inside a
+/// phase — the model is told, in its own transcript, and the round continues —
+/// not an ending. A capped slot narrows a role; it does not kill an attempt.
+#[test]
+fn a_read_only_slot_takes_the_exec_class_from_builders() {
+    let capped = Head::Builders.posted(Tier::Read);
+    assert_eq!(capped.ceiling(), Tier::Read);
+    for t in exec_class() {
+        let denied = capped
+            .policy()
+            .admits(t.name)
+            .expect_err("the exec class is denied below exec");
+        assert!(
+            denied.to_string().contains("capped at read"),
+            "the refusal must name the ceiling in force: {denied}"
+        );
+    }
+    // The role is intact underneath: the cap is the slot's, not a mutation.
+    assert!(
+        uncapped(Head::Builders)
+            .policy()
+            .admits("run_tests")
+            .is_ok(),
+        "the same role in an uncapped slot still reaches exec"
+    );
+}
+
+/// 🚨 **A cap narrows what the model is told, and that is the difference between
+/// a policy and a trap.**
+///
+/// A capped `Builders` whose prefix still advertised `run_tests` would spend a
+/// tool round per attempt learning something the prompt could have said. So the
+/// prefix is composed from the *effective* ceiling, and this checks the half a
+/// `Policy::admits` test can never see.
+#[test]
+fn a_capped_slot_stops_advertising_what_it_will_refuse() {
+    let full = uncapped(Head::Builders).prefix();
+    let capped = Head::Builders.posted(Tier::Read).prefix();
+    assert_ne!(full, capped, "the cap did not reach the prompt");
+    for t in exec_class() {
+        let declaration = format!("\n{} — ", t.name);
+        assert!(
+            full.contains(&declaration),
+            "an uncapped Builders should declare {}",
+            t.name
+        );
+        assert!(
+            !capped.contains(&declaration),
+            "a read-capped Builders still declares {}",
+            t.name
+        );
+    }
+    assert!(
+        capped.contains("\nread_file — "),
+        "the read-only tools survive the cap"
+    );
+}
+
+/// A slot at `no-tools` leaves a fleet that can read the board and change
+/// nothing — every head loses every tool, and each says so in words rather than
+/// showing an empty list.
+#[test]
+fn a_no_tools_slot_disarms_every_head() {
+    for head in Head::ALL {
+        let posting = head.posted(Tier::NoTools);
+        assert!(posting.tools().is_empty(), "{posting} kept a tool");
+        assert!(
+            posting.prefix().contains("You have none"),
+            "{posting} shows an empty list instead of saying it has none"
+        );
+        for t in TOOLS {
+            assert!(
+                posting.policy().admits(t.name).is_err(),
+                "{posting} admits {}",
+                t.name
+            );
         }
     }
 }
@@ -257,12 +399,12 @@ fn the_over_match_is_deliberate_and_bounded() {
 /// they are two mechanisms and the refusal shapes are distinct.
 #[test]
 fn the_backstop_is_separate_from_the_ceiling() {
-    let recon = Head::Recon.policy();
+    let recon = uncapped(Head::Recon).policy();
     // Recon cannot run git at all: the class check refuses before any argument
     // is looked at.
     assert!(recon.admits("git").is_err());
     // Builders can, and the argument check is what looks at the line.
-    assert!(Head::Builders.policy().admits("git").is_ok());
+    assert!(uncapped(Head::Builders).policy().admits("git").is_ok());
     assert_eq!(
         lookup("git").map(|t| t.reach),
         Some(Reach::SpawnsChild),

@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// below its ceiling. 🚨 The ceiling belongs to the **role**, never to the tool
 /// name — rewriting the README sentence is not the fix, `max_tier` per role is
 /// (ADR-0014 §4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     /// No tools at all. The Judge's ceiling: A4 is one model call with no tools,
@@ -61,6 +61,32 @@ pub enum Tier {
     Exec,
 }
 
+impl Tier {
+    /// Every ceiling, lowest first. The order is the enum's own, which is also
+    /// the `Ord` the comparisons use.
+    pub const ALL: [Tier; 4] = [Tier::NoTools, Tier::Read, Tier::Write, Tier::Exec];
+
+    /// The lower of two ceilings — **the whole of what a slot cap does.**
+    ///
+    /// A role declares what it needs and a slot declares what it will allow, and
+    /// the effective ceiling is the narrower of the two. It is spelled `narrower`
+    /// rather than `min` because a slot cap reads as *narrowing* a role, and
+    /// because shadowing [`Ord::min`] with something that had to agree with it
+    /// would be a second definition of the same order.
+    ///
+    /// ⚠ It is `const` — which is why it is a discriminant comparison rather
+    /// than `Ord::min`, and why `tests/policy.rs` checks the two against each
+    /// other over all sixteen pairs rather than trusting the cast.
+    #[must_use]
+    pub const fn narrower(self, other: Tier) -> Tier {
+        if (self as u8) <= (other as u8) {
+            self
+        } else {
+            other
+        }
+    }
+}
+
 impl fmt::Display for Tier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -70,6 +96,31 @@ impl fmt::Display for Tier {
             Tier::Exec => "exec",
         })
     }
+}
+
+impl std::str::FromStr for Tier {
+    type Err = UnknownTier;
+
+    /// Parses the [`fmt::Display`] spelling, so the word an operator types is the
+    /// word the log and the refusal print back.
+    fn from_str(s: &str) -> std::result::Result<Tier, UnknownTier> {
+        match s {
+            "no-tools" => Ok(Tier::NoTools),
+            "read" => Ok(Tier::Read),
+            "write" => Ok(Tier::Write),
+            "exec" => Ok(Tier::Exec),
+            other => Err(UnknownTier {
+                given: other.to_owned(),
+            }),
+        }
+    }
+}
+
+/// A word that is not one of the four ceilings.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{given} is not a ceiling; the four are no-tools, read, write and exec")]
+pub struct UnknownTier {
+    pub given: String,
 }
 
 /// What a tool does to the machine — the fact the exec class is *defined* by.

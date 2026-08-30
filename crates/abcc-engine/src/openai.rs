@@ -94,7 +94,7 @@ use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::head::Head;
+use crate::head::Posting;
 use crate::provider::{
     ApiRequest, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Role, ToolCall,
     TurnStream,
@@ -740,7 +740,8 @@ fn completions_url(base: &str) -> String {
 ///
 /// 🚨 **Everything in it that is not the varying body is constant per head**, so
 /// asking for tools costs no prefix-cache hit: the array below comes from
-/// [`Head::tools`], which is `Policy::admitted`, which is fixed at compile time.
+/// [`Posting::tools`], which is `Policy::admitted`, which is fixed at compile
+/// time.
 /// One token changed at the *front* annihilates the 79.7% TTFT saving (F81), and
 /// a tool array that mutated mid-session would pay a 33.9 s cold prefill at the
 /// daily driver's context to buy exactly the one turn that changed it.
@@ -748,7 +749,7 @@ fn payload(req: &ApiRequest<'_>) -> Value {
     let mut messages = Vec::with_capacity(req.body.len() + 1);
     // The system half is the head and arrives only here. `Role` has no `System`
     // variant precisely so nothing else can put one in.
-    messages.push(json!({"role": "system", "content": req.head.prefix()}));
+    messages.push(json!({"role": "system", "content": req.posting.prefix()}));
     messages.extend(req.body.messages().iter().map(wire_message));
 
     let mut payload = Map::new();
@@ -759,7 +760,7 @@ fn payload(req: &ApiRequest<'_>) -> Value {
     // F84: the compat dialect reports real token counts only when asked.
     payload.insert("stream_options".to_owned(), json!({"include_usage": true}));
 
-    let tools = advertised(req.head);
+    let tools = advertised(req.posting);
     if !tools.is_empty() {
         payload.insert("tools".to_owned(), Value::Array(tools.to_vec()));
     }
@@ -817,15 +818,22 @@ fn wire_message(message: &Message) -> Value {
     Value::Object(wire)
 }
 
-/// The `tools` array for a head, built once.
+/// The `tools` array for a posting, built once.
 ///
-/// Four heads, four arrays, assembled on first use and never again — the same
-/// argument as [`Head::prefix`], for the same reason: the server renders this
+/// Nine postings, nine arrays, assembled on first use and never again — the same
+/// argument as [`Posting::prefix`], for the same reason: the server renders this
 /// into its chat template, so a value rebuilt per call is a head that varies.
-static ADVERTISED: LazyLock<[Vec<Value>; 4]> = LazyLock::new(|| Head::ALL.map(advertise));
+///
+/// 🚨 It is keyed by **posting** and not by head, so that a slot cap narrows the
+/// wire-level tool array and the prompt text together. They are two renderings
+/// of one list, and a cap that reached only one of them would advertise a tool
+/// on the wire that the prose says the role does not have.
+static ADVERTISED: LazyLock<Vec<Vec<Value>>> =
+    LazyLock::new(|| Posting::ALL.iter().map(|p| advertise(*p)).collect());
 
-fn advertise(head: Head) -> Vec<Value> {
-    head.tools()
+fn advertise(posting: Posting) -> Vec<Value> {
+    posting
+        .tools()
         .into_iter()
         .map(|spec| {
             json!({
@@ -840,12 +848,8 @@ fn advertise(head: Head) -> Vec<Value> {
         .collect()
 }
 
-fn advertised(head: Head) -> &'static [Value] {
-    let at = Head::ALL
-        .iter()
-        .position(|h| *h == head)
-        .expect("Head::ALL is the whole set, and tests/heads.rs asserts it");
-    &ADVERTISED[at]
+fn advertised(posting: Posting) -> &'static [Value] {
+    &ADVERTISED[posting.index()]
 }
 
 /// Inline a schema that is already JSON.

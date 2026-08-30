@@ -28,6 +28,7 @@ use abcc_core::task::TaskState;
 use abcc_drive::{Driver, Landed};
 use abcc_engine::control::ControlPoint;
 use abcc_engine::openai::OpenAiCompat;
+use abcc_engine::tools::Tier;
 use abcc_engine::turn::{Limits, PhaseEnded, PhaseReport};
 use abcc_gate::Measured;
 use abcc_store::{Reconciled, Store};
@@ -80,9 +81,12 @@ pub fn attempt(
     let desk = Desk::open(&log_path, handle, task)?;
     writeln!(
         out,
-        "\nrunning {task} in unit {unit} on {model}\n\
+        "\nrunning {task} in unit {unit} at {ceiling} on {model}\n\
          control: type one of [{VERBS}] and press enter\n\
-         watch:   abcc watch, in another terminal\n"
+         watch:   abcc watch, in another terminal\n",
+        // Said out loud for the same reason the fleet says it: a capped slot
+        // is otherwise invisible until a role is refused something.
+        ceiling = run.ceiling.unwrap_or(Tier::Exec)
     )?;
     out.flush()?;
     // Detached, and never joined: it blocks on stdin, and on a terminal stdin
@@ -97,6 +101,7 @@ pub fn attempt(
         ground.home.worktrees(),
     )
     .limits(limits)
+    .ceiling(run.ceiling.unwrap_or(Tier::Exec))
     .run(task, unit, Cause::Fresh, &mut control)?;
 
     report(&landed, out)

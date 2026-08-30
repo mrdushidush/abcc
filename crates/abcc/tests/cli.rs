@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use abcc::cli::{self, CliError, Command};
+use abcc_engine::Tier;
 use abcc_tui::Theme;
 
 fn parse(line: &str) -> Result<cli::Invocation, CliError> {
@@ -136,6 +137,51 @@ fn run_takes_its_options_and_nothing_positional() {
         panic!("a bare task id after `run` should not parse");
     };
     assert!(said.contains("no arguments"), "{said}");
+}
+
+/// 🚨 **The slot's ceiling is a tier, and a word that is not one of the four is
+/// refused with the four spelled out.**
+///
+/// It must never become a list of tool names: W7 proved four times, across four
+/// mechanisms and three authors, that an argument check binds only the tool that
+/// has an argument. The class is the thing that can be denied.
+#[test]
+fn a_ceiling_is_one_of_four_tiers_on_both_run_and_fleet() {
+    for (line, expected) in [
+        ("run --ceiling no-tools", Tier::NoTools),
+        ("run --ceiling read", Tier::Read),
+        ("run --ceiling write", Tier::Write),
+        ("run --ceiling exec", Tier::Exec),
+    ] {
+        let parsed = parse(line).expect(line);
+        let Command::Run(run) = parsed.command else {
+            panic!("expected a run: {line}");
+        };
+        assert_eq!(run.ceiling, Some(expected), "{line}");
+    }
+
+    // The same flag on the fleet, which is where a slot ceiling actually
+    // belongs \u2014 `run` gets it because a run is one attempt in one slot too.
+    let Command::Fleet(fleet) = parse("fleet --ceiling read").expect("fleet").command else {
+        panic!("expected a fleet");
+    };
+    assert_eq!(fleet.ceiling, Some(Tier::Read));
+
+    // Unset is unset, and it is the caller who decides what that means \u2014 not a
+    // default buried in the parser.
+    let Command::Fleet(bare) = parse("fleet").expect("fleet").command else {
+        panic!("expected a fleet");
+    };
+    assert_eq!(bare.ceiling, None);
+
+    // \u26a0 The error lists the four rather than only saying no: an operator who
+    // typed `readonly` needs the spelling, not a verdict.
+    let Err(CliError::Usage(said)) = parse("run --ceiling readonly") else {
+        panic!("`readonly` is not a ceiling and should not parse");
+    };
+    for tier in ["no-tools", "read", "write", "exec"] {
+        assert!(said.contains(tier), "{said}");
+    }
 }
 
 #[test]

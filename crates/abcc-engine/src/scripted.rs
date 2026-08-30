@@ -26,6 +26,7 @@ use crate::provider::{
     ApiRequest, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Schema,
     ToolCall, TurnStream,
 };
+use crate::tools::Tier;
 
 /// One turn's worth of deltas, in the order a stream produces them.
 #[derive(Debug, Clone, Default)]
@@ -227,6 +228,11 @@ fn usage(prompt: u32, completion: u32, reasoning: Option<u32>) -> Usage {
 pub struct Seen {
     pub head_key: &'static str,
     pub head_prefix: &'static str,
+    /// The ceiling that composed `head_prefix` — the slot's cap, or the role's
+    /// own, whichever was narrower. It is here so that a test can check the
+    /// **advertised** surface a cap produced, which is the half a policy check
+    /// on its own would never see.
+    pub ceiling: Tier,
     pub model: String,
     pub budget: u32,
     pub messages: Vec<Message>,
@@ -311,8 +317,9 @@ impl Provider for Scripted {
 
     fn start(&self, req: &ApiRequest<'_>) -> Result<Box<dyn TurnStream>, ProviderError> {
         self.seen.lock().expect("lock").push(Seen {
-            head_key: req.head.key(),
-            head_prefix: req.head.prefix(),
+            head_key: req.posting.key(),
+            head_prefix: req.posting.prefix(),
+            ceiling: req.posting.ceiling(),
             model: req.model.to_owned(),
             budget: req.budget(),
             messages: req.body.messages().to_vec(),

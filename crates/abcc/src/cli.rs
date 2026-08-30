@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use abcc_engine::Tier;
 use abcc_tui::Theme;
 
 /// What to do, and the two things every subcommand shares.
@@ -78,6 +79,14 @@ pub struct Run {
     pub unit: Option<u8>,
     pub rounds: Option<u32>,
     pub idle_gap: Option<Duration>,
+    /// 🚨 **The slot's tool ceiling**, capping every head this run's attempts
+    /// use. `None` is *the slot allows what the role asks for*, which is what
+    /// every run did before the flag existed.
+    ///
+    /// It is a tier and never a list of tool names, because an argument check
+    /// binds only the tool that has an argument (W7, four times) — the class is
+    /// the thing that can be denied.
+    pub ceiling: Option<Tier>,
 }
 
 /// A task named on the command line, as `t42` or `42`.
@@ -112,13 +121,14 @@ Everywhere:
   --repo <path>     the checkout to work on (default: the working directory)
   --home <path>     where the log and worktrees live (default: outside the repo)
 
-run:
+run and fleet:
   --model <name>    the model to ask for (default: $ABCC_MODEL)
   --url <base>      the server (default: $ABCC_MODEL_BASE_URL)
   --fingerprint <s> a substring that must appear in the served model id
-  --unit <n>        the slot to run in (default: 0)
+  --unit <n>        the slot to run in (default: 0) -- run only, and so is --task
   --rounds <n>      tool rounds before the phase gives up
   --idle-gap <s>    seconds of silence on the stream that count as a hang
+  --ceiling <tier>  cap every role in the slot: no-tools | read | write | exec
 
 The run reads control verbs from stdin: pause | halt | kill | redirect <prompt>.
 ";
@@ -324,9 +334,22 @@ fn run_args(args: &mut Vec<String>, per_task: bool) -> Result<Run, CliError> {
         idle_gap: take_flag(args, "--idle-gap")?
             .map(|g| seconds(&g, "--idle-gap"))
             .transpose()?,
+        ceiling: take_flag(args, "--ceiling")?
+            .map(|c| ceiling(&c))
+            .transpose()?,
     };
     no_positionals(args, verb)?;
     Ok(run)
+}
+
+/// A ceiling, by the name the log and the refusals print.
+///
+/// ⚠ The error lists all four rather than only saying no: the operator who typed
+/// `--ceiling readonly` needs the spelling, not a verdict.
+fn ceiling(given: &str) -> Result<Tier, CliError> {
+    given
+        .parse()
+        .map_err(|e: abcc_engine::UnknownTier| CliError::Usage(e.to_string()))
 }
 
 fn no_positionals(args: &[String], verb: &str) -> Result<(), CliError> {

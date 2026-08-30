@@ -19,9 +19,9 @@ use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
 use abcc_core::event::Event;
 use abcc_core::seq::{MissionId, Seq, TaskId};
 use abcc_core::task::TaskState;
-use abcc_engine::Head;
 use abcc_engine::control::ControlPoint;
 use abcc_engine::scripted::{Script, Scripted};
+use abcc_engine::{Head, Tier};
 use abcc_fleet::{Admission, Fleet, Grounded, budget};
 use abcc_store::Store;
 use abcc_vcs::Repo;
@@ -406,4 +406,113 @@ fn an_operators_halt_grounds_the_whole_sortie_and_not_just_the_attempt() {
         "{:?}",
         state(&store, first)
     );
+}
+
+// ---------------------------------------------------------------------------
+// The slot's ceiling
+// ---------------------------------------------------------------------------
+
+/// 🚨 **The slot cap, end to end: `Fleet` → `Driver` → `TurnLoop` → the request
+/// on the wire.**
+///
+/// Every other test of the ceiling is against `Head::posted` directly, which
+/// proves the composition and not the plumbing. This one sets the cap on the
+/// fleet, flies one attempt, and reads what the provider was actually handed
+/// — because a ceiling that never reaches the request is a setting, not a
+/// control.
+#[test]
+fn a_capped_slot_reaches_the_request_the_provider_is_handed() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    seed(&mut store, "one returns two");
+    let repo = Repo::open(&subject.root).expect("open");
+
+    let provider = Scripted::new(absences(2));
+    let (mut control, _handle) = ControlPoint::new();
+    {
+        let mut fleet = Fleet::new(
+            &mut store,
+            &repo,
+            &provider,
+            MODEL,
+            subject.worktrees.clone(),
+        )
+        .ceiling(Tier::Read);
+        assert_eq!(fleet.slot_ceiling(), Tier::Read);
+        fleet.sortie(&mut control).expect("sortie");
+    }
+
+    let seen = provider.seen();
+    assert!(!seen.is_empty(), "the provider was never asked anything");
+    for call in &seen {
+        assert_eq!(call.ceiling, Tier::Read, "{} ran uncapped", call.head_key);
+        // 🚨 The half a policy check cannot see: the model was never *told* it
+        // had the exec class, so it has nothing to be refused for asking for.
+        for name in ["bash", "run_tests", "diagnostics", "git", "write_file"] {
+            let declaration = format!("\n{name} — ");
+            assert!(
+                !call.head_prefix.contains(&declaration),
+                "{} advertises {name} from a read-capped slot",
+                call.head_key
+            );
+        }
+        assert!(
+            call.head_prefix.contains("\nread_file — "),
+            "{} lost its read-only tools too",
+            call.head_key
+        );
+    }
+
+    // ⚠ And the log says so. A capped run and an uncapped one differ in the
+    // prompt; without this they would agree in every event, and status is a
+    // projection of the log alone.
+    let ceilings: Vec<String> = store
+        .read_from(Seq::new(0), 10_000)
+        .expect("history")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::ModelCallStarted { ceiling, .. } => Some(ceiling),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ceilings.len(), seen.len());
+    assert!(
+        ceilings.iter().all(|c| c == "read"),
+        "the log does not record the ceiling in force: {ceilings:?}"
+    );
+}
+
+/// An unset ceiling is [`Tier::Exec`], so a fleet nobody configured behaves
+/// exactly as it did before the cap existed — `Builders` still reaches the exec
+/// class, and the roles that never did still do not.
+#[test]
+fn an_unset_ceiling_changes_nothing() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    seed(&mut store, "one returns two");
+    let repo = Repo::open(&subject.root).expect("open");
+
+    let provider = Scripted::new(absences(2));
+    let (mut control, _handle) = ControlPoint::new();
+    {
+        let mut fleet = Fleet::new(
+            &mut store,
+            &repo,
+            &provider,
+            MODEL,
+            subject.worktrees.clone(),
+        );
+        assert_eq!(fleet.slot_ceiling(), Tier::Exec);
+        fleet.sortie(&mut control).expect("sortie");
+    }
+
+    for call in provider.seen() {
+        let expected = match call.head_key {
+            "engineering" | "recon" => Tier::Read,
+            "builders" => Tier::Exec,
+            "commandos" => Tier::NoTools,
+            other => panic!("an unknown head reached the provider: {other}"),
+        };
+        assert_eq!(call.ceiling, expected, "{}", call.head_key);
+    }
 }

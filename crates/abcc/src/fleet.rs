@@ -27,6 +27,7 @@ use abcc_core::run::Mode;
 use abcc_core::task::TaskState;
 use abcc_engine::control::ControlPoint;
 use abcc_engine::openai::OpenAiCompat;
+use abcc_engine::tools::Tier;
 use abcc_fleet::{Fleet, Grounded, Sortie, budget};
 use abcc_store::Store;
 
@@ -68,9 +69,13 @@ pub fn sortie(
 
     writeln!(
         out,
-        "\nfleet   one slot, {} attempts per task, on {model}\n\
+        "\nfleet   one slot at {}, {} attempts per task, on {model}\n\
          watch:  abcc watch, in another terminal\n\
          \u{26a0} no control desk here \u{2014} `abcc run --task t42` is the one with the verbs\n",
+        // The ceiling is printed whether or not it was set, because a capped slot
+        // is otherwise invisible until a role asks for something and is refused
+        // — and the operator reading this line is the one who set it.
+        args.ceiling.unwrap_or(Tier::Exec),
         budget::ATTEMPTS
     )?;
     out.flush()?;
@@ -84,6 +89,9 @@ pub fn sortie(
         ground.home.worktrees(),
     )
     .limits(run::limits_for(args));
+    if let Some(ceiling) = args.ceiling {
+        fleet = fleet.ceiling(ceiling);
+    }
     let flown = fleet.sortie(&mut control)?;
 
     report(&flown, out)

@@ -18,10 +18,12 @@
 //!    prompt binds only as far as the model complies, measured at 39 of 50. So
 //!    [`tools::Policy`] is the enforcement and everything else is a backstop that
 //!    says so in its own doc comment (ADR-0014).
-//! 2. **The system prefix cannot vary.** [`Head::prefix`] takes no arguments,
-//!    because the prefix cache saves 79.7% of TTFT and one token changed at the
-//!    front annihilates it (F81). Failure context is *appended*, which is why
-//!    [`provider::Body`] has no operation but `append` (ADR-0010, ADR-0011).
+//! 2. **The system prefix cannot vary.** [`Posting::prefix`] has no per-call
+//!    input — a posting is a head and a four-valued ceiling, and the ceiling is
+//!    operator configuration fixed for a sortie — because the prefix cache saves
+//!    79.7% of TTFT and one token changed at the front annihilates it (F81).
+//!    Failure context is *appended*, which is why [`provider::Body`] has no
+//!    operation but `append` (ADR-0010, ADR-0011).
 //! 3. **Cancellation is a socket close.** [`provider::TurnStream`] has no
 //!    `cancel()`: the worker samples its control channel between deltas and drops
 //!    the stream, which stopped a live generation at 4–14 ms (F200). This is why
@@ -50,12 +52,12 @@ pub mod workspace;
 
 pub use child::{Finished, Killer, Spawn, ToolChild};
 pub use control::{ControlHandle, ControlPoint, Disposition, Gone, Keep, Stop, Urgency, Watch};
-pub use head::{Head, Serves};
+pub use head::{Head, Posting, Serves};
 pub use openai::OpenAiCompat;
 pub use provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Role,
     Schema, ToolCall, TraceSignal, Turn, TurnStream,
 };
-pub use tools::{Confinement, Denied, Destructive, Policy, Reach, Tier, ToolSpec};
+pub use tools::{Confinement, Denied, Destructive, Policy, Reach, Tier, ToolSpec, UnknownTier};
 pub use turn::{Journal, Limits, NoTools, PhaseEnded, PhaseReport, ToolResult, Tools, TurnLoop};
 pub use workspace::{Standard, Toolchain, Workspace};

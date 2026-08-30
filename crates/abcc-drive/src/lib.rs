@@ -62,6 +62,7 @@ use abcc_core::task::{AbortReason, Command, Refused, RequeueReason, TaskState};
 use abcc_engine::control::{ControlPoint, Keep, Watch};
 use abcc_engine::head::Head;
 use abcc_engine::provider::{Body, Provider, Schema};
+use abcc_engine::tools::Tier;
 use abcc_engine::turn::{Limits, NoTools, PhaseEnded, PhaseReport, Tools, TurnLoop};
 use abcc_engine::workspace::{Toolchain, Workspace};
 use abcc_gate::{Gate, Measured, judge};
@@ -177,6 +178,16 @@ pub struct Driver<'a> {
     /// Default `false`, which is what makes a bare `abcc run` honest: one attempt
     /// was bought, it produced an absence, and a person is asked.
     retry_available: bool,
+    /// 🚨 **The slot's tool ceiling, which caps every head this attempt runs.**
+    ///
+    /// ADR-0014 §4 puts a ceiling on the role; this is the slot's half, and the
+    /// effective ceiling is the narrower of the two. It reaches the turn loop and
+    /// nothing else — there is no second copy for the gate, because the gate's
+    /// rungs are the host's own checkers and are not something a model asked for.
+    ///
+    /// Default [`Tier::Exec`]: the slot allows whatever the role asks for, so an
+    /// unset ceiling changes nothing.
+    ceiling: Tier,
 }
 
 impl<'a> Driver<'a> {
@@ -201,6 +212,7 @@ impl<'a> Driver<'a> {
             limits: Limits::default(),
             toolchain: None,
             retry_available: false,
+            ceiling: Tier::Exec,
         }
     }
 
@@ -225,6 +237,14 @@ impl<'a> Driver<'a> {
     #[must_use]
     pub fn retry_available(mut self, yes: bool) -> Driver<'a> {
         self.retry_available = yes;
+        self
+    }
+
+    /// Cap every head this attempt runs at `ceiling`. See
+    /// [`Driver::ceiling`](Driver#structfield.ceiling).
+    #[must_use]
+    pub fn ceiling(mut self, ceiling: Tier) -> Driver<'a> {
+        self.ceiling = ceiling;
         self
     }
 
@@ -378,6 +398,7 @@ impl<'a> Driver<'a> {
         let provider = self.provider;
         let model = self.model.clone();
         let limits = self.limits;
+        let ceiling = self.ceiling;
 
         let mut journal = StoreJournal::new(self.store);
         // 🚨 `None` for the two phases whose artifact is prose an operator
@@ -387,14 +408,10 @@ impl<'a> Driver<'a> {
         // runnable in it is unrepresentable rather than discouraged — and what
         // it costs is 2.8x the decode and a token cap that has already eaten 17
         // of 57 calls (ADR-0008).
-        let ended = TurnLoop::new(provider, tools, model).limits(limits).run(
-            head,
-            attempt,
-            schema,
-            body,
-            control,
-            &mut journal,
-        );
+        let ended = TurnLoop::new(provider, tools, model)
+            .limits(limits)
+            .ceiling(ceiling)
+            .run(head, attempt, schema, body, control, &mut journal);
         journal.into_result()?;
         Ok(ended)
     }

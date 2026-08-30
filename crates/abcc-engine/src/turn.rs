@@ -7,7 +7,7 @@
 //! overturn it. So the loop is written against the contracts and not against the
 //! code, and every rule it holds is one a measurement produced:
 //!
-//! * **The head never moves.** [`Head::prefix`] is `&'static str` and the loop
+//! * **The head never moves.** [`Posting::prefix`] is `&'static str` and the loop
 //!   appends to a [`Body`] — the same body, growing — so every round after the
 //!   first is a prefix-cache hit rather than a cold prefill. One token changed at
 //!   the front costs the whole 79.7% saving (F81).
@@ -33,7 +33,7 @@ use abcc_core::outcome::{Claim, Why};
 use abcc_core::seq::AttemptId;
 
 use crate::control::{ControlPoint, Disposition, Stop};
-use crate::head::Head;
+use crate::head::{Head, Posting};
 use crate::provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderError, Schema, ToolCall, TraceSignal, Turn,
     TurnStream,
@@ -50,7 +50,7 @@ use crate::tools::{Tier, ToolSpec};
 ///
 /// ⚠ It goes on the **end** of the body, never into the head. One token changed
 /// at the front costs the whole 79.7% prefix-cache saving (F81), which is the
-/// same reason [`crate::head::Head::prefix`] takes no arguments.
+/// same reason [`crate::head::Posting::prefix`] carries no per-call input.
 const NO_ANSWER: &str = "Your last turn produced no reply text at all: the reasoning ended and \
                          nothing was said. Only the reply is visible to anyone — the reasoning \
                          is not, and it is not kept. Say the answer now, in the reply itself.";
@@ -276,6 +276,23 @@ pub struct TurnLoop<'a> {
     tools: &'a dyn Tools,
     model: String,
     limits: Limits,
+    /// 🚨 **The slot's ceiling, which caps every head that runs in it.**
+    ///
+    /// ADR-0014 §4 puts the ceiling on the role; this is the other half, and the
+    /// effective ceiling is the narrower of the two. It is set once per loop
+    /// rather than per phase because it is operator configuration about a *slot*
+    /// — a per-phase cap would be a dial, and the whole point of the frozen head
+    /// is that a phase's request shape is not one.
+    ///
+    /// ⚠ It must stay a [`Tier`] and never a list of tool names. W7 proved four
+    /// times, with four mechanisms across three authors, that an argument check
+    /// binds only the tool that has an argument; `Reach` is the property every
+    /// tool declares and [`Tier::Exec`] *is* the class.
+    ///
+    /// Default [`Tier::Exec`] — the slot allows everything a role asks for, so
+    /// the ceiling is the role's own and nothing changed for a caller that never
+    /// sets one.
+    ceiling: Tier,
 }
 
 impl<'a> TurnLoop<'a> {
@@ -286,12 +303,21 @@ impl<'a> TurnLoop<'a> {
             tools,
             model: model.into(),
             limits: Limits::default(),
+            ceiling: Tier::Exec,
         }
     }
 
     #[must_use]
     pub fn limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// Cap every head this loop runs at `ceiling`. See
+    /// [`TurnLoop::ceiling`](TurnLoop#structfield.ceiling).
+    #[must_use]
+    pub fn ceiling(mut self, ceiling: Tier) -> Self {
+        self.ceiling = ceiling;
         self
     }
 
@@ -315,11 +341,16 @@ impl<'a> TurnLoop<'a> {
         control: &mut ControlPoint,
         journal: &mut dyn Journal,
     ) -> PhaseEnded {
-        let ended = self.drive(head, attempt, schema, body, control, journal);
+        // 🚨 The posting is composed **here, once**, and everything downstream
+        // reads it. The prefix, the wire tool array and `Policy::admits` are
+        // three renderings of one list, and composing them from a head and a
+        // ceiling separately is exactly how two of them come to disagree.
+        let posting = head.posted(self.ceiling);
+        let ended = self.drive(posting, attempt, schema, body, control, journal);
         let r = ended.report();
         journal.record(Event::PhaseEnded {
             attempt,
-            by: head.call_sign().to_owned(),
+            by: posting.call_sign().to_owned(),
             turns: r.turns,
             tool_calls: r.tool_calls,
             denials: r.denials,
@@ -336,7 +367,7 @@ impl<'a> TurnLoop<'a> {
     /// of its exits is funnelled through a single recording point.
     fn drive(
         &self,
-        head: Head,
+        posting: Posting,
         attempt: AttemptId,
         schema: Option<Schema>,
         body: &mut Body,
@@ -348,7 +379,7 @@ impl<'a> TurnLoop<'a> {
         let mut nudges = self.limits.nudges;
 
         for _round in 0..self.limits.rounds {
-            let turn = match self.one_turn(head, attempt, schema, body, control, journal) {
+            let turn = match self.one_turn(posting, attempt, schema, body, control, journal) {
                 Ok(turn) => turn,
                 Err(ending) => return ending.into_phase(report, started),
             };
@@ -366,7 +397,7 @@ impl<'a> TurnLoop<'a> {
             // phase's artifact. Writing the `ClaimRecorded` first and ending
             // `Answered` afterwards is what put two zero-character claims on the
             // log and handed one of them to the next phase as its input.
-            if let Some(why) = turn.said_nothing(head.call_sign()) {
+            if let Some(why) = turn.said_nothing(posting.call_sign()) {
                 // 🚨 F503: ask again before giving up. The model answers this
                 // brief sometimes and not others — 2 of 7 — so the first
                 // absence is a sample rather than a verdict, and the repair
@@ -377,7 +408,7 @@ impl<'a> TurnLoop<'a> {
                     nudges -= 1;
                     journal.record(Event::PhaseNudged {
                         attempt,
-                        by: head.call_sign().to_owned(),
+                        by: posting.call_sign().to_owned(),
                         left: nudges,
                     });
                     // The empty turn goes on the body as what it was. Hiding it
@@ -395,7 +426,7 @@ impl<'a> TurnLoop<'a> {
                 journal.record(Event::ClaimRecorded {
                     attempt,
                     claim: Claim {
-                        by: head.call_sign().to_owned(),
+                        by: posting.call_sign().to_owned(),
                         text: text.clone(),
                     },
                 });
@@ -403,7 +434,7 @@ impl<'a> TurnLoop<'a> {
                 return PhaseEnded::Answered { text, report };
             }
 
-            self.tool_round(head, attempt, &turn, body, journal, &mut report);
+            self.tool_round(posting, attempt, &turn, body, journal, &mut report);
         }
 
         Ending::Unmeasured(Why::BudgetExhausted {
@@ -415,7 +446,7 @@ impl<'a> TurnLoop<'a> {
     /// One model call: the step boundary, the request, the stream, the drain.
     fn one_turn(
         &self,
-        head: Head,
+        posting: Posting,
         attempt: AttemptId,
         schema: Option<Schema>,
         body: &Body,
@@ -429,7 +460,7 @@ impl<'a> TurnLoop<'a> {
 
         let request = ApiRequest {
             model: &self.model,
-            head,
+            posting,
             body,
             schema,
             idle_gap: self.limits.idle_gap,
@@ -438,15 +469,20 @@ impl<'a> TurnLoop<'a> {
             attempt,
             provider: self.provider.id().to_string(),
             model: self.model.clone(),
-            head: head.key().to_owned(),
-            budget: head.budget(),
+            head: posting.key().to_owned(),
+            // 🚨 Without this the log cannot say which policy was in force. A
+            // capped slot changes what the model is *told* it has, so a run under
+            // a cap and the same run without one differ in the prompt and agree
+            // in every event — and status is a projection of the log alone.
+            ceiling: posting.ceiling().to_string(),
+            budget: posting.budget(),
         });
 
         let mut stream = self
             .provider
             .start(&request)
             .map_err(|e| Ending::Unmeasured(e.why()))?;
-        let drained = self.drain(&mut *stream, attempt, head, control, journal);
+        let drained = self.drain(&mut *stream, attempt, posting, control, journal);
         // Dropping the stream is the cancellation, so it happens here rather than
         // at the end of a scope somebody might later widen.
         drop(stream);
@@ -469,7 +505,7 @@ impl<'a> TurnLoop<'a> {
     /// Admit, run and append every tool the turn asked for.
     fn tool_round(
         &self,
-        head: Head,
+        posting: Posting,
         attempt: AttemptId,
         turn: &Turn,
         body: &mut Body,
@@ -485,7 +521,7 @@ impl<'a> TurnLoop<'a> {
             turn.text.clone(),
             turn.tool_calls.clone(),
         ));
-        let policy = head.policy();
+        let policy = posting.policy();
         for call in &turn.tool_calls {
             match policy.admits(&call.tool) {
                 Ok(spec) => {
@@ -515,9 +551,9 @@ impl<'a> TurnLoop<'a> {
                         exit: None,
                         elapsed_ms: 0,
                         unmeasured: Some(Why::Denied {
-                            role: head.call_sign().to_owned(),
+                            role: posting.call_sign().to_owned(),
                             tool: call.tool.clone(),
-                            ceiling: head.max_tier().to_string(),
+                            ceiling: posting.ceiling().to_string(),
                         }),
                         // ⚠ `None`, and not an oversight. A denial is about the
                         // *class* — ADR-0014's control is that the role does not
@@ -541,7 +577,7 @@ impl<'a> TurnLoop<'a> {
         &self,
         stream: &mut dyn TurnStream,
         attempt: AttemptId,
-        head: Head,
+        posting: Posting,
         control: &ControlPoint,
         journal: &mut dyn Journal,
     ) -> Drained {
@@ -560,7 +596,7 @@ impl<'a> TurnLoop<'a> {
                     attempt,
                     note: format!(
                         "{} streaming: {} chars of answer, {} of trace, {} of tool-call arguments",
-                        head.key(),
+                        posting.key(),
                         acc.text.len(),
                         acc.reasoning_chars,
                         acc.tool_call_chars
@@ -596,7 +632,7 @@ impl<'a> TurnLoop<'a> {
             finish,
             ttfb_ms: acc.ttfb_ms,
             elapsed_ms: elapsed_ms(started),
-            budget: head.budget(),
+            budget: posting.budget(),
         };
 
         // 🚨 F511. Recorded *after* the turn exists rather than beside the

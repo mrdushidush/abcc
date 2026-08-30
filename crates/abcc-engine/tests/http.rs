@@ -35,7 +35,7 @@ use abcc_engine::openai::OpenAiCompat;
 use abcc_engine::provider::{ApiRequest, Delta, ProviderError, Role, Schema};
 use abcc_engine::tools::{TOOLS, ToolSpec};
 use abcc_engine::{
-    Body, ControlPoint, Head, PhaseEnded, Provider, ToolCall, ToolResult, Tools, TurnLoop,
+    Body, ControlPoint, Head, PhaseEnded, Provider, Tier, ToolCall, ToolResult, Tools, TurnLoop,
 };
 use serde_json::Value;
 
@@ -193,8 +193,11 @@ const USAGE: &str = r#"{"choices":[],"usage":{"prompt_tokens":64,"completion_tok
 
 fn request(head: Head, body: &Body, idle_gap: Duration) -> ApiRequest<'_> {
     ApiRequest {
+        // An uncapped slot, which is what every case here is about: the cap's
+        // own effect on the wire is `a_capped_slot_narrows_the_wire_tool_array`
+        // below.
+        posting: head.posted(Tier::Exec),
         model: MODEL,
-        head,
         body,
         schema: None,
         idle_gap,
@@ -660,7 +663,10 @@ fn the_request_carries_the_head_the_tools_and_the_ask_for_real_token_counts() {
     let messages = sent["messages"].as_array().expect("messages");
     // The system half is the head, and it arrives only here.
     assert_eq!(messages[0]["role"], "system");
-    assert_eq!(messages[0]["content"], Head::Builders.prefix());
+    assert_eq!(
+        messages[0]["content"],
+        Head::Builders.posted(Tier::Exec).prefix()
+    );
     assert_eq!(messages[1]["role"], "user");
     assert_eq!(messages[1]["content"], "fix the thing");
 
@@ -682,11 +688,16 @@ fn the_request_carries_the_head_the_tools_and_the_ask_for_real_token_counts() {
         .iter()
         .map(|t| t["function"]["name"].as_str().expect("a name"))
         .collect();
-    let admitted: Vec<&str> = Head::Builders.tools().iter().map(|t| t.name).collect();
+    let admitted: Vec<&str> = Head::Builders
+        .posted(Tier::Exec)
+        .tools()
+        .iter()
+        .map(|t| t.name)
+        .collect();
     assert_eq!(advertised, admitted);
     // And the schema on the wire is the schema in the head, parsed rather than
     // re-described.
-    for spec in Head::Builders.tools() {
+    for spec in Head::Builders.posted(Tier::Exec).tools() {
         let on_wire = sent["tools"]
             .as_array()
             .expect("tools")
@@ -733,7 +744,7 @@ fn a_schema_travels_as_strict_json_schema_and_never_as_json_object() {
         &provider,
         &ApiRequest {
             model: MODEL,
-            head: Head::Commandos,
+            posting: Head::Commandos.posted(Tier::Exec),
             body: &body,
             schema: Some(VERDICT),
             idle_gap: BUDGET,
@@ -878,7 +889,7 @@ fn a_live_turn_reports_usage_and_a_reasoning_trace() {
         &provider,
         &ApiRequest {
             model: &model,
-            head: Head::Commandos,
+            posting: Head::Commandos.posted(Tier::Exec),
             body: &body,
             schema: None,
             idle_gap: Duration::from_secs(90),

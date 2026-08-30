@@ -11,15 +11,21 @@
 //! Three rules follow, and this module is each of them:
 //!
 //! * **The system prefix is immutable within an attempt, and the tool schema goes
-//!   in it once.** [`Head::prefix`] takes no arguments and returns `&'static str`,
+//!   in it once.** [`Posting::prefix`] returns `&'static str` and its only input
+//!   is a four-valued ceiling that is operator configuration fixed for a sortie,
 //!   so variance is not something the caller is trusted to avoid — it is
 //!   unrepresentable.
 //! * **A system prompt must never carry a task id, a timestamp, or anything else
 //!   that varies.** There is nowhere to put one.
 //! * **A tool registry that grows on demand is the failure case, not the
-//!   feature.** The tools in a head are exactly [`crate::tools::Policy::admitted`]
-//!   for that role's ceiling, so the advertised surface and the enforced surface
-//!   are one list.
+//!   feature.** The tools in a posting are exactly
+//!   [`crate::tools::Policy::admitted`] for the ceiling in force, so the
+//!   advertised surface and the enforced surface are one list.
+//!
+//! ⚠ **A head alone is not enough to answer any of those.** A slot may cap the
+//! role running in it (ADR-0014 §4), so the unit these three rules are about is
+//! [`Posting`] — the head *and* the effective ceiling — and `Head` deliberately
+//! has no `prefix`, `tools` or `policy` of its own.
 //!
 //! ⚠ **What the warm-head store does *not* buy is free per-phase heads.** In
 //! production the body under the head is task-specific, so every (head, task)
@@ -130,17 +136,21 @@ impl Head {
         }
     }
 
-    /// This role's policy. The refusal names the call-sign, so an operator reads
-    /// *Recon may not run bash* rather than a rule number.
+    /// 🚨 **This head as a slot with ceiling `slot` admits it — the only way to
+    /// get a policy, a tool list or a prefix out of a head.**
+    ///
+    /// The effective ceiling is [`Tier::narrower`] of the role's own and the
+    /// slot's: a role declares what it needs and a slot declares what it will
+    /// allow, and neither one alone is the answer. There is deliberately no
+    /// `Head::policy()` beside this — a head that could answer *what tools do I
+    /// have* without being told which slot it is running in is the second list
+    /// that agrees with the first until the day a slot caps something.
     #[must_use]
-    pub const fn policy(self) -> Policy {
-        Policy::new(self.call_sign(), self.max_tier())
-    }
-
-    /// The tools this head advertises — the same list its policy enforces.
-    #[must_use]
-    pub fn tools(self) -> Vec<&'static ToolSpec> {
-        self.policy().admitted()
+    pub const fn posted(self, slot: Tier) -> Posting {
+        Posting {
+            head: self,
+            ceiling: self.max_tier().narrower(slot),
+        }
     }
 
     /// Tokens this head's calls accept back.
@@ -176,23 +186,6 @@ impl Head {
     pub const fn budget(self) -> u32 {
         16384
     }
-
-    /// 🚨 **The immutable system prefix.**
-    ///
-    /// It takes no arguments, which is the point: there is no parameter a task
-    /// id, a timestamp or a repository path could arrive through. One token
-    /// changed at the *front* of an 18,470-token prompt costs 11.399 s against
-    /// 11.549 s cold — the prefix cache saves 79.7% of TTFT and a changed head
-    /// annihilates all of it (F81).
-    #[must_use]
-    pub fn prefix(self) -> &'static str {
-        match self {
-            Head::Engineering => &ENGINEERING,
-            Head::Recon => &RECON,
-            Head::Builders => &BUILDERS,
-            Head::Commandos => &COMMANDOS,
-        }
-    }
 }
 
 impl fmt::Display for Head {
@@ -202,21 +195,162 @@ impl fmt::Display for Head {
 }
 
 // ---------------------------------------------------------------------------
+// The posting — a head, and the ceiling actually in force
+// ---------------------------------------------------------------------------
+
+/// A head as a slot admits it: the role, and the effective ceiling.
+///
+/// 🚨 **One value, because the advertised surface and the enforced surface have
+/// to be one list.** A `Head` alone stopped being able to answer *what tools do
+/// I have* the moment a slot could cap a role: the prefix would be composed from
+/// the role's own ceiling and the admission checked against the slot's, which is
+/// two lists that agree right up until the day a slot caps something. So the
+/// prefix, the wire-level tool array and [`Policy::admits`] all read this, and
+/// there is nothing else for them to read.
+///
+/// ⚠ **The ceiling is normalised at construction and never afterwards.**
+/// [`Head::posted`] takes the narrower of the role's and the slot's, so a
+/// posting whose ceiling exceeds its head's is unrepresentable — which is what
+/// makes [`Posting::ALL`] nine rather than sixteen.
+///
+/// ▶ This is also what makes ADR-0011's *"frozen **per attempt**"* an exact
+/// statement rather than an understatement. Before the slot cap the prefix was
+/// frozen for the life of the process, which is stronger than the plan asked for
+/// and made the qualifier vacuous; now the ceiling is operator configuration
+/// fixed for a sortie, so *per attempt* is precisely the scope over which it
+/// cannot move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Posting {
+    head: Head,
+    ceiling: Tier,
+}
+
+impl Posting {
+    /// Every reachable posting. **Nine, not sixteen** — a posting's ceiling can
+    /// never exceed its head's, so `Commandos` has one and `Builders` has four.
+    ///
+    /// 🚨 The enumeration is still the affordability argument (ADR-0011 §2), and
+    /// it moved from four to nine rather than to sixteen. ⚠ What is warm on the
+    /// server at once is smaller still: a slot's ceiling is fixed for a sortie,
+    /// so **one column of this table is live in any session** — four heads, the
+    /// same bill as before the cap existed.
+    pub const ALL: [Posting; 9] = [
+        Head::Engineering.posted(Tier::NoTools),
+        Head::Engineering.posted(Tier::Read),
+        Head::Recon.posted(Tier::NoTools),
+        Head::Recon.posted(Tier::Read),
+        Head::Builders.posted(Tier::NoTools),
+        Head::Builders.posted(Tier::Read),
+        Head::Builders.posted(Tier::Write),
+        Head::Builders.posted(Tier::Exec),
+        Head::Commandos.posted(Tier::NoTools),
+    ];
+
+    #[must_use]
+    pub const fn head(self) -> Head {
+        self.head
+    }
+
+    /// The ceiling actually in force — the role's own, or the slot's, whichever
+    /// is narrower.
+    #[must_use]
+    pub const fn ceiling(self) -> Tier {
+        self.ceiling
+    }
+
+    #[must_use]
+    pub const fn call_sign(self) -> &'static str {
+        self.head.call_sign()
+    }
+
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        self.head.key()
+    }
+
+    #[must_use]
+    pub const fn budget(self) -> u32 {
+        self.head.budget()
+    }
+
+    /// The policy this posting enforces. The refusal names the call-sign, so an
+    /// operator reads *Recon may not run bash* rather than a rule number.
+    #[must_use]
+    pub const fn policy(self) -> Policy {
+        Policy::new(self.head.call_sign(), self.ceiling)
+    }
+
+    /// The tools this posting advertises — the same list its policy enforces.
+    #[must_use]
+    pub fn tools(self) -> Vec<&'static ToolSpec> {
+        self.policy().admitted()
+    }
+
+    /// 🚨 **The immutable system prefix.**
+    ///
+    /// Its one argument is a ceiling, which is a four-valued compile-time enum
+    /// and operator configuration fixed for a sortie — so there is still no
+    /// parameter a task id, a timestamp or a repository path could arrive
+    /// through. One token changed at the *front* of an 18,470-token prompt costs
+    /// 11.399 s against 11.549 s cold: the prefix cache saves 79.7% of TTFT and
+    /// a changed head annihilates all of it (F81).
+    #[must_use]
+    pub fn prefix(self) -> &'static str {
+        &PREFIXES[self.index()]
+    }
+
+    /// This posting's row in [`Posting::ALL`], which is the index of every table
+    /// keyed by posting.
+    ///
+    /// A nine-element scan, run once per model call.
+    ///
+    /// # Panics
+    ///
+    /// ⚠ Never, and the `expect` is the normalisation invariant said out loud
+    /// rather than a case to handle: it can only fire if a `Posting` was built
+    /// by something other than [`Head::posted`], and the fields are private, so
+    /// there is nothing else that can build one.
+    /// `tests/heads.rs::the_posting_set_is_nine_and_is_exactly_what_is_reachable`
+    /// checks that over all sixteen products.
+    #[must_use]
+    pub fn index(self) -> usize {
+        Posting::ALL
+            .iter()
+            .position(|p| *p == self)
+            .expect("a posting outside Posting::ALL, so its ceiling exceeds its head's")
+    }
+}
+
+impl fmt::Display for Posting {
+    /// *Builders at read* — the call-sign and the ceiling in force, which is what
+    /// an operator needs in order to read a denial that surprised them.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} at {}", self.head.call_sign(), self.ceiling)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The prefixes
 // ---------------------------------------------------------------------------
 
-static ENGINEERING: LazyLock<String> = LazyLock::new(|| compose(Head::Engineering));
-static RECON: LazyLock<String> = LazyLock::new(|| compose(Head::Recon));
-static BUILDERS: LazyLock<String> = LazyLock::new(|| compose(Head::Builders));
-static COMMANDOS: LazyLock<String> = LazyLock::new(|| compose(Head::Commandos));
+/// Every reachable posting's prefix, assembled once on first use and never
+/// again. Nine strings, in [`Posting::ALL`] order.
+///
+/// ⚠ It is a `Vec` inside one `static` rather than an array of statics because
+/// the buffer's addresses are then stable for the life of the process, which is
+/// what `a_prefix_is_byte_identical_on_a_second_rendering` checks with
+/// `ptr::eq` — a prefix that compared equal but was rebuilt on each call would
+/// pay the cold prefill it exists to avoid.
+static PREFIXES: LazyLock<Vec<String>> =
+    LazyLock::new(|| Posting::ALL.iter().map(|p| compose(*p)).collect());
 
-/// Assemble one head, once. Every input is a constant or the registry, so two
+/// Assemble one posting, once. Every input is a constant or the registry, so two
 /// calls cannot differ — which `tests/heads.rs` asserts rather than assumes.
-fn compose(head: Head) -> String {
+fn compose(posting: Posting) -> String {
     let mut s = String::with_capacity(4096);
-    s.push_str(charter(head));
+    s.push_str(charter(posting.head()));
     s.push('\n');
-    s.push_str(&tool_section(head));
+    s.push_str(&tool_section(posting));
     s.push('\n');
     s.push_str(UNTRUSTED);
     s.push('\n');
@@ -224,13 +358,13 @@ fn compose(head: Head) -> String {
     s
 }
 
-fn tool_section(head: Head) -> String {
-    let tools = head.tools();
+fn tool_section(posting: Posting) -> String {
+    let tools = posting.tools();
     if tools.is_empty() {
         return format!(
             "## Tools\n\nYou have none. {} makes one call and answers from what it \
              was given; there is no round trip to ask for more.\n",
-            head.call_sign()
+            posting.call_sign()
         );
     }
     let mut s = String::from(
