@@ -106,7 +106,7 @@ pub fn attempt(
 // the pieces
 // ---------------------------------------------------------------------------
 
-fn report_boot(reconciled: &Reconciled, out: &mut impl Write) -> Result<(), AppError> {
+pub(crate) fn report_boot(reconciled: &Reconciled, out: &mut impl Write) -> Result<(), AppError> {
     if reconciled.events_replayed == 0 {
         writeln!(out, "boot  a new log")?;
         return Ok(());
@@ -176,7 +176,7 @@ fn choose(
 /// The `Note` is the only place in the run that says which brain answered:
 /// `ModelCallStarted` records the id that was *requested*, which is exactly the
 /// number that is wrong when this check would have failed.
-fn confirm_model(
+pub(crate) fn confirm_model(
     store: &mut Store,
     run: &cli::Run,
     out: &mut impl Write,
@@ -199,7 +199,7 @@ fn confirm_model(
     }
 }
 
-fn limits_for(run: &cli::Run) -> Limits {
+pub(crate) fn limits_for(run: &cli::Run) -> Limits {
     let mut limits = Limits::default();
     if let Some(rounds) = run.rounds {
         limits.rounds = rounds;
@@ -211,7 +211,7 @@ fn limits_for(run: &cli::Run) -> Limits {
 }
 
 /// What the attempt was, what it cost, and what is owed to a person.
-fn report(landed: &Landed, out: &mut impl Write) -> Result<(), AppError> {
+pub(crate) fn report(landed: &Landed, out: &mut impl Write) -> Result<(), AppError> {
     writeln!(out, "\n{} ended {:?}", landed.attempt, landed.outcome)?;
     phase(out, "localize", &landed.localize)?;
     match &landed.change {

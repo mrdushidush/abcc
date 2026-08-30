@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 abcc-core = { workspace = true }
 abcc-drive = { workspace = true }
+abcc-fleet = { workspace = true }
 abcc-engine = { workspace = true }
 abcc-gate = { workspace = true }
 abcc-store = { workspace = true }

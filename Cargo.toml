@@ -7,6 +7,7 @@ members = [
     "crates/abcc-engine",
     "crates/abcc-gate",
     "crates/abcc-drive",
+    "crates/abcc-fleet",
     "crates/abcc-tui",
     "crates/abcc",
 ]
@@ -26,6 +27,7 @@ abcc-vcs = { path = "crates/abcc-vcs" }
 abcc-engine = { path = "crates/abcc-engine" }
 abcc-gate = { path = "crates/abcc-gate" }
 abcc-drive = { path = "crates/abcc-drive" }
+abcc-fleet = { path = "crates/abcc-fleet" }
 abcc-tui = { path = "crates/abcc-tui" }
 
 serde = { version = "1", features = ["derive"] }

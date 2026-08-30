@@ -33,6 +33,12 @@ pub enum Command {
     Board,
     /// One attempt, end to end.
     Run(Box<Run>),
+    /// Attempts until the board is quiet, on one slot.
+    ///
+    /// ⚠ It takes no `--task`, and that is the point rather than an omission:
+    /// admission is a projection of the log (ADR-0004), so naming a task here
+    /// would be a second answer to a question the board already answers.
+    Fleet(Box<Run>),
     /// The reader, over the durable log.
     Watch { theme: Theme },
     /// The model-confirmation check on its own.
@@ -95,6 +101,7 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc task <prompt> [--title T]      put a task on the board
   abcc board                          the board, from the projection
   abcc run [--task t42] [options]     run one attempt on a queued task
+  abcc fleet [options]                attempts until the board is quiet, one slot
   abcc watch [--theme command|classic]  the reader, over the log alone
   abcc check [--model M]              ask the server which model it is holding
   abcc review <change> <minutes> [--by W] [--boundary]
@@ -145,27 +152,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
             let prompt = one_positional(&args, "task", "a prompt")?;
             Command::Task { prompt, title }
         }
-        "run" => {
-            let run = Run {
-                task: take_flag(&mut args, "--task")?
-                    .map(|t| task_ref(&t))
-                    .transpose()?,
-                model: take_flag(&mut args, "--model")?,
-                base_url: take_flag(&mut args, "--url")?,
-                fingerprint: take_flag(&mut args, "--fingerprint")?,
-                unit: take_flag(&mut args, "--unit")?
-                    .map(|u| number(&u, "--unit"))
-                    .transpose()?,
-                rounds: take_flag(&mut args, "--rounds")?
-                    .map(|r| number(&r, "--rounds"))
-                    .transpose()?,
-                idle_gap: take_flag(&mut args, "--idle-gap")?
-                    .map(|g| seconds(&g, "--idle-gap"))
-                    .transpose()?,
-            };
-            no_positionals(&args, "run")?;
-            Command::Run(Box::new(run))
-        }
+        "run" => Command::Run(Box::new(run_args(&mut args, true)?)),
+        "fleet" => Command::Fleet(Box::new(run_args(&mut args, false)?)),
         "watch" => {
             let theme = match take_flag(&mut args, "--theme")?.as_deref() {
                 None | Some("command") => Theme::Command,
@@ -301,6 +289,44 @@ fn one_positional(args: &[String], verb: &str, wanted: &str) -> Result<String, C
             "{verb} takes {wanted} and nothing else — quote it if it has spaces in it"
         ))),
     }
+}
+
+/// The flags `run` and `fleet` share, and the two `run` has to itself.
+///
+/// ⚠ `--task` and `--unit` are parsed only for `run`. Leaving them unparsed for
+/// `fleet` makes `abcc fleet --task t42` an unknown-flag error rather than a flag
+/// that is silently ignored — admission is a projection of the log, so naming a
+/// task there would be a second answer to a question the board already answers,
+/// and `--unit` names a slot in a fleet that has one (ADR-0020).
+fn run_args(args: &mut Vec<String>, per_task: bool) -> Result<Run, CliError> {
+    let verb = if per_task { "run" } else { "fleet" };
+    let run = Run {
+        task: if per_task {
+            take_flag(args, "--task")?
+                .map(|t| task_ref(&t))
+                .transpose()?
+        } else {
+            None
+        },
+        model: take_flag(args, "--model")?,
+        base_url: take_flag(args, "--url")?,
+        fingerprint: take_flag(args, "--fingerprint")?,
+        unit: if per_task {
+            take_flag(args, "--unit")?
+                .map(|u| number(&u, "--unit"))
+                .transpose()?
+        } else {
+            None
+        },
+        rounds: take_flag(args, "--rounds")?
+            .map(|r| number(&r, "--rounds"))
+            .transpose()?,
+        idle_gap: take_flag(args, "--idle-gap")?
+            .map(|g| seconds(&g, "--idle-gap"))
+            .transpose()?,
+    };
+    no_positionals(args, verb)?;
+    Ok(run)
 }
 
 fn no_positionals(args: &[String], verb: &str) -> Result<(), CliError> {

@@ -34,6 +34,7 @@ pub mod cli;
 pub mod confirm;
 pub mod desk;
 pub mod feed;
+pub mod fleet;
 pub mod home;
 pub mod ops;
 pub mod run;
@@ -60,6 +61,8 @@ pub enum AppError {
     Vcs(#[from] abcc_vcs::VcsError),
     #[error("{0}")]
     Drive(#[from] abcc_drive::DriveError),
+    #[error("{0}")]
+    Fleet(#[from] abcc_fleet::FleetError),
     #[error("the model server: {0}")]
     Provider(#[from] abcc_engine::provider::ProviderError),
     #[error("{0}")]
@@ -111,6 +114,7 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
         Command::Task { prompt, title } => ops::task(invocation, prompt, title.as_deref(), out),
         Command::Board => ops::board(invocation, out),
         Command::Run(run) => run::attempt(invocation, run, out),
+        Command::Fleet(args) => fleet::sortie(invocation, args, out),
         Command::Watch { theme } => ops::watch(invocation, *theme),
         Command::Check {
             model,
