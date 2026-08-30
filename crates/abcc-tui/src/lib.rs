@@ -42,6 +42,7 @@ pub mod feed;
 pub mod line;
 pub mod reader;
 pub mod render;
+pub mod sixel;
 pub mod theme;
 pub mod view;
 
@@ -49,5 +50,6 @@ pub use feed::{Feed, FeedError, Replay};
 pub use line::{Line, describe};
 pub use reader::{Intent, Reader, run};
 pub use render::draw;
+pub use sixel::{Canvas, Encoder, Sprite};
 pub use theme::Theme;
 pub use view::{Card, Pulse, View};
