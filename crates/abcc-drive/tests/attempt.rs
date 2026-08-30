@@ -583,7 +583,17 @@ fn a_localize_that_produces_nothing_ends_the_attempt_before_builders_runs() {
         },
         "an empty payload at the cap became something other than an absence"
     );
-    assert!(matches!(landed.state, TaskState::Failed { .. }));
+    // 🚨 F548: not `Failed`. This driver was built with no fleet behind it
+    // — `retry_available` defaults to false — so the ending recommends another
+    // attempt and hands the task to a person, which is the honest landing for
+    // *one attempt was bought and it produced an absence*. With an attempt in
+    // hand the same ending lands `Queued`; see
+    // `a_recommended_retry_lands_the_task_back_on_the_board_and_the_retry_runs`.
+    assert!(
+        matches!(landed.state, TaskState::AwaitingOrders { .. }),
+        "{:?}",
+        landed.state
+    );
     assert!(matches!(
         landed.next,
         Some(NextAction::Attempt {
@@ -994,4 +1004,134 @@ fn the_judge_is_not_asked_about_an_empty_diff_and_the_log_says_so() {
         notes.iter().any(|n| n.contains("the Judge was not asked")),
         "{notes:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// F548 — the recommendation and the landing
+// ---------------------------------------------------------------------------
+
+/// 🚨 **F548: a retryable ending lands the task where another attempt can start
+/// from, and the recommendation it returns is therefore spendable.**
+///
+/// This test was written the other way round and it passed: the ending returned
+/// `Attempt { Retry }` and landed the task in `Failed`, which is terminal, so
+/// `TaskState::apply` refused every command before it reached the transition
+/// table and `Driver::run`'s opening `Deploy` could not fire. **The driver was
+/// acting on its own recommendation by making it unreachable** — the one thing
+/// rule 5 says it does not do — and nothing had noticed because until the Fleet
+/// milestone nothing had ever tried to receive a `NextAction`.
+///
+/// The landing is now `Requeue`, and what this asserts is the whole of the fix:
+/// the second attempt **runs**, it is a `Retry` of the first, and the two are one
+/// task's lineage rather than two tasks.
+#[test]
+fn a_recommended_retry_lands_the_task_back_on_the_board_and_the_retry_runs() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![
+        Script::truncated_at_cap(Head::Recon.budget()),
+        Script::says("never reached"),
+    ]);
+    let repo = Repo::open(&subject.root).expect("open");
+    let first = Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .retry_available(true)
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+
+    let of = match first.next {
+        Some(NextAction::Attempt {
+            cause: Cause::Retry { of },
+        }) => of,
+        other => panic!("the ending stopped recommending a retry: {other:?}"),
+    };
+    assert_eq!(
+        first.state,
+        TaskState::Queued,
+        "a retryable ending left the task somewhere an attempt cannot start from"
+    );
+
+    // Now do exactly what a fleet receiving that recommendation does.
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(changing());
+    let second = Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(task, UnitId(0), Cause::Retry { of }, &mut control)
+        .expect("the recommended retry was refused");
+
+    assert_ne!(second.attempt, first.attempt, "the attempt row was reused");
+
+    // The lineage is on the log, by construction: `Cause` is written once at
+    // `AttemptStarted` and attempts are immutable (ADR-0004).
+    let causes: Vec<Cause> = store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::AttemptStarted { cause, .. } => Some(cause),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(causes, vec![Cause::Fresh, Cause::Retry { of }]);
+    assert_eq!(
+        causes.iter().filter(|c| c.spends_retry_budget()).count(),
+        1,
+        "the fresh attempt spent budget, or the retry did not"
+    );
+}
+
+/// 🚨 **The other half of F548: with no attempt in hand, the same ending hands
+/// the task to a person, and the question says the budget is what ran out.**
+///
+/// ADR-0010's rule is `Attempt` twice, then `HandToOperator`, and this is the
+/// only place the hand-off can be made: `RequestOrders` is an edge out of
+/// `Engaged`, so by the time a fleet has read `Landed::next` the attempt is over
+/// and the task can no longer be moved there. That is why the driver is told
+/// whether an attempt is in hand rather than being handed the budget — the
+/// number 2 lives in one place and this is not it (F392).
+///
+/// ⚠ `next` is still `Attempt`. The recommendation does not change with the
+/// allowance: what the *ending* was is a fact about the attempt, and what the
+/// fleet can afford is not.
+#[test]
+fn a_retryable_ending_with_no_attempt_in_hand_asks_a_person_and_names_the_budget() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![
+        Script::truncated_at_cap(Head::Recon.budget()),
+        Script::says("never reached"),
+    ]);
+    let repo = Repo::open(&subject.root).expect("open");
+    let landed = Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .retry_available(false)
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+
+    assert!(
+        matches!(landed.state, TaskState::AwaitingOrders { .. }),
+        "{:?}",
+        landed.state
+    );
+    assert!(matches!(
+        landed.next,
+        Some(NextAction::Attempt {
+            cause: Cause::Retry { .. }
+        })
+    ));
+
+    let asked = question(&store);
+    assert!(
+        asked.contains("1 attempts") || asked.contains("attempts"),
+        "the question does not say how many attempts were bought: {asked}"
+    );
+    assert!(
+        asked.contains("budget"),
+        "the question does not say a budget ran out: {asked}"
+    );
+    // The work is still kept, and the operator is told where.
+    assert!(landed.kept.is_some());
 }

@@ -291,6 +291,10 @@ fn requeue_text(why: &RequeueReason) -> String {
         RequeueReason::SpinUpTimeout { after_ms } => format!("nothing started in {after_ms} ms"),
         RequeueReason::ProgressStalled { after_ms } => format!("no progress for {after_ms} ms"),
         RequeueReason::OrphanedByRestart => "orphaned by a restart".to_string(),
+        // The one requeue that is not a watchdog's. It names the attempt because
+        // the reason it happened is on that attempt's `AttemptEnded`, and a
+        // reader who wants it should be sent there rather than told it twice.
+        RequeueReason::AttemptRetryable { of } => format!("{of} is worth another go"),
     }
 }
 

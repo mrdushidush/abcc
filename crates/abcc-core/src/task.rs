@@ -96,6 +96,25 @@ pub enum RequeueReason {
     /// Boot found a slot-holding state with no live worker behind it. The attempt
     /// is tombstoned rather than resumed (W3 F151).
     OrphanedByRestart,
+    /// 🚨 **The attempt ended in something another attempt could plausibly
+    /// fix, and the fleet has not decided whether to buy one.**
+    ///
+    /// F548: the driver used to land these in `Failed` while returning
+    /// [`NextAction::Attempt`](crate::attempt::NextAction::Attempt), and `Failed`
+    /// is terminal — so the recommendation was unreachable from the state that
+    /// carried it, and the retry budget could not be spent at all. The landing is
+    /// now `Queued`, which is the state whose contract is *eligible for
+    /// admission*, and the fleet writes `Fail` itself once the budget is gone.
+    ///
+    /// The [`Why`](crate::outcome::Why) is deliberately **not** repeated here:
+    /// `AttemptEnded` is written one event earlier and carries it on the
+    /// [`AttemptOutcome`](crate::attempt::AttemptOutcome). Two copies of a reason
+    /// are two things that can disagree.
+    ///
+    /// ⚠ This is the only requeue reason that is not a watchdog's or boot's,
+    /// and so the only one where the task's work survives — at the closing
+    /// checkpoint, which the ending took before the worktree went.
+    AttemptRetryable { of: AttemptId },
 }
 
 // ---------------------------------------------------------------------------
@@ -327,8 +346,10 @@ pub enum Command {
     Commandeer,
     /// The operator hands the task back to the fleet. `Commandeered -> Queued`.
     Release,
-    /// Return to the queue. The watchdog's two bounds and boot's orphan sweep are
-    /// the only callers.
+    /// Return to the queue. Four callers: the watchdog's two bounds, boot's
+    /// orphan sweep, and — since F548 — an attempt whose ending another attempt
+    /// could plausibly fix, which lands here so that the fleet's retry budget has
+    /// somewhere to be spent from. `Failed` is terminal and could not.
     Requeue {
         why: RequeueReason,
     },

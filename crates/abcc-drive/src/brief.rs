@@ -120,3 +120,25 @@ pub fn overflowed(window: u32, prompt_tokens: u32) -> String {
          larger window. Load one and retry, or say what should happen to the task."
     )
 }
+
+/// The question the operator is left with when the fleet has spent its budget on
+/// a task and the last attempt still produced an absence.
+///
+/// 🚨 **The two attempts are named, and so is the fact that they are the whole
+/// budget** (ADR-0010, F373: the second attempt buys 6.4–21.1 points and the
+/// third buys 0.7–6.7, so the third is a per-population decision rather than a
+/// default). An operator who is not told a budget ran out reads this as the
+/// system giving up arbitrarily, which is the reading F393 says v1 earns.
+///
+/// ⚠ It does not repeat the failure — `why` is a sentence about something that
+/// did not happen, and the attempts it names carry theirs on the log.
+#[must_use]
+pub fn exhausted(spent: u32, why: &Why) -> String {
+    format!(
+        "This task has had {spent} attempts, which is the whole budget, and the \
+         last one ended without producing anything to measure: {why}.\n\n\
+         A third attempt is worth buying only where the outcome history says this \
+         population is not bimodal, and that is your call rather than the fleet's. \
+         You could say go again, take the work over, or stop here. Say which."
+    )
+}

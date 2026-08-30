@@ -58,7 +58,7 @@ use abcc_core::event::Event;
 use abcc_core::outcome::{Headline, Why};
 use abcc_core::run::AttemptPhase;
 use abcc_core::seq::{AttemptId, CheckpointId, PromptId, TaskId, UnitId};
-use abcc_core::task::{AbortReason, Command, Refused, TaskState};
+use abcc_core::task::{AbortReason, Command, Refused, RequeueReason, TaskState};
 use abcc_engine::control::{ControlPoint, Keep, Watch};
 use abcc_engine::head::Head;
 use abcc_engine::provider::{Body, Provider, Schema};
@@ -159,6 +159,24 @@ pub struct Driver<'a> {
     /// would be two things that can disagree about what this repository's tests
     /// are. `None` is *detect it*, which is the normal case.
     toolchain: Option<Toolchain>,
+    /// 🚨 **Whether the fleet still has an attempt in hand for this task,
+    /// which is NOT the retry budget** — the budget is one number and it lives in
+    /// one place, `abcc-fleet` (ADR-0010 §2; F392 is the donor defect where two
+    /// mechanisms shared one integer and raising a per-phase budget by one
+    /// silently deleted the top tier).
+    ///
+    /// The driver is told a derived fact rather than a count because **the
+    /// landing has to be a state the recommendation can be acted on from**, and a
+    /// task can only be handed to a person from inside the attempt that ran:
+    /// `RequestOrders` is an edge out of `Engaged`, and by the time a fleet reads
+    /// `Landed::next` the attempt is over. So a retryable ending with an attempt
+    /// in hand lands `Queued` for the fleet to re-admit, and the same ending
+    /// without one lands `AwaitingOrders` with a question that says the budget is
+    /// spent (F548).
+    ///
+    /// Default `false`, which is what makes a bare `abcc run` honest: one attempt
+    /// was bought, it produced an absence, and a person is asked.
+    retry_available: bool,
 }
 
 impl<'a> Driver<'a> {
@@ -182,6 +200,7 @@ impl<'a> Driver<'a> {
             worktrees: worktrees.into(),
             limits: Limits::default(),
             toolchain: None,
+            retry_available: false,
         }
     }
 
@@ -197,6 +216,15 @@ impl<'a> Driver<'a> {
     #[must_use]
     pub fn toolchain(mut self, toolchain: Toolchain) -> Driver<'a> {
         self.toolchain = Some(toolchain);
+        self
+    }
+
+    /// Tell the driver whether the fleet has another attempt in hand for this
+    /// task. See [`Driver::retry_available`](Driver#structfield.retry_available)
+    /// — it decides the landing of a retryable ending and nothing else.
+    #[must_use]
+    pub fn retry_available(mut self, yes: bool) -> Driver<'a> {
+        self.retry_available = yes;
         self
     }
 
@@ -272,6 +300,22 @@ impl<'a> Driver<'a> {
     }
 
     // -- the pieces --------------------------------------------------------
+
+    /// How many attempts this task has had, counted from the log.
+    ///
+    /// ⚠ A count, not a budget. `AttemptStarted` is written once per attempt
+    /// and is never mutated (ADR-0004), so this cannot drift the way v1's four
+    /// retry mechanisms did — each of which mutated the row it retried, which is
+    /// why *what did the previous attempt do* is unanswerable there (F150).
+    fn attempts_so_far(&self, task: TaskId) -> Result<u32> {
+        let n = self
+            .store
+            .task_history(task)?
+            .into_iter()
+            .filter(|l| matches!(l.event, Event::AttemptStarted { .. }))
+            .count();
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
 
     /// Take the opening snapshot, cut a worktree at it, and open the tool layer
     /// over that worktree.
@@ -430,7 +474,18 @@ impl<'a> Driver<'a> {
             }
         }
 
-        let ending = ending(last, attempt, kept.as_ref(), gate.as_ref());
+        // A fact about the log, not a budget: how many attempts this task has
+        // had, the one that just ended included. The *policy* — how many it may
+        // have — is the fleet's and is not read here.
+        let spent = self.attempts_so_far(task)?;
+        let ending = ending(
+            last,
+            attempt,
+            kept.as_ref(),
+            gate.as_ref(),
+            self.retry_available,
+            spent,
+        );
         self.store.append(Event::AttemptEnded {
             task,
             attempt,
@@ -454,6 +509,12 @@ impl<'a> Driver<'a> {
                 )?
             }
             Landing::Failed => self.command(task, Command::Fail { attempt })?,
+            Landing::Requeue { of } => self.command(
+                task,
+                Command::Requeue {
+                    why: RequeueReason::AttemptRetryable { of },
+                },
+            )?,
             Landing::Hold { checkpoint } => self.command(task, Command::Hold { checkpoint })?,
             Landing::Abort => self.command(
                 task,
@@ -728,8 +789,19 @@ enum Landing {
     Accomplished,
     /// Nothing measured it, so a human is owed the question.
     HandToOperator { question: String },
-    /// The attempt produced no artifact.
+    /// The attempt produced no artifact, and no attempt would.
     Failed,
+    /// 🚨 **The attempt produced no artifact and another one plausibly
+    /// would — so the task goes back on the board rather than into a terminal
+    /// state (F548).**
+    ///
+    /// This is the landing that makes rule 5 true. The driver returns
+    /// [`NextAction::Attempt`] here and does not act on it; landing `Failed`
+    /// alongside that recommendation *was* acting on it, because `Failed` is
+    /// terminal and `TaskState::apply` refuses every command on a terminal state
+    /// before it reaches the transition table. The retry budget is the fleet's
+    /// (ADR-0010), and a budget that cannot be spent is not a budget.
+    Requeue { of: AttemptId },
     /// The operator stopped it and the work is at a checkpoint.
     Hold { checkpoint: CheckpointId },
     /// The operator stopped it and kept nothing.
@@ -762,6 +834,8 @@ fn ending(
     attempt: AttemptId,
     kept: Option<&Kept>,
     gate: Option<&Measured>,
+    retry_available: bool,
+    spent: u32,
 ) -> Ending {
     match last {
         // The model answered. What the attempt *is* now depends on what the
@@ -850,7 +924,22 @@ fn ending(
                     NextAction::HandToOperator { question } => Landing::HandToOperator {
                         question: question.clone(),
                     },
-                    NextAction::Attempt { .. } | NextAction::Stop => Landing::Failed,
+                    // 🚨 F548. `Attempt` and `Failed` are the pair that used
+                    // to disagree, and the disagreement was invisible because
+                    // nothing had ever tried to act on the recommendation. The
+                    // recommendation still stands either way — what changes is
+                    // whether the state it is returned beside can be acted on.
+                    NextAction::Attempt { .. } if retry_available => {
+                        Landing::Requeue { of: attempt }
+                    }
+                    // The budget is gone, and ADR-0010's rule is `Attempt`
+                    // twice then `HandToOperator`. This is the only place the
+                    // hand-off can happen: `RequestOrders` is an edge out of
+                    // `Engaged`, and the fleet reads `next` after the attempt.
+                    NextAction::Attempt { .. } => Landing::HandToOperator {
+                        question: brief::exhausted(spent, why),
+                    },
+                    NextAction::Stop => Landing::Failed,
                 },
                 next: Some(next),
             }
