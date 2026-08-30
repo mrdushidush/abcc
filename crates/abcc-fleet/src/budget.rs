@@ -9,7 +9,7 @@
 //! copy. What the driver is told is a *derived* fact — whether an attempt is in
 //! hand — and never the count.
 //!
-//! # What "budget 2" means, settled 2026-08-31
+//! # What "budget 2" means, settled 2026-08-30
 //!
 //! 🚨 **Two attempts in total, of which at most one is a retry.** The name reads
 //! two ways against the shipped types — [`Cause::spends_retry_budget`] counts only
@@ -40,7 +40,7 @@
 use abcc_core::attempt::Cause;
 
 /// How many attempts one line of enquiry may have. **The only copy of this
-/// number.** ADR-0010, F373, ratified by David 2026-08-31.
+/// number.** ADR-0010, F373, ratified by David 2026-08-30.
 pub const ATTEMPTS: u32 = 2;
 
 /// How many attempts the current line of enquiry has already had, given a task's
