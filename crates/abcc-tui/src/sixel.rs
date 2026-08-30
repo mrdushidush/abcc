@@ -140,16 +140,66 @@ impl Sprite {
 
     /// How many pixels are neither fully opaque nor fully transparent.
     ///
-    /// This is F145's instrument, kept because the finding it produced is the
-    /// reason for the whole composite rule and a new sprite in the corpus should
-    /// be able to be asked the same question rather than assumed to be like the
-    /// last one. On `cto-E-idle` the answer was **5,062**.
+    /// ⚠ **This is not F145's 5,062** — see [`Sprite::dropped_by_threshold`],
+    /// which is. On `cto-E-idle` this answers **9,045**, because F145's number
+    /// counts only alpha **1–127**, the half a threshold rule would erase, while
+    /// this counts every partial alpha. Two questions, two methods: the first
+    /// version of this file gave the second answer under the first name, which
+    /// is how a number travels away from its units.
     #[must_use]
     pub fn feathered(&self) -> usize {
         self.rgba
             .chunks_exact(4)
             .filter(|px| px[3] > 0 && px[3] < 255)
             .count()
+    }
+
+    /// 🚨 **F145's instrument: how many visible pixels a threshold rule erases.**
+    ///
+    /// This is the measurement the whole composite rule rests on, kept so that a
+    /// new sprite can be asked rather than assumed to be like the last one.
+    /// Sixel has no alpha channel, so the only alternative to compositing is to
+    /// keep pixels at or above some cut and drop the rest — and this counts what
+    /// that drops.
+    ///
+    /// Measured on the shipped corpus, 2026-08-30, `cto-E-idle` at 292x221:
+    ///
+    /// | band | pixels |
+    /// |---|---|
+    /// | clear (alpha 0) | 49,466 |
+    /// | **alpha 1–127** | **5,062** ← this, at `threshold` 128 |
+    /// | alpha 128–254 | 3,983 |
+    /// | opaque (alpha 255) | 6,021 |
+    ///
+    /// ⚠ ADR-0012 §2 renders the comparison as *"5,062 … against ~10,000
+    /// opaque"*. The **5,062 is exact** and reproduces here from an independent
+    /// decode; the ~10,000 is the set a threshold **keeps** (6,021 + 3,983 =
+    /// 10,004) rather than the set that is opaque, which is 6,021. The argument
+    /// is unchanged and slightly stronger than the label: of the 15,066 pixels
+    /// that are visible at all, **9,045 carry partial alpha** and a threshold
+    /// would punch out a third of them.
+    #[must_use]
+    pub fn dropped_by_threshold(&self, threshold: u8) -> usize {
+        self.rgba
+            .chunks_exact(4)
+            .filter(|px| px[3] > 0 && px[3] < threshold)
+            .count()
+    }
+
+    /// The pixels, for a test or a caller that needs to re-encode them.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
+    /// Every alpha value, counted. Index is the alpha, value is how many pixels.
+    #[must_use]
+    pub fn alpha_histogram(&self) -> Vec<usize> {
+        let mut hist = vec![0usize; 256];
+        for px in self.rgba.chunks_exact(4) {
+            hist[px[3] as usize] += 1;
+        }
+        hist
     }
 }
 

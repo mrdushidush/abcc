@@ -52,6 +52,11 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 # parallel here, so ADR-0006's thread inventory is untouched.
 ignore = "0.4"
 regex = "1"
+# The sprite corpus is PNG and GIF and nothing else (28 files, checked), so the
+# decoder is cut to those two. `default-features = false` drops fifteen other
+# formats, and with them the dependency surface of a crate that parses untrusted
+# bytes -- ADR-0014's deny-the-class applied to a library rather than to a tool.
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -38,6 +38,8 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 
+pub mod assets;
+pub mod battlefield;
 pub mod feed;
 pub mod line;
 pub mod reader;
@@ -46,6 +48,8 @@ pub mod sixel;
 pub mod theme;
 pub mod view;
 
+pub use assets::{AssetError, Corpus};
+pub use battlefield::{Battlefield, Grid, Unit};
 pub use feed::{Feed, FeedError, Replay};
 pub use line::{Line, describe};
 pub use reader::{Intent, Reader, run};

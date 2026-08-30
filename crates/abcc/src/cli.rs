@@ -75,6 +75,25 @@ pub enum Command {
     Accept { task: TaskRef, note: Option<String> },
     /// The operator has read the work and stops the task.
     Reject { task: TaskRef, note: Option<String> },
+    /// 🚨 One frame of the battlefield, as a sixel, straight to stdout.
+    ///
+    /// ADR-0012's flagship, made visible before it is wired to the log. It is
+    /// deliberately a **still** and deliberately not a screen: what it answers is
+    /// *does this terminal draw our composite*, which is the question the whole
+    /// Console milestone rests on and the one the W5 spike could only answer for
+    /// the spike's own encoder.
+    ///
+    /// ⚠ It takes a sprite directory rather than knowing one. The corpus lives
+    /// outside this repository and a path compiled in here would be a path that
+    /// is wrong on every other machine.
+    Paint {
+        sprites: Option<String>,
+        /// Sprite height in pixels. 75-120 is the band David judged reads as
+        /// C&C at arm's length (F143).
+        px: u32,
+        /// Field size in pixels.
+        size: (u32, u32),
+    },
 }
 
 /// Everything `run` takes. Boxed in [`Command`] because it is much the largest
@@ -127,6 +146,7 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc review <change> <minutes> [--by W] [--boundary]
   abcc accept <task> [--note N]       the work is good; you take responsibility
   abcc reject <task> [--note N]       stop the task
+  abcc paint [--sprites DIR]          one frame of the battlefield, as a sixel
 
 Everywhere:
   --repo <path>     the checkout to work on (default: the working directory)
@@ -140,6 +160,14 @@ run and fleet:
   --rounds <n>      tool rounds before the phase gives up
   --idle-gap <s>    seconds of silence on the stream that count as a hang
   --ceiling <tier>  cap every role in the slot: no-tools | read | write | exec
+
+paint:
+  --sprites <dir>   the sprite corpus (default: $ABCC_SPRITES)
+  --px <n>          sprite height in pixels (default: 100; 75-120 reads as C&C)
+  --size <WxH>      the field, in pixels (default: 640x360)
+
+  Run it in a terminal with sixel. Windows Terminal has had it since 1.22;
+  tmux and Zellij strip it, and it does not survive most SSH multiplexers.
 
 The run reads control verbs from stdin: pause | halt | kill | redirect <prompt>.
 ";
@@ -199,6 +227,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
                 fingerprint,
             }
         }
+        "paint" => paint_args(&mut args)?,
         "breaker" => {
             let model = take_flag(&mut args, "--model")?;
             let base_url = take_flag(&mut args, "--url")?;
@@ -378,4 +407,33 @@ fn no_positionals(args: &[String], verb: &str) -> Result<(), CliError> {
             args[0]
         )))
     }
+}
+
+/// Everything `paint` takes. Its own function because the parse is three flags
+/// with three different shapes and `parse` is already at clippy's line ceiling —
+/// a subcommand's arguments live beside the subcommand, not inside a match arm
+/// that keeps growing.
+fn paint_args(args: &mut Vec<String>) -> Result<Command, CliError> {
+    let sprites = take_flag(args, "--sprites")?;
+    let px = match take_flag(args, "--px")? {
+        Some(v) => v
+            .parse()
+            .map_err(|_| CliError::Usage(format!("--px takes a number of pixels, not {v:?}")))?,
+        // 100 px sits in the middle of the 75-120 band David judged reads as
+        // C&C at arm's length (F143).
+        None => 100,
+    };
+    let size = match take_flag(args, "--size")? {
+        Some(v) => {
+            let bad = || CliError::Usage(format!("--size takes WxH, like 640x360, not {v:?}"));
+            let (w, h) = v.split_once('x').ok_or_else(bad)?;
+            (
+                w.parse::<u32>().map_err(|_| bad())?,
+                h.parse::<u32>().map_err(|_| bad())?,
+            )
+        }
+        None => (640, 360),
+    };
+    no_positionals(args, "paint")?;
+    Ok(Command::Paint { sprites, px, size })
 }

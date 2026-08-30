@@ -11,8 +11,12 @@ authors.workspace = true
 [dependencies]
 abcc-core = { workspace = true }
 crossterm = { workspace = true }
+image = { workspace = true }
 ratatui = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

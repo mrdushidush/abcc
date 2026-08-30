@@ -291,3 +291,44 @@ fn every_verb_the_parser_accepts_is_in_the_usage_text() {
         );
     }
 }
+
+/// `paint` defaults, and the two flags that can be spelled wrong.
+///
+/// ⚠ The sprite directory has **no default here** and is not required here
+/// either: the parse records what the operator said and `paint` resolves the
+/// environment. A parser that read `ABCC_SPRITES` would make this test depend on
+/// the machine it runs on.
+#[test]
+fn paint_defaults_to_a_hundred_pixel_sprite_on_a_640_by_360_field() {
+    let Command::Paint { sprites, px, size } = parse("paint").expect("paint").command else {
+        panic!("not paint");
+    };
+    assert_eq!(sprites, None);
+    assert_eq!(px, 100, "100 sits in F143's 75-120 band");
+    assert_eq!(size, (640, 360));
+
+    let Command::Paint { sprites, px, size } =
+        parse("paint --sprites D:/art --px 75 --size 320x200")
+            .expect("flags")
+            .command
+    else {
+        panic!("not paint");
+    };
+    assert_eq!(sprites.as_deref(), Some("D:/art"));
+    assert_eq!(px, 75);
+    // 320x200 is VGA mode 13h, which is where the 256-colour palette comes from.
+    assert_eq!(size, (320, 200));
+}
+
+/// A misspelled size says what the shape is, rather than only that it is wrong.
+#[test]
+fn a_size_that_is_not_wxh_is_refused_with_an_example() {
+    let err = parse("paint --size 640").expect_err("should refuse");
+    assert!(err.to_string().contains("640x360"), "{err}");
+
+    let err = parse("paint --size widexhigh").expect_err("should refuse");
+    assert!(err.to_string().contains("640x360"), "{err}");
+
+    let err = parse("paint --px many").expect_err("should refuse");
+    assert!(err.to_string().contains("--px"), "{err}");
+}
