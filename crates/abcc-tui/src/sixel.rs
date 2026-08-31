@@ -186,6 +186,106 @@ impl Sprite {
             .count()
     }
 
+    /// 🚨 **What share of the visible art is one connected piece**, 0 to 100.
+    ///
+    /// Whether a sprite is a *figure* or a *pile of fragments*, asked of the
+    /// image rather than of its filename. A drawing of one thing is mostly one
+    /// region; art that has come apart is a scatter of small ones.
+    ///
+    /// Measured on the shipped corpus, 2026-08-31 (F565), counting every pixel
+    /// that is visible at all:
+    ///
+    /// | image | regions | this |
+    /// |---|---|---|
+    /// | `coder-E-attacking.gif` | 49 | **99** |
+    /// | `building-E-attacking.gif` | 3 | **92** |
+    /// | `cto-E-idle.png` | 41 | **48** |
+    /// | `cto-N-idle.png` | 20 | **36** |
+    ///
+    /// ⚠ **The region count alone does not separate them** — `coder-E` has more
+    /// regions than `cto-E-idle` and is the intact one, because 48 of its 49 are
+    /// single specks of antialiasing. The *share* is the measure; the count is a
+    /// distraction.
+    ///
+    /// ⚠ **Visible means alpha > 0, not alpha > 128.** These sprites carry
+    /// partial alpha on 60% of their visible pixels (see
+    /// [`Sprite::dropped_by_threshold`]), so a threshold at 128 cuts the soft
+    /// edges that join a figure together and reports an intact drawing as
+    /// shrapnel — `cto-E-idle` reads 26 that way rather than 48. The verdict
+    /// survives either threshold on this corpus, but only one of them is
+    /// measuring what the question asks.
+    #[must_use]
+    pub fn coherence(&self) -> u32 {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let visible: Vec<bool> = self.rgba.chunks_exact(4).map(|px| px[3] > 0).collect();
+        let total = visible.iter().filter(|v| **v).count();
+        if total == 0 {
+            return 0;
+        }
+
+        let mut seen = vec![false; w * h];
+        let mut biggest = 0usize;
+        let mut stack: Vec<usize> = Vec::new();
+        for start in 0..w * h {
+            if !visible[start] || seen[start] {
+                continue;
+            }
+            seen[start] = true;
+            stack.push(start);
+            let mut size = 0usize;
+            while let Some(i) = stack.pop() {
+                size += 1;
+                let (x, y) = (i % w, i / w);
+                // Four-connected: a diagonal touch is not a join.
+                if x > 0 {
+                    Self::visit(i - 1, &visible, &mut seen, &mut stack);
+                }
+                if x + 1 < w {
+                    Self::visit(i + 1, &visible, &mut seen, &mut stack);
+                }
+                if y > 0 {
+                    Self::visit(i - w, &visible, &mut seen, &mut stack);
+                }
+                if y + 1 < h {
+                    Self::visit(i + w, &visible, &mut seen, &mut stack);
+                }
+            }
+            biggest = biggest.max(size);
+        }
+        u32::try_from(biggest * 100 / total).unwrap_or(100)
+    }
+
+    /// How many visible pixels sit in the sprite's **own top row**.
+    ///
+    /// 🚨 **A unit is anchored at its feet, so it should never touch its
+    /// ceiling.** Art that runs into the top edge of its own frame has either
+    /// been cropped there or has something drawn over it, and on this corpus it
+    /// is the second: all four `*-selected.png` poses carry a **caption burnt
+    /// into the picture** — `cto-E-selected` reads *"Tyrant E Idle"* across the
+    /// top — which arrives on the battlefield as floating text (F565,
+    /// 2026-08-31).
+    ///
+    /// ⚠ **This is a second question, not a sharper version of
+    /// [`Sprite::coherence`].** That one asks whether the art is one thing;
+    /// this asks whether the frame contains all of it. `cto-E-selected` scores
+    /// **94** on the first — higher than either intact building — and is still
+    /// unusable, so neither measure subsumes the other.
+    #[must_use]
+    pub fn top_edge_ink(&self) -> usize {
+        self.rgba
+            .chunks_exact(4)
+            .take(self.width as usize)
+            .filter(|px| px[3] > 0)
+            .count()
+    }
+
+    fn visit(i: usize, visible: &[bool], seen: &mut [bool], stack: &mut Vec<usize>) {
+        if visible[i] && !seen[i] {
+            seen[i] = true;
+            stack.push(i);
+        }
+    }
+
     /// The pixels, for a test or a caller that needs to re-encode them.
     #[must_use]
     pub fn rgba(&self) -> &[u8] {

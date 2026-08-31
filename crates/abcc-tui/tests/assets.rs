@@ -181,3 +181,61 @@ fn write_png(path: &std::path::Path, sprite: &Sprite) {
     img.save_with_format(path, image::ImageFormat::Png)
         .expect("write png");
 }
+
+/// 🚨 **F565: of the sixteen distinct images in the shipped corpus, four are
+/// fit to stand on a battlefield** — and they are the four GIFs.
+///
+/// Measured 2026-08-31 at source resolution. Twelve `cto-*`/`qa-*` PNG poses
+/// fail on one of two counts: the art is in pieces, or a caption is burnt into
+/// the top of the frame. `cto-E-selected` is the one that needs both questions
+/// asked — it scores **94** for coherence, above either building, and is still
+/// unusable because of the caption.
+///
+/// ⚠ **Both questions are asked of the source, never of a scaled copy.**
+/// Downscaling spreads soft edges until fragments touch: `cto-W-idle` reads 30
+/// at `292x221` and 62 at `--px 100`. The assertion below is on `load`, and it
+/// is the reason `abcc paint` decodes twice.
+#[test]
+#[ignore = "needs the shipped corpus; pass ABCC_SPRITES"]
+fn only_the_gifs_are_fit_to_draw() {
+    let Ok(root) = std::env::var("ABCC_SPRITES") else {
+        panic!("point ABCC_SPRITES at the corpus");
+    };
+    let corpus = Corpus::open(std::path::Path::new(&root)).unwrap();
+    let distinct = corpus.distinct().unwrap();
+    let mut paths: Vec<_> = distinct
+        .values()
+        .filter_map(|names| names.first().cloned())
+        .collect();
+    paths.sort();
+    assert_eq!(paths.len(), 16, "the corpus is 16 distinct images (F560)");
+
+    let mut fit: Vec<String> = Vec::new();
+    for path in &paths {
+        let sprite = assets::load(path).unwrap();
+        if sprite.coherence() >= 90 && sprite.top_edge_ink() == 0 {
+            fit.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    assert_eq!(
+        fit,
+        vec![
+            "building-E-attacking.gif",
+            "building-W-attacking.gif",
+            "coder-E-attacking.gif",
+            "coder-W-attacking.gif",
+        ]
+    );
+
+    // The one that needs the second question asked.
+    let selected = paths
+        .iter()
+        .find(|p| p.file_name().unwrap() == "cto-E-selected.png")
+        .unwrap();
+    let selected = assets::load(selected).unwrap();
+    assert!(selected.coherence() >= 90, "coherence alone would admit it");
+    assert!(
+        selected.top_edge_ink() > 0,
+        "and the caption is what excludes it"
+    );
+}

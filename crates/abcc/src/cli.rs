@@ -163,7 +163,7 @@ run and fleet:
 
 paint:
   --sprites <dir>   the sprite corpus (default: $ABCC_SPRITES)
-  --px <n>          sprite height in pixels (default: 100; 75-120 reads as C&C)
+  --px <n>          sprite height in pixels (default: 150)
   --size <WxH>      the field, in pixels (default: 640x360)
 
   Run it in a terminal with sixel. Windows Terminal has had it since 1.22;
@@ -419,9 +419,15 @@ fn paint_args(args: &mut Vec<String>) -> Result<Command, CliError> {
         Some(v) => v
             .parse()
             .map_err(|_| CliError::Usage(format!("--px takes a number of pixels, not {v:?}")))?,
-        // 100 px sits in the middle of the 75-120 band David judged reads as
-        // C&C at arm's length (F143).
-        None => 100,
+        // 🚨 **150, and the number is a judgement rather than a measurement.**
+        // The W5 spike put the C&C band at 75-120 (F143) and David first chose
+        // 100 from it — while looking at the `cto` poses, which are 161 px
+        // across at that height. Those turned out to be unusable art (F565) and
+        // the four that replaced them are 67 px across at the same setting, so
+        // the same number drew a huddle in an empty field. Re-judged at the
+        // corpus that is actually drawn: 200 too big, 100 too small, **150**
+        // (2026-08-31). ▶ It moves again when the art does.
+        None => 150,
     };
     let size = match take_flag(args, "--size")? {
         Some(v) => {

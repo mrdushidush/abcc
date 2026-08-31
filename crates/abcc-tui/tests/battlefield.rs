@@ -213,3 +213,51 @@ fn an_empty_field_is_one_opaque_colour() {
             .encode(&mut encoder)
     );
 }
+
+/// 🚨 **A tile mark has to survive being looked at.**
+///
+/// The first version stamped one pixel per cell, which on a real field is
+/// 0.05% of the picture and reads as nothing at all — an operator reviewing it
+/// reported the tiles as absent (F564). The fixture here is chosen so that
+/// version *fails*: nine cells stamping 1x1 give exactly nine ink pixels, and
+/// the floor below is well above that.
+#[test]
+fn a_tile_mark_is_a_lozenge_and_not_a_single_pixel() {
+    const GROUND: [u8; 3] = [10, 20, 30];
+    const INK: [u8; 3] = [90, 100, 110];
+
+    let mut field = Battlefield::new(400, 300, GROUND, 96).unwrap();
+    field.rule_tiles(1, INK);
+
+    let inked = field
+        .canvas()
+        .pixels()
+        .chunks_exact(3)
+        .filter(|p| p == &&INK[..])
+        .count();
+
+    // Nine cells. One pixel each would be 9; a lozenge is far more than that.
+    assert!(
+        inked >= 9 * 9,
+        "nine marks covered only {inked} pixels — that is dot-sized, not a mark"
+    );
+
+    // And it is on the 2:1 projection, so it is wider than it is tall.
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (i32::MAX, 0i32, i32::MAX, 0i32);
+    for y in 0..300i32 {
+        for x in 0..400i32 {
+            if at(&field, x, y) == INK {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    let one_mark_w = (max_x - min_x + 1) / 3; // three cells across
+    let one_mark_h = (max_y - min_y + 1) / 3;
+    assert!(
+        one_mark_w > one_mark_h,
+        "a mark is {one_mark_w}x{one_mark_h} — the projection is 2:1, so it should be wider"
+    );
+}

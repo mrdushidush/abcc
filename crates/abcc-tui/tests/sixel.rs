@@ -474,3 +474,96 @@ fn every_pixel_of_a_composited_canvas_survives_the_round_trip() {
     assert!(rows[0].iter().all(|c| *c == rule), "row 0 is not uniform");
     assert!(rows[1].iter().any(|c| *c != rule), "row 1 matches the rule");
 }
+
+/// 🚨 **Is this a picture of one thing, or a pile of pieces?**
+///
+/// The measure that decides which art `abcc paint` will stand on a field
+/// (F565). The fixtures here are the two answers it has to tell apart, plus the
+/// case that makes the *region count* useless on its own: one big shape with a
+/// halo of dust around it is intact, and counting regions says the opposite.
+#[test]
+fn coherence_is_the_share_in_one_piece_and_not_the_number_of_pieces() {
+    // A solid block is entirely one region.
+    let whole = Sprite::from_rgba(10, 10, vec![255; 10 * 10 * 4]).unwrap();
+    assert_eq!(whole.coherence(), 100);
+
+    // Two equal blocks, touching nothing: neither is more than half.
+    let mut split = vec![0u8; 10 * 10 * 4];
+    for y in 0..10usize {
+        for x in [0usize, 1, 8, 9] {
+            split[(y * 10 + x) * 4 + 3] = 255;
+        }
+    }
+    assert_eq!(Sprite::from_rgba(10, 10, split).unwrap().coherence(), 50);
+
+    // 🚨 One block plus a scatter of specks. Twenty-one regions, and intact:
+    // this is `coder-E-attacking.gif`, which is 49 regions and 99% in one.
+    let mut dusty = vec![0u8; 20 * 20 * 4];
+    for y in 0..14usize {
+        for x in 0..14usize {
+            dusty[(y * 20 + x) * 4 + 3] = 255;
+        }
+    }
+    for i in (0..20usize).step_by(2) {
+        dusty[((18 * 20) + i) * 4 + 3] = 255; // a speck every other column
+    }
+    let dusty = Sprite::from_rgba(20, 20, dusty).unwrap();
+    assert!(
+        dusty.coherence() >= 90,
+        "a big shape with dust round it read as {}",
+        dusty.coherence()
+    );
+
+    // ⚠ Alpha 1 is visible. A threshold at 128 would cut these joins and
+    // report one bar as three (F561: 60% of the real corpus is partial alpha).
+    let mut joined = vec![0u8; 9 * 3 * 4];
+    for i in 0..9 * 3usize {
+        joined[i * 4 + 3] = if i % 3 == 1 { 1 } else { 255 };
+    }
+    assert_eq!(Sprite::from_rgba(9, 3, joined).unwrap().coherence(), 100);
+}
+
+/// 🚨 **A unit anchored at its feet should never touch its own ceiling.**
+///
+/// Ink in the top row means the frame does not contain all of the art — cropped
+/// there, or something drawn over it. On the shipped corpus it is the second:
+/// the four `*-selected.png` poses carry a caption (F565). This is a *second*
+/// question from [`Sprite::coherence`], and the fixture shows why neither
+/// subsumes the other: one solid, uncaptioned figure, and the same figure with
+/// a caption — identical coherence, different verdict.
+#[test]
+fn top_edge_ink_finds_what_coherence_cannot() {
+    let figure = |caption: bool| {
+        let mut px = vec![0u8; 12 * 12 * 4];
+        for y in 4..12usize {
+            for x in 2..10usize {
+                px[(y * 12 + x) * 4 + 3] = 255;
+            }
+        }
+        if caption {
+            for x in 3..9usize {
+                px[x * 4 + 3] = 200; // a word across the top row
+            }
+        }
+        Sprite::from_rgba(12, 12, px).unwrap()
+    };
+
+    let plain = figure(false);
+    let captioned = figure(true);
+    assert_eq!(plain.top_edge_ink(), 0);
+    assert_eq!(captioned.top_edge_ink(), 6);
+
+    // ⚠ The caption is its own region, so it barely moves coherence — which is
+    // exactly why one measure cannot do both jobs.
+    assert_eq!(plain.coherence(), 100);
+    assert!(
+        captioned.coherence() >= 90,
+        "a caption dropped coherence to {} \u{2014} the fixture is not making the point",
+        captioned.coherence()
+    );
+
+    // Alpha 1 is ink. A caption at low opacity still lands on the battlefield.
+    let mut faint = vec![0u8; 4 * 2 * 4];
+    faint[3] = 1;
+    assert_eq!(Sprite::from_rgba(4, 2, faint).unwrap().top_edge_ink(), 1);
+}

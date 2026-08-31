@@ -115,30 +115,81 @@ impl Battlefield {
         self.grid
     }
 
+    /// Move the grid's origin, for a caller that knows how tall its units are.
+    ///
+    /// 🚨 **Centring the origin is not centring the picture.** A unit is drawn a
+    /// full sprite-height *above* its ground point, so the content reaches
+    /// further up from the origin than down, and a grid centred on the canvas
+    /// cuts the heads off the back rank the moment the tiles are wide enough to
+    /// separate the units — measured at **40 rows at `--px 100`** (F563,
+    /// 2026-08-31). [`Grid::centred`] is the right default for a caller that
+    /// does not know its sprites; this is for one that does.
+    ///
+    /// ⚠ Call it **before** [`Battlefield::rule_tiles`], which stamps the marks
+    /// at the origin the grid has when it runs.
+    pub const fn set_origin(&mut self, origin: (i32, i32)) {
+        self.grid.origin = origin;
+    }
+
     #[must_use]
     pub const fn canvas(&self) -> &Canvas {
         &self.canvas
     }
 
-    /// Draw the grid's tile edges, so the field reads as ground rather than as a
-    /// flat colour behind some figures.
+    /// Mark every cell's ground point, so the field reads as ground rather than
+    /// as a flat colour behind some figures.
+    ///
+    /// 🚨 **A mark has to be big enough to see.** The first version of this
+    /// stamped a **1x1 pixel** per cell: 119 of them landed on a 640x360 field,
+    /// which is **0.05% of the pixels**, and the operator reviewing the picture
+    /// reported the tiles as simply absent — correctly, since nothing that small
+    /// survives being looked at (F564, 2026-08-31). The mark is now a lozenge on
+    /// the same 2:1 projection as the tiles, sized off the tile so it stays in
+    /// proportion at every `--px`.
     ///
     /// Cheap and deliberately dim: it is scenery, and anything on it has to stay
     /// more legible than it is.
     pub fn rule_tiles(&mut self, cells: i32, ink: [u8; 3]) {
+        let Some(mark) = self.mark(ink) else {
+            return;
+        };
+        let (ox, oy) = (
+            i32::try_from(mark.width() / 2).unwrap_or(0),
+            i32::try_from(mark.height() / 2).unwrap_or(0),
+        );
         for cx in -cells..=cells {
             for cy in -cells..=cells {
                 let (x, y) = self.grid.ground(cx, cy);
-                self.dot(x, y, ink);
+                self.canvas.blend(&mark, x - ox, y - oy);
             }
         }
     }
 
-    fn dot(&mut self, x: i32, y: i32, ink: [u8; 3]) {
-        let pixel = Sprite::from_rgba(1, 1, vec![ink[0], ink[1], ink[2], 255]);
-        if let Ok(pixel) = pixel {
-            self.canvas.blend(&pixel, x, y);
+    /// The lozenge stamped on a ground point: 2:1 like the tiles themselves, so
+    /// the marks read as a grid rather than as scattered dots.
+    fn mark(&self, ink: [u8; 3]) -> Option<Sprite> {
+        let half_w = (self.grid.tile_w / 16).max(2);
+        let half_h = (half_w / 2).max(1);
+        let (w, h) = (half_w * 2 + 1, half_h * 2 + 1);
+        let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
+        for row in 0..h {
+            for col in 0..w {
+                let dx = i64::from(col) - i64::from(half_w);
+                let dy = i64::from(row) - i64::from(half_h);
+                // The diamond |dx|/half_w + |dy|/half_h <= 1, multiplied out so
+                // it stays in integers.
+                let inside = dx.abs() * i64::from(half_h) + dy.abs() * i64::from(half_w)
+                    <= i64::from(half_w) * i64::from(half_h);
+                if inside {
+                    let i = ((row as usize) * (w as usize) + (col as usize)) * 4;
+                    rgba[i] = ink[0];
+                    rgba[i + 1] = ink[1];
+                    rgba[i + 2] = ink[2];
+                    rgba[i + 3] = 255;
+                }
+            }
         }
+        Sprite::from_rgba(w, h, rgba).ok()
     }
 
     /// 🚨 **Place every unit, back to front.**
