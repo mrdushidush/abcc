@@ -80,7 +80,7 @@ use abcc_engine::provider::Body;
 use abcc_engine::turn::{NoTools, PhaseEnded, TurnLoop};
 use abcc_engine::{Head, Provider};
 use abcc_gate::Measured;
-use abcc_gate::judge::{self, Dossier, Finding, Review, RungView};
+use abcc_gate::judge::{self, Dossier, Finding, Review, RungView, ScopeNote};
 use serde::Deserialize;
 
 /// One tree, as `tests/corpus.rs` wrote it down.
@@ -106,6 +106,28 @@ fn rung_view() -> RungView {
         "" | "full" => RungView::Full,
         "named" => RungView::Named,
         other => panic!("ABCC_JUDGE_RUNGS is `full` or `named`, not `{other}`"),
+    }
+}
+
+/// 🚨 **F536's probe switch: is the reviewer asked to check the task's stated
+/// scope against the diff's actual extent?**
+///
+/// Default `off`, which is [`judge::brief`] as it ships and what every number
+/// in `ACCEPTANCE-C` was measured under. `on` inserts [`judge::SCOPE_SENTENCE`]
+/// and nothing else — see [`ScopeNote`], which carries why the question exists
+/// and what it can cost. ⚠ Nothing in production reads this; it is reached from
+/// this file only.
+///
+/// 🚨 **It is a second axis, not a third value of [`rung_view`].** The lead
+/// came out of a `Full` call, so the arm that matters is `full` + `on`, and the
+/// control it has to be read against is `full` + `off` **asked fresh** — not the
+/// 121-tree run's stored answers, which were sampled on another day by an engine
+/// that sends no `temperature`, no `top_p` and no `seed`.
+fn scope_note() -> ScopeNote {
+    match env::var("ABCC_JUDGE_SCOPE").unwrap_or_default().as_str() {
+        "" | "off" => ScopeNote::Absent,
+        "on" => ScopeNote::Present,
+        other => panic!("ABCC_JUDGE_SCOPE is `on` or `off`, not `{other}`"),
     }
 }
 
@@ -225,6 +247,52 @@ fn prose_carries_a_defect(review: &Review) -> bool {
     triple || listed
 }
 
+/// 🚨 **Whether a review said, in prose, that it could not tell — F536's
+/// `says it cannot verify` column, and the one the scope sentence is expected to
+/// move.**
+///
+/// Under `Full` it was **1 of 9**; under `Named` **2 of 6**. It is the ending
+/// the scope sentence deliberately invites, which makes it both the hoped-for
+/// result and the thing that can go wrong: an honest *the diff does not show me
+/// the other five consumers* is worth an operator's minutes, and a reflexive
+/// *I cannot be sure* on a tree that is fine is [`RungView::Named`]'s failure in
+/// a new costume.
+///
+/// ⚠ **A candidate, like [`restates_a_rung`] and [`prose_carries_a_defect`],
+/// and read the same way.** It is a phrase list over prose the schema cannot
+/// constrain, so it will miss a hedge worded a way nobody predicted and fire on
+/// a sentence that merely contains the words. Every hit is printed in full and
+/// the summary column is headed `hedge?` for that reason. **A keyword count is
+/// not a measurement of what the reviewer knew.**
+fn hedges_on_scope(review: &Review) -> bool {
+    // The assessment is where the 15-call probe put every one of these, and
+    // findings are scanned too so a hedge attached to a defect is not missed.
+    let mut prose = review.assessment.to_lowercase();
+    for f in &review.findings {
+        prose.push(' ');
+        prose.push_str(&f.defect.to_lowercase());
+    }
+    [
+        "cannot verify",
+        "can't verify",
+        "unable to verify",
+        "cannot confirm",
+        "cannot determine",
+        "cannot tell",
+        "cannot assess",
+        "no visibility",
+        "have visibility",
+        "not visible in",
+        "not shown in the diff",
+        "outside the diff",
+        "beyond the diff",
+        "outside this change",
+        "not included in the diff",
+    ]
+    .iter()
+    .any(|p| prose.contains(p))
+}
+
 fn verdict(headline: &Headline) -> &'static str {
     match headline {
         Headline::Green { .. } => "GREEN",
@@ -267,6 +335,8 @@ struct Row {
     ending: String,
     findings: usize,
     restatements: usize,
+    /// A candidate, not a measurement — see [`hedges_on_scope`].
+    hedges: bool,
     seconds: f32,
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -288,6 +358,7 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
     let model = env::var("ABCC_MODEL").expect("set ABCC_MODEL to the model to ask");
     let url = env::var("ABCC_URL").unwrap_or_else(|_| "http://localhost:1234".to_owned());
     let view = rung_view();
+    let scope = scope_note();
     let tag = review_tag();
     let (leaf, table) = if tag.is_empty() {
         ("reviews".to_owned(), "reviews.tsv".to_owned())
@@ -303,7 +374,8 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
 
     let all = dossiers(&dir);
     println!(
-        "\n### THE JUDGE OVER {} TREES — {model} at {url}, rungs={view:?}, into {leaf}/\n",
+        "\n### THE JUDGE OVER {} TREES — {model} at {url}, rungs={view:?}, \
+         scope={scope:?}, into {leaf}/\n",
         all.len()
     );
 
@@ -318,7 +390,7 @@ fn the_judge_reads_every_wrong_tree_the_corpora_ship() {
             continue;
         }
 
-        rows.push(ask(&loop_, written, n, &path, slug, view));
+        rows.push(ask(&loop_, written, n, &path, slug, view, scope));
     }
 
     summarise(&rows);
@@ -344,6 +416,7 @@ fn ask(
     path: &Path,
     slug: &str,
     view: RungView,
+    scope: ScopeNote,
 ) -> Row {
     // `changed` is not in the brief — `Dossier` carries the report and the
     // report carries the rungs — so it is not reconstructed. Putting a guessed
@@ -353,7 +426,7 @@ fn ask(
         headline: written.headline.clone(),
         changed: Vec::new(),
     };
-    let brief = judge::brief_with(
+    let brief = judge::brief_with_scope(
         &Dossier {
             title: &written.title,
             prompt: &written.prompt,
@@ -361,6 +434,7 @@ fn ask(
             measured: &measured,
         },
         view,
+        scope,
     );
     let mut body = Body::opening(brief.clone());
     let (mut control, _handle) = ControlPoint::new();
@@ -392,6 +466,7 @@ fn ask(
     let restatements = review.as_ref().map_or(0, |r| {
         r.findings.iter().filter(|f| restates_a_rung(f)).count()
     });
+    let hedges = review.as_ref().is_some_and(hedges_on_scope);
 
     println!(
         "=== {} [{}] ladder={} {ending} — {findings} finding(s), {restatements} restatement \
@@ -423,6 +498,10 @@ fn ask(
         // does not know what it was asked under is one that gets compared
         // against the wrong thing.
         "rung_view": format!("{view:?}"),
+        // 🚨 And which scope note. Two axes now, so a review file that
+        // records one of them is a review file that can be filed under the
+        // wrong arm.
+        "scope_note": format!("{scope:?}"),
     });
     fs::write(
         path,
@@ -438,6 +517,7 @@ fn ask(
         ending,
         findings,
         restatements,
+        hedges,
         seconds,
         prompt_tokens: report.prompt_tokens,
         completion_tokens: report.completion_tokens,
@@ -492,6 +572,7 @@ fn row_from(path: &Path, written: &Written, slug: &str) -> Option<Row> {
     let restatements = review.as_ref().map_or(0, |r| {
         r.findings.iter().filter(|f| restates_a_rung(f)).count()
     });
+    let hedges = review.as_ref().is_some_and(hedges_on_scope);
     let num = |k: &str| {
         u32::try_from(v.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0)).unwrap_or(0)
     };
@@ -507,6 +588,7 @@ fn row_from(path: &Path, written: &Written, slug: &str) -> Option<Row> {
             .to_owned(),
         findings,
         restatements,
+        hedges,
         #[allow(clippy::cast_possible_truncation)]
         seconds: v
             .get("seconds")
@@ -543,11 +625,12 @@ fn block(label: &str, group: &[&Row]) {
         .iter()
         .filter(|r| r.ending == "answered" && r.findings == 0)
         .count();
+    let hedged = group.iter().filter(|r| r.hedges).count();
     let mut secs: Vec<f32> = group.iter().map(|r| r.seconds).collect();
     secs.sort_by(f32::total_cmp);
     let median = secs[secs.len() / 2];
     println!(
-        "{label:<22} {:>6} {answered:>9} {findings:>9} {silent:>7} {restated:>13} {median:>9.0}",
+        "{label:<22} {:>6} {answered:>9} {findings:>9} {silent:>7} {restated:>13} {hedged:>7} {median:>9.0}",
         group.len()
     );
 }
@@ -555,13 +638,14 @@ fn block(label: &str, group: &[&Row]) {
 fn summarise(rows: &[Row]) {
     println!("\n--- THE JUDGE OVER THE CORPORA ---");
     println!(
-        "{:<22} {:>6} {:>9} {:>9} {:>7} {:>13} {:>9}",
+        "{:<22} {:>6} {:>9} {:>9} {:>7} {:>13} {:>7} {:>9}",
         "population / ladder",
         "trees",
         "answered",
         "findings",
         "silent",
         "restatement?",
+        "hedge?",
         "median s"
     );
     for pop in ["correct", "wrong", "sham"] {
@@ -583,8 +667,9 @@ fn summarise(rows: &[Row]) {
         .iter()
         .filter(|r| r.ending == "answered" && r.findings == 0)
         .count();
+    let hedged = rows.iter().filter(|r| r.hedges).count();
     println!(
-        "{:<22} {:>6} {answered:>9} {findings:>9} {silent:>7} {restated:>13} {:>9}",
+        "{:<22} {:>6} {answered:>9} {findings:>9} {silent:>7} {restated:>13} {hedged:>7} {:>9}",
         "TOTAL",
         rows.len(),
         ""
@@ -605,12 +690,12 @@ fn summarise(rows: &[Row]) {
 
 fn write_tsv(path: &Path, rows: &[Row]) {
     let mut s = String::from(
-        "task\tlang\tpopulation\tladder\tending\tfindings\trestatement_candidates\tseconds\tprompt_tokens\tcompletion_tokens\treasoning_tokens\n",
+        "task\tlang\tpopulation\tladder\tending\tfindings\trestatement_candidates\thedge_candidate\tseconds\tprompt_tokens\tcompletion_tokens\treasoning_tokens\n",
     );
     for r in rows {
         let _ = writeln!(
             s,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}",
             r.id,
             r.lang,
             r.population,
@@ -618,6 +703,7 @@ fn write_tsv(path: &Path, rows: &[Row]) {
             r.ending,
             r.findings,
             r.restatements,
+            r.hedges,
             r.seconds,
             r.prompt_tokens,
             r.completion_tokens,

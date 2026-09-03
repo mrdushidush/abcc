@@ -224,6 +224,49 @@ pub enum RungView {
     Named,
 }
 
+/// 🚨 **F536's better lead, written down so it can be falsified.**
+///
+/// The probe that produced [`RungView::Named`] found something it was not
+/// looking for. Across 15 calls the best answer of all of them came from
+/// [`RungView::Full`], and what made it the best answer was not what it had been
+/// shown — it was that it checked the change against **the scope the ticket
+/// states**: *"the task explicitly requires treating cancelled jobs correctly
+/// everywhere ... this diff only modifies one file and I do not have visibility
+/// into the other five consumers ... I cannot verify full spec compliance."*
+///
+/// 🚨 **That is the shape F534 says the corpus actually needs.** The sham
+/// `finish_the_cancelled_status` is *correct-but-incomplete* — its hunk is
+/// byte-identical to the answer key's, it is 1 of 4 files, and the other three
+/// are nowhere in the prompt or the diff. A reviewer reading only what it was
+/// shown cannot answer that question; a reviewer asked to compare the diff's
+/// **extent** against the task's **stated scope** can at least say it cannot.
+///
+/// ⚠ **[`Absent`](ScopeNote::Absent) is the default and it is what ships.** No
+/// production caller passes one, [`brief`] and [`brief_with`] both mean
+/// `Absent`, and the switch is reached only by `tests/corpus_review.rs` under
+/// `ABCC_JUDGE_SCOPE=on`. **A population of one call is a lead, not a change.**
+///
+/// 🚨 **The cost this has to be measured for is precision, not recall.** An
+/// instruction to look for what a change does *not* reach is an instruction that
+/// can manufacture incompleteness on a tree that is fine, and ADR-0008's
+/// falsifier is a reviewer whose findings cost an operator minutes for nothing.
+/// **The 59 `correct` trees are the arm that can refuse this, so it is not
+/// measured on the shams alone** — which is what the original 3-sham sketch
+/// would have done.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScopeNote {
+    /// The brief as it ships: nothing is said about scope, and the reviewer
+    /// reaches the question on its own or not at all. **The control.**
+    #[default]
+    Absent,
+    /// One sentence, in `## What is wanted from you now` and ahead of
+    /// everything else asked there, pointing the reviewer at the task's own
+    /// statement of what must be covered and inviting *I cannot tell from this*
+    /// as an answer. **Nothing else in the brief moves** — a probe that changes
+    /// two things at once measures neither.
+    Present,
+}
+
 /// One defect, with the thing that shows it.
 ///
 /// 🚨 **The last three fields are the finding.** A defect sentence on its own is
@@ -352,12 +395,42 @@ pub fn brief(dossier: &Dossier<'_>) -> String {
 /// correcting it is part of the ruling, not part of the measurement.
 #[must_use]
 pub fn brief_with(dossier: &Dossier<'_>, view: RungView) -> String {
+    brief_with_scope(dossier, view, ScopeNote::Absent)
+}
+
+/// 🚨 **The scope sentence, verbatim, so the diff of the two briefs is one
+/// insertion and a reader can see the whole variable at once.**
+///
+/// It asks for the comparison F536's best answer made unprompted — the task's
+/// stated coverage against the diff's actual extent — and it makes *I cannot
+/// tell from what I was shown* an allowed ending rather than a failure to
+/// answer. ⚠ **That last clause is the half that can go wrong**: an honest *I
+/// cannot verify* is worth an operator's minutes, and a manufactured one is
+/// [`RungView::Named`]'s failure in a new costume. Both endings are counted.
+pub const SCOPE_SENTENCE: &str = "Before the defects, check the extent of this change against \
+     the scope the task states — what the task says must be covered, against what this diff \
+     actually reaches — and where the diff does not show you enough of the tree to tell, say \
+     that rather than assuming it was handled.";
+
+/// [`brief_with`], with [`ScopeNote`] as a **second and independent** axis.
+///
+/// 🚨 **The two axes are orthogonal on purpose.** F531's question is *how much
+/// of each rung is the reviewer shown*; F536's is *is the reviewer asked to
+/// check scope*. Folding them into one enum would make `named + scope` and
+/// `full + scope` inexpressible, and the arm that matters for the second
+/// question is `full + scope` — because the lead came from a `Full` call.
+#[must_use]
+pub fn brief_with_scope(dossier: &Dossier<'_>, view: RungView, scope: ScopeNote) -> String {
     let Dossier {
         title,
         prompt,
         patch,
         measured,
     } = dossier;
+    let scope = match scope {
+        ScopeNote::Absent => String::new(),
+        ScopeNote::Present => format!("{SCOPE_SENTENCE}\n\n"),
+    };
     format!(
         "## The task\n\n{title}\n\n{prompt}\n\n\
          ## The change\n\n\
@@ -371,6 +444,7 @@ pub fn brief_with(dossier: &Dossier<'_>, view: RungView) -> String {
          repeats one is a line they read twice. Report what these could not see. Where one of \
          them refused and you know why, that belongs in the assessment.\n\n\
          ## What is wanted from you now\n\n\
+         {scope}\
          Say what this change does to the tree it started from, in at most three sentences. \
          Then report the defects you actually found, most serious first, and at most five.\n\n\
          Every defect carries three things beyond where it is and what is wrong: `call`, the \

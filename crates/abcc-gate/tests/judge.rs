@@ -7,7 +7,7 @@
 
 use abcc_core::outcome::{Claim, Counts, Headline, Measurement, Outcome, Report, Why};
 use abcc_gate::Measured;
-use abcc_gate::judge::{self, Dossier, Finding, Review, RungView};
+use abcc_gate::judge::{self, Dossier, Finding, Review, RungView, ScopeNote};
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -442,4 +442,86 @@ fn noting_what_the_model_said_moves_no_headline() {
         );
         assert_eq!(report.claims().len(), 2, "the claims were not kept");
     }
+}
+
+/// 🚨 **F536's scope note is ONE insertion, and the control arm is the
+/// brief that ships — byte for byte.**
+///
+/// This is the property that makes the overnight run a measurement rather than
+/// two unrelated samples. If `Absent` ever drifts from [`judge::brief`], the
+/// treatment arm stops being comparable to anything, and it would drift
+/// silently: both briefs would still be well-formed and the model would still
+/// answer.
+#[test]
+fn the_scope_note_inserts_one_sentence_and_moves_nothing_else() {
+    let m = measured(vec![green("acceptance", "2 passed in 0.01s")]);
+    let d = dossier(&m);
+    let off = judge::brief_with_scope(&d, RungView::Full, ScopeNote::Absent);
+    let on = judge::brief_with_scope(&d, RungView::Full, ScopeNote::Present);
+
+    assert_eq!(off, judge::brief(&d), "`Absent` is not the shipped brief");
+    assert_eq!(off, judge::brief_with(&d, RungView::Full));
+    assert_ne!(on, off, "the switch did nothing");
+
+    assert!(on.contains(judge::SCOPE_SENTENCE), "{on}");
+    assert!(
+        !off.contains(judge::SCOPE_SENTENCE),
+        "the control carries the treatment: {off}"
+    );
+
+    // 🚨 Take the insertion back out and the control returns exactly. That
+    // is the whole claim — the diff of the two briefs is this sentence and the
+    // blank line after it, and nothing else anywhere in 4 KB of prose.
+    let inserted = format!("{}\n\n", judge::SCOPE_SENTENCE);
+    assert_eq!(
+        on.replacen(&inserted, "", 1),
+        off,
+        "something other than the scope sentence moved"
+    );
+
+    // It is asked before the rest of the section, which is where F536's best
+    // answer put it: the reviewer reached scope first and reported second.
+    let section = on
+        .find("## What is wanted from you now")
+        .expect("the section");
+    let sentence = on.find(judge::SCOPE_SENTENCE).expect("the sentence");
+    let say = on.find("Say what this change does").expect("the ask");
+    assert!(section < sentence && sentence < say, "{on}");
+}
+
+/// The two axes are independent, which is why [`ScopeNote`] is a second enum
+/// rather than a third [`RungView`]: `Named` still withholds every rung with the
+/// scope note on, and the note still lands with the rungs withheld.
+#[test]
+fn the_scope_axis_and_the_rung_axis_do_not_interfere() {
+    let m = measured(vec![red(
+        "acceptance",
+        "18 run / 7 failed: totals disagree",
+    )]);
+    let d = dossier(&m);
+
+    for (view, rungs_visible) in [(RungView::Full, true), (RungView::Named, false)] {
+        let b = judge::brief_with_scope(&d, view, ScopeNote::Present);
+        assert!(b.contains(judge::SCOPE_SENTENCE), "{view:?} lost the note");
+        assert_eq!(
+            b.contains("18 run / 7 failed"),
+            rungs_visible,
+            "the scope note changed what {view:?} shows of the rungs"
+        );
+    }
+}
+
+/// ⚠ **The sentence has to invite \"I cannot tell\" as an ending**, because that
+/// is the answer F536 wants more of — and it is also the answer that can go
+/// wrong, so the wording it is measured under is pinned here rather than left to
+/// whoever edits the brief next.
+#[test]
+fn the_scope_sentence_asks_for_extent_and_allows_not_knowing() {
+    let s = judge::SCOPE_SENTENCE;
+    assert!(s.contains("scope the task states"), "{s}");
+    assert!(s.contains("extent"), "{s}");
+    assert!(s.contains("does not show you enough"), "{s}");
+    // One sentence, so the variable is one thing a reader can hold at once.
+    assert_eq!(s.matches(". ").count(), 0, "more than one sentence: {s}");
+    assert!(s.ends_with('.'), "{s}");
 }
