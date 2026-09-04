@@ -32,6 +32,16 @@ pub enum Command {
     },
     /// The board, from the projection.
     Board,
+    /// ADR-0012's after-action view: the log folded back into what happened.
+    ///
+    /// ⚠ With no task it prints every final state against the endings of the
+    /// attempts underneath it, which is the question a board cannot answer — a
+    /// state is the task's fact and an ending is the attempt's, and one word
+    /// prints over five of them.
+    ///
+    /// 🚨 This is **not** `Cause::Replay`, which forks an attempt and re-runs
+    /// work. This writes nothing.
+    Replay { task: Option<TaskRef> },
     /// ADR-0012 §5's six queries, folded over the log.
     ///
     /// ⚠ Three of the six have no instrument and say so. They ask what the
@@ -147,6 +157,7 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc where                          where this repository's log and worktrees are
   abcc task <prompt> [--title T]      put a task on the board
   abcc board                          the board, from the projection
+  abcc replay [t42]                   after-action: how a task got where it is
   abcc fun                            ADR-0012 §5's six queries, over the log
   abcc run [--task t42] [options]     run one attempt on a queued task
   abcc fleet [options]                attempts until the board is quiet, one slot
@@ -228,6 +239,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
     let command = match verb.as_str() {
         "where" => Command::Where,
         "board" => Command::Board,
+        "replay" => Command::Replay {
+            task: replay_task(&args)?,
+        },
         "fun" => {
             no_positionals(&args, "fun")?;
             Command::Fun
@@ -327,6 +341,21 @@ fn minutes_as_seconds(raw: &str) -> Result<u32, CliError> {
     // The range is checked immediately above, which is what the cast needs.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     Ok(seconds as u32)
+}
+
+/// The task `replay` names, if it names one.
+///
+/// ⚠ A bare `abcc replay` is the whole board's after-action rather than a usage
+/// error, so the positional is **optional** — the two shapes answer different
+/// questions and neither is the other's degenerate case.
+fn replay_task(args: &[String]) -> Result<Option<TaskRef>, CliError> {
+    match args {
+        [] => Ok(None),
+        [one] => task_ref(one).map(Some),
+        _ => Err(CliError::Usage(
+            "replay takes one task, or none for the whole board".to_owned(),
+        )),
+    }
 }
 
 /// `t42` and `42` are the same task. The prefix is what the id prints as, so
