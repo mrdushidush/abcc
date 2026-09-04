@@ -231,10 +231,13 @@ const fn mark(verdict: Verdict) -> &'static str {
 
 /// The whole log, in `seq` order.
 ///
+/// Shared with `abcc paint`, which folds the same page sequence into a
+/// `View` — one paged read, not two that could drift apart.
+///
 /// Paged rather than read at once because that is the only read the store
 /// offers, and because the cursor it takes is the same integer the console
 /// scrubs with (ADR-0012).
-fn read_all(store: &Store) -> Result<Vec<Logged>, AppError> {
+pub(crate) fn read_all(store: &Store) -> Result<Vec<Logged>, AppError> {
     let mut all = Vec::new();
     let mut since = Seq::ORIGIN;
     loop {

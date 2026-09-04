@@ -100,6 +100,8 @@ pub enum Command {
         px: u32,
         /// Field size in pixels.
         size: (u32, u32),
+        /// Draw the art instead of the fleet.
+        corpus: bool,
     },
 }
 
@@ -154,7 +156,7 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc review <change> <minutes> [--by W] [--boundary]
   abcc accept <task> [--note N]       the work is good; you take responsibility
   abcc reject <task> [--note N]       stop the task
-  abcc paint [--sprites DIR]          one frame of the battlefield, as a sixel
+  abcc paint [--sprites DIR]          the fleet on the battlefield, as a sixel
 
 Everywhere:
   --repo <path>     the checkout to work on (default: the working directory)
@@ -173,6 +175,14 @@ paint:
   --sprites <dir>   the sprite corpus (default: $ABCC_SPRITES)
   --px <n>          sprite height in pixels (default: 150)
   --size <WxH>      the field, in pixels (default: 640x360)
+  --corpus          draw the art itself, not the fleet -- every distinct image
+                    fit to stand on a field. The diagnostic for when the picture
+                    looks wrong, or when new art arrives.
+
+  The field is one building per mission and one unit per live task, ranked back
+  to front: base, reserve, the line (positioned by slot), and the tasks waiting
+  on you. Finished tasks are off it. The legend under the picture names them,
+  because the field cannot.
 
   Run it in a terminal with sixel. Windows Terminal has had it since 1.22;
   tmux and Zellij strip it, and it does not survive most SSH multiplexers.
@@ -466,6 +476,12 @@ fn paint_args(args: &mut Vec<String>) -> Result<Command, CliError> {
         }
         None => (640, 360),
     };
+    let corpus = take_switch(args, "--corpus");
     no_positionals(args, "paint")?;
-    Ok(Command::Paint { sprites, px, size })
+    Ok(Command::Paint {
+        sprites,
+        px,
+        size,
+        corpus,
+    })
 }

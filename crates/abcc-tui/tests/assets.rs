@@ -5,7 +5,7 @@
 //! `abcc`'s `ABCC_LOG` reader test: an instrument kept because the claim it
 //! checks is about files this workspace did not synthesise.
 
-use abcc_tui::assets::{self, Corpus};
+use abcc_tui::assets::{self, Corpus, Design, Facing, Pose, Poses};
 use abcc_tui::sixel::Sprite;
 use std::path::PathBuf;
 
@@ -238,4 +238,186 @@ fn only_the_gifs_are_fit_to_draw() {
         selected.top_edge_ink() > 0,
         "and the caption is what excludes it"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 🚨 the four pictures the roster asks for, and how a corpus is indexed
+// ---------------------------------------------------------------------------
+
+/// A figure: one connected opaque block with a clear top row, which is what the
+/// two questions in [`Poses::open`] are asking for.
+fn figure(w: u32, h: u32) -> Sprite {
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for row in 1..h {
+        for col in 0..w {
+            let i = ((row * w + col) * 4) as usize;
+            rgba[i..i + 4].copy_from_slice(&[200, 100, 50, 255]);
+        }
+    }
+    Sprite::from_rgba(w, h, rgba).expect("sprite")
+}
+
+/// The same figure in pieces: two blocks with a column of nothing between them,
+/// so the largest connected piece is half of it.
+fn shattered(w: u32, h: u32) -> Sprite {
+    let mut rgba = figure(w, h).rgba().to_vec();
+    let gap = w / 2;
+    for row in 0..h {
+        let i = ((row * w + gap) * 4) as usize;
+        rgba[i + 3] = 0;
+    }
+    Sprite::from_rgba(w, h, rgba).expect("sprite")
+}
+
+/// A figure with a caption burnt across the top of the frame, which is what
+/// disqualifies all four `*-selected.png` poses (F565).
+fn captioned(w: u32, h: u32) -> Sprite {
+    let mut rgba = figure(w, h).rgba().to_vec();
+    for col in 0..w / 2 {
+        let i = (col * 4) as usize;
+        rgba[i + 3] = 255;
+    }
+    Sprite::from_rgba(w, h, rgba).expect("sprite")
+}
+
+/// 🚨 **A filename says which pose it is, and the convention is the contract.**
+///
+/// Naming the four good files in the code would be shorter and would exclude
+/// better art the day it arrives. What is pinned here is the *shape* of a name —
+/// so `coder-E-anything` is admitted and a design nobody has given a job on the
+/// field is not.
+#[test]
+fn a_filename_says_which_pose_it_is_and_an_unknown_design_says_nothing() {
+    let pose = |name: &str| Pose::named(&PathBuf::from(name));
+
+    assert_eq!(
+        pose("coder-E-attacking.gif"),
+        Some(Pose::new(Design::Coder, Facing::East))
+    );
+    assert_eq!(
+        pose("building-W-attacking.gif"),
+        Some(Pose::new(Design::Building, Facing::West))
+    );
+    // Art that follows the convention with a pose nobody has drawn yet.
+    assert_eq!(
+        pose("coder-W-idle.png"),
+        Some(Pose::new(Design::Coder, Facing::West))
+    );
+
+    // A design with no job on the field, the two facings the corpus does not
+    // have, and a name that is not the shape at all.
+    assert_eq!(pose("cto-E-idle.png"), None);
+    assert_eq!(pose("qa-N-selected.png"), None);
+    assert_eq!(pose("coder-N-attacking.gif"), None);
+    assert_eq!(pose("coder.png"), None);
+}
+
+/// 🚨 **The index admits art by measuring it, never by its name**, and keeps the
+/// three reasons a pose can be undrawable apart.
+///
+/// *No coder was drawn* has three causes and they are three different sentences
+/// to tell an operator: nothing in the corpus is named for it, the file will not
+/// decode, or the art is broken. A single count would flatten them.
+#[test]
+fn the_index_measures_the_art_and_says_which_reason_kept_it_off() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_png(&dir.path().join("coder-E-attacking.png"), &figure(40, 60));
+    write_png(
+        &dir.path().join("coder-W-attacking.png"),
+        &shattered(40, 60),
+    );
+    write_png(
+        &dir.path().join("building-E-attacking.png"),
+        &captioned(40, 60),
+    );
+    // Named for a design with no job on the field: not a fault, just not ours.
+    write_png(&dir.path().join("cto-E-idle.png"), &figure(40, 60));
+
+    let poses = Poses::open(dir.path(), 30).expect("open");
+
+    assert_eq!(poses.len(), 1, "only the whole figure is fit to draw");
+    assert_eq!(poses.rejected().len(), 2, "the shattered and the captioned");
+    assert_eq!(poses.unnamed(), 1, "the cto pose");
+    assert_eq!(poses.unreadable(), 0);
+
+    // 🚨 And there is no substitute: a west-facing coder is missing even though
+    // an east-facing one is right there. Handing back the mirror would put a
+    // picture on the field saying something the log did not.
+    assert!(
+        poses
+            .sprite(Pose::new(Design::Coder, Facing::East))
+            .is_some()
+    );
+    assert!(
+        poses
+            .sprite(Pose::new(Design::Coder, Facing::West))
+            .is_none()
+    );
+    assert_eq!(poses.missing().len(), 3);
+
+    // Scaled on the way in, by height, the way `--px` is spelled.
+    let drawn = poses
+        .sprite(Pose::new(Design::Coder, Facing::East))
+        .expect("the coder");
+    assert_eq!(drawn.height(), 30);
+}
+
+/// 🚨 **Both questions are asked of the source, never of the scaled copy.**
+///
+/// Downscaling spreads soft edges until fragments touch, and a shattered sprite
+/// silently becomes a coherent one — `cto-W-idle` reads 30 at 292x221 and 62 at
+/// `--px 100` (F565). The fixture is a figure whose gap is one pixel wide: at
+/// full size it is in two pieces, and scaled down far enough it would not be.
+#[test]
+fn a_broken_figure_is_judged_before_it_is_scaled() {
+    let broken = shattered(40, 60);
+    assert!(
+        broken.coherence() < 90,
+        "the fixture is not broken: {}",
+        broken.coherence()
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_png(&dir.path().join("coder-E-attacking.png"), &broken);
+    // Scaled to a tenth, where the gap cannot survive.
+    let poses = Poses::open(dir.path(), 6).expect("open");
+    assert!(
+        poses.is_empty(),
+        "the resize made a broken figure look whole"
+    );
+}
+
+/// The shipped corpus, indexed: four pictures, one per pose, and the other
+/// twenty-four files are named for designs that have no job on the field.
+#[test]
+#[ignore = "needs the shipped corpus; pass ABCC_SPRITES"]
+fn the_shipped_corpus_fills_every_pose_and_nothing_it_names_is_broken() {
+    let Some(root) = corpus_root() else {
+        panic!("ABCC_SPRITES does not point at a directory");
+    };
+    let poses = Poses::open(&root, 150).expect("open");
+
+    assert_eq!(poses.len(), 4, "the four GIFs");
+    assert!(poses.missing().is_empty(), "{:?}", poses.missing());
+    assert_eq!(poses.unnamed(), 24, "every cto and qa file");
+    assert_eq!(
+        poses.rejected().len(),
+        0,
+        "a file named for a pose failed the filter: {:?}",
+        poses.rejected()
+    );
+    assert_eq!(poses.unreadable(), 0);
+
+    // ⚠ The building is drawn at the same height as the coder, so the corpus's
+    // own relative sizes (380x568 against 300x450) are not preserved on the
+    // field. That is `--px`'s meaning, and whether it is right is an eye
+    // question — this pins what the code does so a change to it is deliberate.
+    let coder = poses
+        .sprite(Pose::new(Design::Coder, Facing::East))
+        .expect("coder");
+    let building = poses
+        .sprite(Pose::new(Design::Building, Facing::East))
+        .expect("building");
+    assert_eq!((coder.height(), building.height()), (150, 150));
+    assert_eq!((coder.width(), building.width()), (100, 100));
 }

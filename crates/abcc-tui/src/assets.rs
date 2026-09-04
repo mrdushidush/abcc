@@ -255,3 +255,254 @@ fn digest(bytes: &[u8]) -> u64 {
     }
     hash
 }
+
+// ---------------------------------------------------------------------------
+// 🚨 The four pictures the roster can ask for, and the filter that admits them
+// ---------------------------------------------------------------------------
+
+/// The share of a sprite's visible art that has to be one connected piece
+/// before it is worth standing on a battlefield.
+///
+/// ⚠ **This corpus does not separate cleanly and the constant is a judgement,
+/// not a discovered boundary.** Measured at source resolution, 2026-08-31
+/// (F565): the four intact GIFs read **92, 92, 99, 99**, and the twelve PNG
+/// poses run from **30 to 94** with no gap to put a line in — `cto-E-selected`
+/// scores 94, above either building, because it really is a mostly-assembled
+/// machine. ▶ **When better art arrives, re-measure before trusting this.**
+pub const INTACT: u32 = 90;
+
+/// What a thing standing on the field is a picture of.
+///
+/// Two designs, because [`Corpus::distinct`] and F565 between them leave two:
+/// twelve of the sixteen distinct images are not fit to draw, and the four that
+/// survive are `building` and `coder`, east and west. The roster gives each of
+/// them a job — a building is a **mission** and a coder is a **task** — so the
+/// picture has a subject rather than being a row of identical figures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Design {
+    /// A unit: one task.
+    Coder,
+    /// A structure: one mission.
+    Building,
+}
+
+impl Design {
+    /// The word the corpus spells it with, and the word a legend prints.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Design::Coder => "coder",
+            Design::Building => "building",
+        }
+    }
+}
+
+/// Which side a design is drawn from.
+///
+/// ⚠ **Two of the four compass points, and no idle pose at all.** The corpus is
+/// `*-attacking` only, east and west (F565), so a unit standing still and a unit
+/// working are the same picture and nothing on the field can tell them apart.
+/// The rank a unit stands on carries that; the facing does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Facing {
+    East,
+    West,
+}
+
+impl Facing {
+    /// The letter the corpus spells it with.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Facing::East => "E",
+            Facing::West => "W",
+        }
+    }
+}
+
+/// One picture: a design seen from one side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Pose {
+    pub design: Design,
+    pub facing: Facing,
+}
+
+impl Pose {
+    /// Every picture a field can ask for. Four, which is exactly how many the
+    /// shipped corpus has fit to draw — a coincidence that stops being one the
+    /// moment better art lands, which is why nothing here counts on it.
+    pub const ALL: [Pose; 4] = [
+        Pose::new(Design::Coder, Facing::East),
+        Pose::new(Design::Coder, Facing::West),
+        Pose::new(Design::Building, Facing::East),
+        Pose::new(Design::Building, Facing::West),
+    ];
+
+    #[must_use]
+    pub const fn new(design: Design, facing: Facing) -> Pose {
+        Pose { design, facing }
+    }
+
+    /// The pose a filename says it is: `{design}-{facing}-{anything}`.
+    ///
+    /// 🚨 **The convention is the contract, not the four filenames.** Naming
+    /// `coder-E-attacking.gif` and its three siblings here would be shorter and
+    /// would quietly exclude better art the moment it arrives — and better art
+    /// is expected. A file that follows the corpus's own naming is admitted
+    /// without a code change; a **new design** is a code change, because a
+    /// design has to be given something to mean on the field before it can be
+    /// drawn on one.
+    ///
+    /// ⚠ This says nothing about whether the picture is any good. That is
+    /// [`Sprite::coherence`] and [`Sprite::top_edge_ink`], and [`Poses::open`]
+    /// asks both.
+    #[must_use]
+    pub fn named(path: &Path) -> Option<Pose> {
+        let stem = path.file_stem()?.to_str()?;
+        let mut parts = stem.split('-');
+        let design = match parts.next()? {
+            "coder" => Design::Coder,
+            "building" => Design::Building,
+            _ => return None,
+        };
+        let facing = match parts.next()? {
+            "E" | "e" => Facing::East,
+            "W" | "w" => Facing::West,
+            _ => return None,
+        };
+        Some(Pose { design, facing })
+    }
+}
+
+impl std::fmt::Display for Pose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.design.name(), self.facing.name())
+    }
+}
+
+/// The corpus, filtered and indexed by the pose each picture is of.
+///
+/// 🚨 **Both questions are asked of the SOURCE, never of the scaled copy**, so
+/// this decodes every candidate twice on purpose. Downscaling spreads soft edges
+/// until neighbouring fragments touch and a shattered sprite silently becomes a
+/// coherent one: `cto-W-idle` reads **30** at 292x221 and **62** at `--px 100`
+/// (F565). Measuring after the resize is measuring the resize.
+///
+/// Everything it could not use is **counted and kept apart by reason**, because
+/// *no coder was drawn* has three different causes and they are three different
+/// sentences to tell an operator: the corpus has no file for it, the file will
+/// not decode, or the art is broken.
+#[derive(Debug)]
+pub struct Poses {
+    by_pose: BTreeMap<Pose, Sprite>,
+    rejected: Vec<PathBuf>,
+    unreadable: usize,
+    unnamed: usize,
+}
+
+impl Poses {
+    /// Read a corpus and keep the pictures fit to stand on a field, each scaled
+    /// to `px` tall.
+    ///
+    /// Where two files claim one pose, the first in name order that passes wins
+    /// and the rest are skipped rather than counted against anything — the
+    /// corpus already holds twelve byte-identical duplicate pairs (F560) and a
+    /// duplicate is not a defect.
+    ///
+    /// # Errors
+    ///
+    /// [`AssetError::Unreadable`] if the directory cannot be listed. A single
+    /// file that will not read is counted, not fatal: one bad file must not cost
+    /// the operator the whole field.
+    pub fn open(root: &Path, px: u32) -> Result<Poses, AssetError> {
+        let corpus = Corpus::open(root)?;
+        let mut poses = Poses {
+            by_pose: BTreeMap::new(),
+            rejected: Vec::new(),
+            unreadable: 0,
+            unnamed: 0,
+        };
+        for path in corpus.files() {
+            let Some(pose) = Pose::named(path) else {
+                poses.unnamed += 1;
+                continue;
+            };
+            if poses.by_pose.contains_key(&pose) {
+                continue;
+            }
+            let Ok(source) = load(path) else {
+                poses.unreadable += 1;
+                continue;
+            };
+            if source.coherence() < INTACT || source.top_edge_ink() > 0 {
+                poses.rejected.push(path.clone());
+                continue;
+            }
+            match load_scaled(path, px) {
+                Ok(sprite) => {
+                    poses.by_pose.insert(pose, sprite);
+                }
+                Err(_) => poses.unreadable += 1,
+            }
+        }
+        Ok(poses)
+    }
+
+    /// The picture for a pose, or `None` if the corpus has none fit to draw.
+    ///
+    /// ⚠ **There is deliberately no substitute.** Handing back the other facing,
+    /// or the other design, would put a picture on the field that says something
+    /// the log did not — and the operator has no way to tell it apart from one
+    /// that does.
+    #[must_use]
+    pub fn sprite(&self, pose: Pose) -> Option<&Sprite> {
+        self.by_pose.get(&pose)
+    }
+
+    /// The poses this corpus cannot draw.
+    #[must_use]
+    pub fn missing(&self) -> Vec<Pose> {
+        Pose::ALL
+            .into_iter()
+            .filter(|p| !self.by_pose.contains_key(p))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.by_pose.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_pose.is_empty()
+    }
+
+    /// Files that named a pose, decoded, and were not fit to draw.
+    #[must_use]
+    pub fn rejected(&self) -> &[PathBuf] {
+        &self.rejected
+    }
+
+    /// Files that named a pose and would not decode.
+    #[must_use]
+    pub const fn unreadable(&self) -> usize {
+        self.unreadable
+    }
+
+    /// Files whose name does not say which pose they are. On the shipped corpus
+    /// that is 24 of the 28 — every `cto-*` and `qa-*` — and it is not a fault.
+    #[must_use]
+    pub const fn unnamed(&self) -> usize {
+        self.unnamed
+    }
+
+    /// The widest and tallest picture held, which is what a layout is measured
+    /// in. `None` when nothing is held.
+    #[must_use]
+    pub fn extent(&self) -> Option<(u32, u32)> {
+        let widest = self.by_pose.values().map(Sprite::width).max()?;
+        let tallest = self.by_pose.values().map(Sprite::height).max()?;
+        Some((widest, tallest))
+    }
+}

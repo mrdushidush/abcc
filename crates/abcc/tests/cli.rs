@@ -300,23 +300,38 @@ fn every_verb_the_parser_accepts_is_in_the_usage_text() {
 /// the machine it runs on.
 #[test]
 fn paint_defaults_to_a_hundred_and_fifty_pixel_sprite_on_a_640_by_360_field() {
-    let Command::Paint { sprites, px, size } = parse("paint").expect("paint").command else {
+    let Command::Paint {
+        sprites,
+        px,
+        size,
+        corpus,
+    } = parse("paint").expect("paint").command
+    else {
         panic!("not paint");
     };
     assert_eq!(sprites, None);
+    assert!(
+        !corpus,
+        "the default is the fleet; the art is behind --corpus"
+    );
     assert_eq!(
         px, 150,
         "150 is David's judgement over the art that is actually drawn (F565),          which is not the art F143's 75-120 band was judged on"
     );
     assert_eq!(size, (640, 360));
 
-    let Command::Paint { sprites, px, size } =
-        parse("paint --sprites D:/art --px 75 --size 320x200")
-            .expect("flags")
-            .command
+    let Command::Paint {
+        sprites,
+        px,
+        size,
+        corpus,
+    } = parse("paint --sprites D:/art --px 75 --size 320x200 --corpus")
+        .expect("flags")
+        .command
     else {
         panic!("not paint");
     };
+    assert!(corpus, "--corpus was dropped");
     assert_eq!(sprites.as_deref(), Some("D:/art"));
     assert_eq!(px, 75);
     // 320x200 is VGA mode 13h, which is where the 256-colour palette comes from.

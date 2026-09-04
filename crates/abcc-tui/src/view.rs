@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use abcc_core::event::{Event, Logged};
 use abcc_core::run::Mode;
-use abcc_core::seq::{AttemptId, MissionId, Seq, TaskId};
+use abcc_core::seq::{AttemptId, MissionId, Seq, TaskId, UnitId};
 use abcc_core::task::{Liveness, TaskState};
 
 use crate::line::{Line, describe};
@@ -53,6 +53,18 @@ pub struct Card {
     pub title: String,
     pub prompt: String,
     pub state: TaskState,
+    /// 🚨 **The slot this task holds, which is not in its state.**
+    ///
+    /// `Deployed` names its `unit` and [`TaskState::Engaged`] does not — so the
+    /// slot a running task occupies is a fact about the *log* rather than about
+    /// the state, and only a fold can answer it. Anything positioning a task by
+    /// slot has to read this; there is nowhere else to read it from.
+    ///
+    /// `None` means *this reader has not seen it granted*, which a window that
+    /// opened after the `Deploy` genuinely has not. It is deliberately not
+    /// `UnitId(0)`: a made-up slot would stand a unit on top of whatever is
+    /// really in slot zero.
+    pub slot: Option<UnitId>,
     /// The `seq` of the transition that produced `state`.
     pub since: Seq,
     /// Wall clock of that transition — the clock a `SinceEntered` or `Human`
@@ -201,14 +213,19 @@ impl View {
             Event::TaskTransitioned { task, to, .. } => {
                 let (task, at_ms, seq) = (*task, logged.at_ms, logged.seq);
                 let card = self.card(task, logged);
+                card.slot = held_slot(card.slot, to);
                 card.state = to.clone();
                 card.since = seq;
                 card.since_at_ms = at_ms;
             }
-            Event::AttemptStarted { task, .. } => {
-                let (task, attempt) = (*task, AttemptId::at(logged.seq));
+            Event::AttemptStarted { task, unit, .. } => {
+                let (task, unit, attempt) = (*task, *unit, AttemptId::at(logged.seq));
                 self.attempt_task.insert(attempt, task);
-                self.card(task, logged).attempts += 1;
+                let card = self.card(task, logged);
+                card.attempts += 1;
+                // The second place a slot is learned, and the only one for a
+                // reader whose window opened after the `Deploy`.
+                card.slot = Some(unit);
             }
             Event::OperatorPrompted { task, question, .. } => {
                 let (task, question) = (*task, question.clone());
@@ -252,6 +269,7 @@ impl View {
             title: String::new(),
             prompt: String::new(),
             state: TaskState::Queued,
+            slot: None,
             since: logged.seq,
             since_at_ms: logged.at_ms,
             last_seq: logged.seq,
@@ -312,6 +330,12 @@ impl View {
         self.tasks.values().nth(index)
     }
 
+    /// One task, by id.
+    #[must_use]
+    pub fn card_of(&self, id: TaskId) -> Option<&Card> {
+        self.tasks.get(&id)
+    }
+
     #[must_use]
     pub fn feed(&self) -> &VecDeque<Line> {
         &self.feed
@@ -363,5 +387,22 @@ impl View {
                 ms: (now_ms - card.since_at_ms).max(0),
             },
         }
+    }
+}
+
+/// The slot a task holds after a transition to `to`.
+///
+/// 🚨 **Three cases and only one of them is in the state.** `Deployed` names its
+/// unit, so a grant is read straight off the transition. `Engaged` holds a slot
+/// (`StateContract::holds_slot`) and does **not** name it, so the slot survives
+/// the transition that started the attempt — which is why this is a fold and not
+/// a projection of the state alone. Everything else holds no slot, and the
+/// contract is what says so rather than a second list here that could disagree
+/// with it.
+fn held_slot(held: Option<UnitId>, to: &TaskState) -> Option<UnitId> {
+    match to {
+        TaskState::Deployed { unit, .. } => Some(*unit),
+        other if other.contract().holds_slot => held,
+        _ => None,
     }
 }

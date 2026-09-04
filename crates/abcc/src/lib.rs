@@ -124,7 +124,12 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
             breaker::report(invocation, model.as_deref(), base_url.as_deref(), out)
         }
         Command::Watch { theme } => ops::watch(invocation, *theme),
-        Command::Paint { sprites, px, size } => paint::paint(sprites.as_deref(), *px, *size, out),
+        Command::Paint {
+            sprites,
+            px,
+            size,
+            corpus,
+        } => paint::paint(invocation, sprites.as_deref(), *px, *size, *corpus, out),
         Command::Check {
             model,
             base_url,
