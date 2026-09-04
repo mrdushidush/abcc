@@ -160,8 +160,74 @@ fn out_dir() -> PathBuf {
     PathBuf::from(raw)
 }
 
+/// The task part of a dossier slug — `od-the_backoff_is_linear-correct` and
+/// `od-the_backoff_is_linear-sham` and `od-the_backoff_is_linear` all give
+/// `od-the_backoff_is_linear`.
+///
+/// 🚨 **`ABCC_CORPUS_ONLY` used `slug.ends_with(name)` and could therefore only
+/// ever select the `wrong` tree of a task** — `q56-Q01` ends with `Q01` and
+/// `q56-Q01-correct` does not. The two populations that matter most to a probe
+/// were unreachable by the one switch that exists to reach them, silently, by
+/// returning a smaller set rather than an error.
+fn task_of(slug: &str) -> &str {
+    slug.strip_suffix("-correct")
+        .or_else(|| slug.strip_suffix("-sham"))
+        .unwrap_or(slug)
+}
+
+/// Does this dossier survive the two selectors? Empty means *everything*.
+///
+/// `suite` is a prefix (`od` keeps `od-…`, all three populations of it) and
+/// `only` is a comma-separated list of task directory names. It is a free
+/// function with a test below it rather than a closure inside [`dossiers`],
+/// **because a filter that silently returns too few looks exactly like a small
+/// corpus** — which is how the `ends_with` version survived. F568.
+fn selected(slug: &str, suite: &str, only: &str) -> bool {
+    let in_suite = suite.trim().is_empty()
+        || suite
+            .split(',')
+            .any(|s| slug.starts_with(&format!("{}-", s.trim())));
+    let in_only = only.trim().is_empty()
+        || only
+            .split(',')
+            .any(|w| task_of(slug).ends_with(&format!("-{}", w.trim())));
+    in_suite && in_only
+}
+
+#[test]
+fn the_dossier_selectors_reach_all_three_populations() {
+    let slugs = [
+        "od-the_backoff_is_linear",
+        "od-the_backoff_is_linear-correct",
+        "od-the_backoff_is_linear-sham",
+        "q56-Q01",
+        "q56-Q01-correct",
+        "k-trace_dropped_samples-sham",
+    ];
+    let keep = |suite: &str, only: &str| slugs.iter().filter(|s| selected(s, suite, only)).count();
+    // No selector keeps everything.
+    assert_eq!(keep("", ""), 6);
+    // A suite keeps every population of that suite and nothing else.
+    assert_eq!(keep("od", ""), 3);
+    assert_eq!(keep("q56", ""), 2);
+    assert_eq!(keep("od,k", ""), 4);
+    // 🚨 The regression this exists for: a task name must reach `correct` and
+    // `sham`, not only the `wrong` tree. Under the old `ends_with` rule this was
+    // 1 rather than 3.
+    assert_eq!(keep("", "the_backoff_is_linear"), 3);
+    assert_eq!(keep("", "Q01"), 2);
+    // And a task name must not match a longer one that ends the same way.
+    assert!(!selected("q56-QQ01", "", "Q01"));
+    assert!(selected("q56-Q01-sham", "", "Q01"));
+}
+
 fn dossiers(dir: &Path) -> Vec<(String, Written)> {
     let only = env::var("ABCC_CORPUS_ONLY").unwrap_or_default();
+    // A whole suite, by the prefix every one of its slugs carries. This is how a
+    // probe is run over one tier — and a probe over a tier owes its noise floor
+    // arm ON THAT TIER, so selecting one has to be one flag rather than a list
+    // of task names (`corpus/suites/od/README.md`).
+    let suite = env::var("ABCC_REVIEW_SUITE").unwrap_or_default();
     let dossiers = dir.join("dossiers");
     let mut paths: Vec<PathBuf> = fs::read_dir(&dossiers)
         .unwrap_or_else(|e| {
@@ -178,7 +244,7 @@ fn dossiers(dir: &Path) -> Vec<(String, Written)> {
         .into_iter()
         .filter_map(|path| {
             let slug = path.file_stem()?.to_string_lossy().into_owned();
-            if !only.is_empty() && !only.split(',').any(|w| slug.ends_with(w.trim())) {
+            if !selected(&slug, &suite, &only) {
                 return None;
             }
             let text = fs::read_to_string(&path).ok()?;
