@@ -169,7 +169,21 @@ paint:
   Run it in a terminal with sixel. Windows Terminal has had it since 1.22;
   tmux and Zellij strip it, and it does not survive most SSH multiplexers.
 
-The run reads control verbs from stdin: pause | halt | kill | redirect <prompt>.
+Both run and fleet read control verbs from stdin, and they differ in one thing:
+
+  run    pause | halt | kill | redirect <prompt> | resume
+  fleet  pause <task> | halt <task> | kill <task> | redirect <task> <prompt>
+         resume <task> | ground | slot
+
+  A sortie moves between tasks, so at a fleet every verb names its task -- a bare
+  verb would go to whatever is flying when you press enter, which may not be what
+  you were looking at. `slot` says what is flying; `ground` admits nothing more
+  and lets what is in flight land.
+
+  Three of the five have a mechanism all the way down: pause, halt and kill.
+  redirect stops the attempt and records the prompt but forks no attempt from it
+  yet, and nothing acts on resume at all -- `abcc accept` and `abcc reject` are
+  the ways out of Holding. Both desks say so when you use them.
 ";
 
 /// Parse an argument list, without the program name.

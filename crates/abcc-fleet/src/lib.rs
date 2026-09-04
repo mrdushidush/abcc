@@ -56,13 +56,36 @@
 //! exit status. What it does **not** get is a dead attempt — a denial is a normal
 //! outcome inside a phase, not an ending.
 //!
-//! # The one thing a sortie stops for
+//! # The two things a sortie stops for
 //!
 //! [`Landed::next`] is `None` exactly when the ending was the operator's, and a
 //! [`ControlPoint`] latches the first stop and keeps it. Both say the same thing,
 //! so a sortie ends when it sees the first: what happens after a person stops
 //! something is that person's, and continuing to the next task would be the fleet
 //! deciding it was not stopped.
+//!
+//! 🚨 The second is [`StandDown`], and it is **the only verb that belongs to the
+//! sortie rather than to a task.** ADR-0012 §4 makes the task the unit of control
+//! because every verb ends in *"...and then what happens to its model slot and
+//! its workspace lock?"* — and this one ends in *"and then the slot goes empty"*,
+//! which no task can answer. It is read before admission and never inside an
+//! attempt, so the most it can cost is the wait for one landing, and the work in
+//! flight is kept rather than thrown away.
+//!
+//! ⚠ [`Fleet::in_flight`] is the other half of the same surface and holds no
+//! policy at all: it publishes **which task the slot is on, and the channel that
+//! reaches it**, so that a console spanning the sortie can check the name the
+//! operator typed against the task that would actually receive it. Nothing in
+//! this crate reads it back.
+//!
+//! 🚨 **Every attempt gets its own [`ControlPoint`], and that is why
+//! [`Fleet::sortie`] takes none.** A channel that outlives an attempt is a queue
+//! the *next* attempt drains: `check` latches the first stop it finds, so a verb
+//! that reached the channel a moment after its own attempt stopped reading would
+//! be honoured by whatever task the slot picked up next. That is the same
+//! mis-delivery the desk exists to prevent, one layer below where any desk can
+//! see it, so it is fixed here — the point is created per attempt and dropped
+//! with it.
 
 pub mod breaker;
 pub mod budget;
@@ -72,7 +95,7 @@ use abcc_core::event::Event;
 use abcc_core::seq::{AttemptId, TaskId, UnitId};
 use abcc_core::task::TaskState;
 use abcc_drive::{DriveError, Driver, Landed};
-use abcc_engine::control::ControlPoint;
+use abcc_engine::control::{ControlPoint, InFlight};
 use abcc_engine::provider::Provider;
 use abcc_engine::tools::Tier;
 use abcc_engine::turn::Limits;
@@ -81,6 +104,8 @@ use abcc_store::{Store, StoreError};
 use abcc_vcs::Repo;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Anything that stops the fleet before an attempt could be blamed for it.
 #[derive(Debug, thiserror::Error)]
@@ -115,6 +140,36 @@ pub enum Admission {
     HeldBack { task: TaskId, spent: u32 },
 }
 
+/// The operator's stand-down: **fly out what is in flight, then admit nothing
+/// more.**
+///
+/// 🚨 The one control verb whose scope is the sortie. Every other verb is the
+/// task's (ADR-0012 §4), and before this the only ways to end a sortie early were
+/// to stop the attempt that happened to be running — which throws away a landing
+/// nobody objected to — or `Ctrl-C`, which throws away the process.
+///
+/// ⚠ **It is not a stop and does not pretend to be one.** It is sampled once per
+/// loop, before admission, so an operator who also wants the attempt in flight
+/// stopped types `halt` as well; the two compose, and each says exactly what it
+/// does. Sampling it inside an attempt would make it a third thing that can end
+/// one, beside the [`ControlPoint`] and the budget.
+#[derive(Debug, Clone, Default)]
+pub struct StandDown(Arc<AtomicBool>);
+
+impl StandDown {
+    /// Stand the sortie down. Idempotent, and there is no way back: an operator
+    /// who changes their mind starts a sortie, which is one command.
+    pub fn order(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// Whether the operator has stood this sortie down.
+    #[must_use]
+    pub fn ordered(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// Where a sortie stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grounded {
@@ -122,6 +177,9 @@ pub enum Grounded {
     Quiet,
     /// The operator stopped an attempt, so the fleet stops too.
     Operator,
+    /// The operator stood the sortie down. Whatever was in flight was flown out
+    /// and landed normally; nothing after it was admitted.
+    StoodDown,
     /// A task was held back, which is a bug in the landing rather than a state
     /// the board should sit in. The sortie stops rather than looping on it.
     HeldBack { task: TaskId },
@@ -145,6 +203,8 @@ pub struct Fleet<'a> {
     limits: Limits,
     toolchain: Option<Toolchain>,
     ceiling: Tier,
+    in_flight: InFlight,
+    stand_down: StandDown,
 }
 
 impl<'a> Fleet<'a> {
@@ -172,6 +232,11 @@ impl<'a> Fleet<'a> {
             // The slot allows whatever a role asks for, so the effective ceiling
             // is the role's own and an operator who sets nothing sees no change.
             ceiling: Tier::Exec,
+            // Both default to a surface nobody is holding: a fleet with no
+            // console publishes where the slot is to nothing and is never stood
+            // down, which is what `abcc fleet` did before either existed.
+            in_flight: InFlight::default(),
+            stand_down: StandDown::default(),
         }
     }
 
@@ -211,6 +276,29 @@ impl<'a> Fleet<'a> {
     #[must_use]
     pub fn slot_ceiling(&self) -> Tier {
         self.ceiling
+    }
+
+    /// Publish which task holds the slot, for a console that spans the sortie.
+    ///
+    /// The fleet only ever writes to it. [`InFlight`] is read by the thing taking
+    /// the operator's verbs, so that a name typed while one task was flying
+    /// cannot be delivered to the next one; a fleet given none publishes to
+    /// nothing.
+    #[must_use]
+    pub fn in_flight(mut self, in_flight: InFlight) -> Fleet<'a> {
+        self.in_flight = in_flight;
+        self
+    }
+
+    /// Watch this flag before every admission.
+    ///
+    /// ⚠ The flag belongs to the caller, because the thing that raises it is the
+    /// console and the thing that reads it is this loop, and a flag owned by
+    /// either would have to be handed to the other anyway.
+    #[must_use]
+    pub fn stand_down(mut self, stand_down: StandDown) -> Fleet<'a> {
+        self.stand_down = stand_down;
+        self
     }
 
     /// What the fleet would run next, folded out of the log.
@@ -253,13 +341,29 @@ impl<'a> Fleet<'a> {
 
     /// Fly attempts until the board is quiet or the operator stops one.
     ///
+    /// ⚠ It takes no [`ControlPoint`]: a sortie makes one per attempt, for the
+    /// reason in this module's docs, and publishes each handle through
+    /// [`Fleet::in_flight`]. A caller that wants to reach a running attempt reads
+    /// it from there, which is also the only way to know which task it would
+    /// reach.
+    ///
     /// # Errors
     ///
     /// [`FleetError`] if the projection will not read or the driver could not run
     /// an attempt at all.
-    pub fn sortie(&mut self, control: &mut ControlPoint) -> Result<Sortie> {
+    pub fn sortie(&mut self) -> Result<Sortie> {
         let mut flown = Vec::new();
         loop {
+            // 🚨 Before admission, which is the whole of what a stand-down is: it
+            // does not reach into an attempt, so the one that was in flight when
+            // the operator typed it has already landed by the time this is read.
+            if self.stand_down.ordered() {
+                return Ok(Sortie {
+                    flown,
+                    grounded: Grounded::StoodDown,
+                });
+            }
+
             let (task, cause) = match self.admit()? {
                 Admission::Run { task, cause } => (task, cause),
                 Admission::Quiet => {
@@ -304,7 +408,16 @@ impl<'a> Fleet<'a> {
             if let Some(toolchain) = &self.toolchain {
                 driver = driver.toolchain(*toolchain);
             }
-            let landed = driver.run(task, self.unit, cause, control)?;
+            // 🚨 This attempt's own channel, published before it starts and
+            // dropped when it ends. ⚠ The release is **not** behind `?`: a
+            // `driver.run` that fails leaves the slot empty just as surely as one
+            // that lands, and an `InFlight` still naming a dead task would take a
+            // poke and report it as delivered.
+            let (mut control, handle) = ControlPoint::new();
+            self.in_flight.takes(task, handle);
+            let ran = driver.run(task, self.unit, cause, &mut control);
+            self.in_flight.released();
+            let landed = ran?;
 
             // `None` is the operator's ending, and it is the one thing a sortie
             // does not fly past.

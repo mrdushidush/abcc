@@ -10,19 +10,31 @@
 //! ⚠ The model is scripted and the toolchain is not configured, so no rung runs
 //! and no `cargo` is spawned. What is under test is the fleet's arithmetic and
 //! the state machine underneath it — `abcc-gate` is where the rungs are.
+//!
+//! 🚨 The operator's two surfaces are exercised **through `InFlight`**, which is
+//! how a console reaches a sortie, rather than by pre-loading a channel. That is
+//! not decoration: a sortie makes a fresh `ControlPoint` per attempt precisely so
+//! that a verb cannot outlive the attempt it was for, and a test holding one
+//! channel across the whole sortie could not tell that design from the one it
+//! replaced.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as OsCommand;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
 use abcc_core::event::Event;
 use abcc_core::seq::{MissionId, Seq, TaskId};
 use abcc_core::task::TaskState;
-use abcc_engine::control::ControlPoint;
+use abcc_engine::control::{Delivery, InFlight};
+use abcc_engine::provider::{
+    ApiRequest, Provider, ProviderClass, ProviderError, ProviderId, TurnStream,
+};
 use abcc_engine::scripted::{Script, Scripted};
 use abcc_engine::{Head, Tier};
-use abcc_fleet::{Admission, Fleet, Grounded, budget};
+use abcc_fleet::{Admission, Fleet, Grounded, StandDown, budget};
 use abcc_store::Store;
 use abcc_vcs::Repo;
 
@@ -185,7 +197,6 @@ fn a_task_that_keeps_producing_an_absence_gets_two_attempts_and_then_a_person() 
 
     let provider = Scripted::new(absences(2));
 
-    let (mut control, _handle) = ControlPoint::new();
     let sortie = {
         let mut fleet = Fleet::new(
             &mut store,
@@ -194,7 +205,7 @@ fn a_task_that_keeps_producing_an_absence_gets_two_attempts_and_then_a_person() 
             MODEL,
             subject.worktrees.clone(),
         );
-        fleet.sortie(&mut control).expect("sortie")
+        fleet.sortie().expect("sortie")
     };
 
     assert_eq!(sortie.grounded, Grounded::Quiet);
@@ -259,7 +270,6 @@ fn a_queued_task_whose_budget_is_gone_grounds_the_sortie_instead_of_looping() {
     let repo = Repo::open(&subject.root).expect("open");
 
     let provider = Scripted::new(absences(2));
-    let (mut control, _handle) = ControlPoint::new();
     {
         let mut fleet = Fleet::new(
             &mut store,
@@ -268,7 +278,7 @@ fn a_queued_task_whose_budget_is_gone_grounds_the_sortie_instead_of_looping() {
             MODEL,
             subject.worktrees.clone(),
         );
-        fleet.sortie(&mut control).expect("sortie");
+        fleet.sortie().expect("sortie");
     }
 
     // Put it back on the board behind the fleet's back, which is what a landing
@@ -282,7 +292,6 @@ fn a_queued_task_whose_budget_is_gone_grounds_the_sortie_instead_of_looping() {
     assert_eq!(state(&store, task), TaskState::Queued);
 
     let provider = Scripted::new(absences(1));
-    let (mut control, _handle) = ControlPoint::new();
     let sortie = {
         let mut fleet = Fleet::new(
             &mut store,
@@ -291,7 +300,7 @@ fn a_queued_task_whose_budget_is_gone_grounds_the_sortie_instead_of_looping() {
             MODEL,
             subject.worktrees.clone(),
         );
-        fleet.sortie(&mut control).expect("sortie")
+        fleet.sortie().expect("sortie")
     };
 
     assert_eq!(sortie.grounded, Grounded::HeldBack { task });
@@ -326,7 +335,6 @@ fn one_slot_takes_the_tasks_in_turn_and_each_gets_its_own_budget() {
     // Two tasks × two attempts.
     let provider = Scripted::new(absences(4));
 
-    let (mut control, _handle) = ControlPoint::new();
     let sortie = {
         let mut fleet = Fleet::new(
             &mut store,
@@ -335,7 +343,7 @@ fn one_slot_takes_the_tasks_in_turn_and_each_gets_its_own_budget() {
             MODEL,
             subject.worktrees.clone(),
         );
-        fleet.sortie(&mut control).expect("sortie")
+        fleet.sortie().expect("sortie")
     };
 
     assert_eq!(sortie.grounded, Grounded::Quiet);
@@ -366,6 +374,10 @@ fn one_slot_takes_the_tasks_in_turn_and_each_gets_its_own_budget() {
 /// first stop and keeps it. The sortie reads the first. ⚠ If it read neither, the
 /// latch would silently stop *every* remaining attempt, and a fleet that flew on
 /// through a halt would be deciding it had not been stopped.
+///
+/// ⚠ The halt is delivered the way a console delivers one — named, through
+/// `InFlight`, while the attempt is running — because that path and the name
+/// check in it are the thing being trusted.
 #[test]
 fn an_operators_halt_grounds_the_whole_sortie_and_not_just_the_attempt() {
     let subject = subject();
@@ -374,11 +386,17 @@ fn an_operators_halt_grounds_the_whole_sortie_and_not_just_the_attempt() {
     let second = seed(&mut store, "and again");
     let repo = Repo::open(&subject.root).expect("open");
 
-    let provider = Scripted::new(absences(4));
-    let (mut control, handle) = ControlPoint::new();
-    handle
-        .request(abcc_core::event::Control::Halt)
-        .expect("request");
+    let in_flight = InFlight::default();
+    let provider = OnFirstCall::new(absences(4), {
+        let in_flight = in_flight.clone();
+        move || {
+            assert_eq!(
+                in_flight.deliver(first, abcc_core::event::Control::Halt),
+                Delivery::Sent,
+                "the slot was not on the task the operator named"
+            );
+        }
+    });
 
     let sortie = {
         let mut fleet = Fleet::new(
@@ -387,8 +405,9 @@ fn an_operators_halt_grounds_the_whole_sortie_and_not_just_the_attempt() {
             &provider,
             MODEL,
             subject.worktrees.clone(),
-        );
-        fleet.sortie(&mut control).expect("sortie")
+        )
+        .in_flight(in_flight.clone());
+        fleet.sortie().expect("sortie")
     };
 
     assert_eq!(sortie.grounded, Grounded::Operator);
@@ -406,6 +425,254 @@ fn an_operators_halt_grounds_the_whole_sortie_and_not_just_the_attempt() {
         "{:?}",
         state(&store, first)
     );
+
+    // ⚠ And the slot is empty afterwards. A stale entry would take a later verb
+    // and report it as delivered to a worker that is not there.
+    assert_eq!(in_flight.flying(), None);
+}
+
+// ---------------------------------------------------------------------------
+// The operator's two fleet-level surfaces
+// ---------------------------------------------------------------------------
+
+/// 🚨 **`ground`: fly out what is in flight, then admit nothing more.**
+///
+/// The flag is raised during the first attempt's first model call, which is the
+/// only place a synchronous test can stand in for an operator typing while
+/// something runs. The attempt therefore lands *normally* — the assertions below
+/// are that it did, and that the second task was never admitted.
+///
+/// ⚠ This is the stop that did not exist. Before it, ending a sortie early meant
+/// killing an attempt nobody objected to, or `Ctrl-C`.
+#[test]
+fn a_stand_down_lets_the_attempt_in_flight_land_and_admits_nothing_after_it() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let first = seed(&mut store, "one returns two");
+    let second = seed(&mut store, "and again");
+    let repo = Repo::open(&subject.root).expect("open");
+
+    let stand_down = StandDown::default();
+    let provider = OnFirstCall::new(absences(4), {
+        let stand_down = stand_down.clone();
+        move || stand_down.order()
+    });
+
+    let sortie = {
+        let mut fleet = Fleet::new(
+            &mut store,
+            &repo,
+            &provider,
+            MODEL,
+            subject.worktrees.clone(),
+        )
+        .stand_down(stand_down);
+        fleet.sortie().expect("sortie")
+    };
+
+    assert_eq!(sortie.grounded, Grounded::StoodDown);
+    assert_eq!(
+        sortie.flown.len(),
+        1,
+        "it admitted something after the order"
+    );
+
+    // 🚨 The attempt landed on its own terms. A stand-down that reached into the
+    // attempt would show here as `next: None` and a `Holding` task, which is what
+    // `halt` does and what this deliberately does not.
+    assert!(
+        sortie.flown[0].next.is_some(),
+        "the stand-down ended the attempt instead of letting it land"
+    );
+    assert_eq!(
+        state(&store, first),
+        TaskState::Queued,
+        "the task did not land back on the board"
+    );
+    assert_eq!(causes(&store, first).len(), 1);
+    assert_eq!(
+        causes(&store, second).len(),
+        0,
+        "the second task was admitted"
+    );
+}
+
+/// A sortie stood down before it starts flies nothing at all, and says so.
+#[test]
+fn a_sortie_stood_down_before_it_starts_admits_nothing() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    seed(&mut store, "one returns two");
+    let repo = Repo::open(&subject.root).expect("open");
+
+    let provider = Scripted::new(absences(2));
+    let stand_down = StandDown::default();
+    stand_down.order();
+
+    let sortie = {
+        let mut fleet = Fleet::new(
+            &mut store,
+            &repo,
+            &provider,
+            MODEL,
+            subject.worktrees.clone(),
+        )
+        .stand_down(stand_down);
+        fleet.sortie().expect("sortie")
+    };
+
+    assert_eq!(sortie.grounded, Grounded::StoodDown);
+    assert!(sortie.flown.is_empty());
+    assert_eq!(provider.remaining(), 4, "a model call was made");
+}
+
+/// 🚨 **A verb for the task that just landed does not reach the task that
+/// followed it.**
+///
+/// This is the property the whole design turns on, and it is a property of the
+/// *channel* rather than of any desk: a point that outlived its attempt would be
+/// a queue the next attempt drains, and `check` latches the first stop it finds.
+/// So the verb is sent late — during the **second** task's attempt, naming the
+/// **first** — and the assertion is that nothing happened to either.
+#[test]
+fn a_verb_for_a_landed_task_is_refused_rather_than_delivered_to_the_next_one() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let first = seed(&mut store, "one returns two");
+    let second = seed(&mut store, "and again");
+    let repo = Repo::open(&subject.root).expect("open");
+
+    // Four attempts: two for each task. The verb goes out on the third call,
+    // which is the first attempt of the *second* task.
+    let in_flight = InFlight::default();
+    let seen = Arc::new(AtomicUsize::new(0));
+    // ⚠ The refusal is counted, not just asserted. Everything else this test
+    // checks is also true of a run where the verb was never sent — four attempts,
+    // a quiet ending, both tasks in front of a person — so without this the whole
+    // test passes whether or not the hook ever fired at the call it names.
+    let refused = Arc::new(AtomicUsize::new(0));
+    let provider = OnEveryCall::new(absences(4), {
+        let in_flight = in_flight.clone();
+        let seen = Arc::clone(&seen);
+        let refused = Arc::clone(&refused);
+        move || {
+            if seen.fetch_add(1, Ordering::SeqCst) == 2 {
+                assert_eq!(
+                    in_flight.deliver(first, abcc_core::event::Control::Kill),
+                    Delivery::NotFlying {
+                        flying: Some(second)
+                    },
+                    "a verb for a landed task was accepted while another was flying"
+                );
+                refused.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+
+    let sortie = {
+        let mut fleet = Fleet::new(
+            &mut store,
+            &repo,
+            &provider,
+            MODEL,
+            subject.worktrees.clone(),
+        )
+        .in_flight(in_flight);
+        fleet.sortie().expect("sortie")
+    };
+
+    // Nothing was stopped: all four attempts flew, and both tasks ended in front
+    // of a person because their budgets ran out rather than because of the verb.
+    assert_eq!(
+        refused.load(Ordering::SeqCst),
+        1,
+        "the verb was never sent, so this test proved nothing ({} calls seen)",
+        seen.load(Ordering::SeqCst)
+    );
+    assert_eq!(sortie.grounded, Grounded::Quiet);
+    assert_eq!(sortie.flown.len(), 4);
+    assert!(
+        matches!(state(&store, second), TaskState::AwaitingOrders { .. }),
+        "the second task took a verb addressed to the first: {:?}",
+        state(&store, second)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A provider that does something while an attempt is running
+// ---------------------------------------------------------------------------
+
+/// 🚨 **The operator, standing in for themselves.** A console types while an
+/// attempt is running, and a synchronous test has exactly one place it can do
+/// the same thing: inside the provider, on the way to a turn.
+///
+/// ⚠ Without this the timing has to be guessed from another thread, and a test
+/// that races the thing it is measuring reports the race.
+struct OnFirstCall {
+    inner: Scripted,
+    once: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl OnFirstCall {
+    fn new(scripts: Vec<Script>, act: impl FnOnce() + Send + 'static) -> OnFirstCall {
+        OnFirstCall {
+            inner: Scripted::new(scripts),
+            once: Mutex::new(Some(Box::new(act))),
+        }
+    }
+}
+
+impl Provider for OnFirstCall {
+    fn id(&self) -> ProviderId {
+        self.inner.id()
+    }
+
+    fn class(&self) -> ProviderClass {
+        self.inner.class()
+    }
+
+    fn start(
+        &self,
+        req: &ApiRequest<'_>,
+    ) -> std::result::Result<Box<dyn TurnStream>, ProviderError> {
+        if let Some(act) = self.once.lock().expect("lock").take() {
+            act();
+        }
+        self.inner.start(req)
+    }
+}
+
+/// The same, on every call, so a test can pick which one it acts at.
+struct OnEveryCall {
+    inner: Scripted,
+    act: Box<dyn Fn() + Send + Sync>,
+}
+
+impl OnEveryCall {
+    fn new(scripts: Vec<Script>, act: impl Fn() + Send + Sync + 'static) -> OnEveryCall {
+        OnEveryCall {
+            inner: Scripted::new(scripts),
+            act: Box::new(act),
+        }
+    }
+}
+
+impl Provider for OnEveryCall {
+    fn id(&self) -> ProviderId {
+        self.inner.id()
+    }
+
+    fn class(&self) -> ProviderClass {
+        self.inner.class()
+    }
+
+    fn start(
+        &self,
+        req: &ApiRequest<'_>,
+    ) -> std::result::Result<Box<dyn TurnStream>, ProviderError> {
+        (self.act)();
+        self.inner.start(req)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +695,6 @@ fn a_capped_slot_reaches_the_request_the_provider_is_handed() {
     let repo = Repo::open(&subject.root).expect("open");
 
     let provider = Scripted::new(absences(2));
-    let (mut control, _handle) = ControlPoint::new();
     {
         let mut fleet = Fleet::new(
             &mut store,
@@ -439,7 +705,7 @@ fn a_capped_slot_reaches_the_request_the_provider_is_handed() {
         )
         .ceiling(Tier::Read);
         assert_eq!(fleet.slot_ceiling(), Tier::Read);
-        fleet.sortie(&mut control).expect("sortie");
+        fleet.sortie().expect("sortie");
     }
 
     let seen = provider.seen();
@@ -493,7 +759,6 @@ fn an_unset_ceiling_changes_nothing() {
     let repo = Repo::open(&subject.root).expect("open");
 
     let provider = Scripted::new(absences(2));
-    let (mut control, _handle) = ControlPoint::new();
     {
         let mut fleet = Fleet::new(
             &mut store,
@@ -503,7 +768,7 @@ fn an_unset_ceiling_changes_nothing() {
             subject.worktrees.clone(),
         );
         assert_eq!(fleet.slot_ceiling(), Tier::Exec);
-        fleet.sortie(&mut control).expect("sortie");
+        fleet.sortie().expect("sortie");
     }
 
     for call in provider.seen() {

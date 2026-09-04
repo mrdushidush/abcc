@@ -40,11 +40,12 @@
 //! the channel is still honoured, and one that reaches the channel and not the
 //! log never happened.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use abcc_core::event::Control;
+use abcc_core::seq::TaskId;
 
 /// How soon a verb takes effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +158,116 @@ impl Watch {
     #[must_use]
     pub fn interrupted(&self) -> bool {
         self.0.as_ref().is_some_and(|f| f.load(Ordering::Acquire))
+    }
+}
+
+/// Which task the slot is on, and the channel that reaches it.
+///
+/// 🚨 **A sortie moves between tasks and a console does not move with it.** One
+/// slot means one worker at a time, so a console spanning a sortie needs exactly
+/// two things it cannot get from a [`ControlHandle`] alone: *which* task would
+/// receive a verb, and a guarantee that the answer cannot change between being
+/// read and being acted on. Without them a fleet desk has two ways to be wrong
+/// and no way to be right — bound to the task it opened on it sends verbs to
+/// something that landed several attempts ago, and bound to whatever is in
+/// flight when the operator presses enter it sends them to a task the operator
+/// was never looking at.
+///
+/// This is the third answer. **The operator names the task; the name is checked
+/// and the verb sent under one lock; a name that no longer matches is refused
+/// rather than redirected.** The one thing worse than a verb that misses is a
+/// verb that lands somewhere else.
+///
+/// # 🚨 The handle is republished per attempt, and that is load-bearing
+///
+/// A channel that outlives an attempt is a queue a *later* attempt drains.
+/// [`ControlPoint::check`] latches the first stop it finds, so a verb that
+/// reached the channel after its own attempt stopped reading would be honoured
+/// by the next task the slot picks up — the same mis-delivery, one layer down,
+/// and no amount of care at the desk can see it. So the dispatcher hands a fresh
+/// [`ControlPoint`] to every attempt and publishes its handle here, and the
+/// previous one is dropped with the attempt that owned it.
+///
+/// ⚠ This is a fact about the present, not a record. The record is the
+/// `ControlRequested` row, written against the task the operator named whether
+/// or not this agrees — a desk that logged only what it managed to deliver would
+/// lose the verb that arrived one moment too late, which is the verb an operator
+/// most wants to find afterwards.
+#[derive(Debug, Clone, Default)]
+pub struct InFlight(Arc<Mutex<Option<Flying>>>);
+
+#[derive(Debug, Clone)]
+struct Flying {
+    task: TaskId,
+    handle: ControlHandle,
+}
+
+/// What became of a verb addressed to a named task. All three are ordinary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// The slot was on that task and its worker took the poke.
+    Sent,
+    /// The slot was on that task and the worker had already finished. The
+    /// ordinary race, and the durable row is what makes it recoverable.
+    Gone,
+    /// 🚨 The slot was **not** on that task, so nothing was poked. The verb was
+    /// not quietly re-aimed at whatever is flying instead, and `flying` says what
+    /// that was so the operator can be told rather than guess.
+    NotFlying { flying: Option<TaskId> },
+}
+
+impl InFlight {
+    /// The slot has taken this task, on this channel.
+    ///
+    /// Called by whatever dispatches an attempt, immediately before it starts,
+    /// with the handle of the [`ControlPoint`] that attempt is about to use.
+    pub fn takes(&self, task: TaskId, handle: ControlHandle) {
+        *self.locked() = Some(Flying { task, handle });
+    }
+
+    /// The slot is empty.
+    ///
+    /// Called on **every** way out of an attempt, the failures included: a stale
+    /// entry here would take a poke and report it as delivered to a worker that
+    /// is not there.
+    pub fn released(&self) {
+        *self.locked() = None;
+    }
+
+    /// The task the slot is on right now, if any.
+    #[must_use]
+    pub fn flying(&self) -> Option<TaskId> {
+        self.locked().as_ref().map(|f| f.task)
+    }
+
+    /// Send a verb to `task`, and to no other task.
+    ///
+    /// 🚨 The check and the send are one critical section on purpose. Asking
+    /// [`InFlight::flying`] and then poking a handle is the same race in slow
+    /// motion: the attempt can land and the next one start in between, and the
+    /// verb arrives at a task the operator never named.
+    #[must_use]
+    pub fn deliver(&self, task: TaskId, control: Control) -> Delivery {
+        let held = self.locked();
+        let Some(flying) = held.as_ref() else {
+            return Delivery::NotFlying { flying: None };
+        };
+        if flying.task != task {
+            return Delivery::NotFlying {
+                flying: Some(flying.task),
+            };
+        }
+        match flying.handle.request(control) {
+            Ok(()) => Delivery::Sent,
+            Err(Gone) => Delivery::Gone,
+        }
+    }
+
+    /// A poisoned lock is not a reason to lose the answer: this guards one
+    /// `Option` and there is no invariant across it to have been left half
+    /// written.
+    fn locked(&self) -> std::sync::MutexGuard<'_, Option<Flying>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
