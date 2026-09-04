@@ -36,6 +36,7 @@ pub mod confirm;
 pub mod desk;
 pub mod feed;
 pub mod fleet;
+pub mod fun;
 pub mod home;
 pub mod ops;
 mod paint;
@@ -116,6 +117,7 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
         Command::Where => ops::show_where(invocation, out),
         Command::Task { prompt, title } => ops::task(invocation, prompt, title.as_deref(), out),
         Command::Board => ops::board(invocation, out),
+        Command::Fun => fun::report(invocation, out),
         Command::Run(run) => run::attempt(invocation, run, out),
         Command::Fleet(args) => fleet::sortie(invocation, args, out),
         Command::Breaker { model, base_url } => {

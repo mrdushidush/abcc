@@ -35,10 +35,13 @@ pub const FEED_LINES: usize = 512;
 
 /// W5's bar, in milliseconds: **no gap over ten seconds goes unmarked**.
 ///
-/// ADR-0012 §5 calls this the single most actionable line in W5. The harness once
-/// sat silent for forty minutes — 240× the attention limit — and could not tell
-/// that from a hang. The reader cannot fix the silence; it can refuse to hide it.
-pub const SILENCE_BAR_MS: i64 = 10_000;
+/// 🚨 Re-exported from [`abcc_core::fun`] rather than spelled again here. The
+/// reader and the query that grades the reader must not be able to disagree
+/// about where the bar is — two constants that have to match are two constants
+/// that eventually will not, which is ADR-0012's own argument for one `seq`.
+///
+/// The reader cannot fix the silence; it can refuse to hide it.
+pub use abcc_core::fun::SILENCE_BAR_MS;
 
 /// A task as the reader has folded it.
 #[derive(Debug, Clone, PartialEq, Eq)]

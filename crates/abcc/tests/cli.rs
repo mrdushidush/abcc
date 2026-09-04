@@ -273,7 +273,7 @@ fn review_needs_both_the_change_and_the_minutes() {
 fn every_verb_the_parser_accepts_is_in_the_usage_text() {
     // A command that parses and is not in `--help` is a command nobody finds.
     for verb in [
-        "where", "task", "board", "run", "watch", "check", "review", "accept", "reject",
+        "where", "task", "board", "fun", "run", "watch", "check", "review", "accept", "reject",
     ] {
         // The verb is known to the parser: whatever else it complains about, it
         // never complains that this is not a command.

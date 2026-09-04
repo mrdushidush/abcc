@@ -32,6 +32,13 @@ pub enum Command {
     },
     /// The board, from the projection.
     Board,
+    /// ADR-0012 §5's six queries, folded over the log.
+    ///
+    /// ⚠ Three of the six have no instrument and say so. They ask what the
+    /// operator did at the console, and the console is a reader that does not
+    /// depend on the store — so counting them is an ADR-level change and not a
+    /// missing `match` arm.
+    Fun,
     /// One attempt, end to end.
     Run(Box<Run>),
     /// Attempts until the board is quiet, on one slot.
@@ -138,6 +145,7 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc where                          where this repository's log and worktrees are
   abcc task <prompt> [--title T]      put a task on the board
   abcc board                          the board, from the projection
+  abcc fun                            ADR-0012 §5's six queries, over the log
   abcc run [--task t42] [options]     run one attempt on a queued task
   abcc fleet [options]                attempts until the board is quiet, one slot
   abcc watch [--theme command|classic]  the reader, over the log alone
@@ -210,6 +218,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
     let command = match verb.as_str() {
         "where" => Command::Where,
         "board" => Command::Board,
+        "fun" => {
+            no_positionals(&args, "fun")?;
+            Command::Fun
+        }
         "task" => {
             let title = take_flag(&mut args, "--title")?;
             let prompt = one_positional(&args, "task", "a prompt")?;

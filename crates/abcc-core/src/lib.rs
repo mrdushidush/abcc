@@ -29,6 +29,7 @@
 
 pub mod attempt;
 pub mod event;
+pub mod fun;
 pub mod outcome;
 pub mod run;
 pub mod seq;
@@ -36,6 +37,7 @@ pub mod task;
 
 pub use attempt::{Attempt, AttemptOutcome, Cause, NextAction};
 pub use event::{CallShape, Composition, Control, Event, Finish, Logged, TraceSignal, Usage};
+pub use fun::{Answer, Fun, Missing, Verdict};
 pub use outcome::{Claim, Counts, Headline, Measurement, Outcome, Report, Why};
 pub use run::{AttemptPhase, DowngradeReason, MissionPhase, Mode};
 pub use seq::{AttemptId, CheckpointId, MissionId, PromptId, Seq, TaskId, UnitId};
