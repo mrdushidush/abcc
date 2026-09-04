@@ -16,23 +16,32 @@
 //! the phase: *a reviewer that produces findings nobody can act on costs the
 //! operator the minutes W13 grades this project on.*
 //!
-//! **121 trees in three populations**, and they ask three different questions —
+//! **193 trees in three populations**, and they ask three different questions —
 //! see [`population`]:
 //!
-//! * **59 `wrong`.** The 35 the ladder called `Green` are the case the Judge
+//! * **83 `wrong`.** The 59 the ladder called `Green` are the case the Judge
 //!   exists for: the donor's visible tests are happy-path and a wrong answer
 //!   passes them on purpose, so the deterministic gate accepts them and the
 //!   hidden reviewer tests reject them. **A finding there is the phase earning
 //!   its place.** The 13 it refused are **F521**'s population — on the first
 //!   live review of a refused tree the champion spent finding 1 of 2 restating
 //!   the rung it had just been shown, which is volume with no information in it.
-//! * **3 `sham`.** The corpus's own tempting local fix. Every rung passes and the
-//!   answer key still fails it, so here the Judge is not a second opinion — it is
-//!   the only opinion there is.
-//! * **59 `correct`.** 🚨 **A finding here is a candidate false positive.** The
+//! * **27 `sham`.** The corpus's own tempting local fix, 3 from K and 24 from OD.
+//!   Every rung passes on all 27 and the answer key still fails them, so here the
+//!   Judge is not a second opinion — it is the only opinion there is.
+//! * **83 `correct`.** 🚨 **A finding here is a candidate false positive.** The
 //!   falsifier is whether these reports are worth an operator's minutes, and a
 //!   reviewer that finds something on a tree that is fine spends them for
 //!   nothing. It cannot fail one — the headline was computed before this ran.
+//!
+//! 🚨 **The OD suite carries a fourth question the other two cannot ask**, and it
+//! is not visible in the population column: each of its shams has a
+//! `[donor_tags].shape` of `outside_cover`, `outside_file` or `inside`, 8 each.
+//! The first two put the defect outside the diff the reviewer is shown; the third
+//! puts it inside, with the scope complete, and is the control. Any claim that an
+//! instruction made a reviewer see past a patch has to survive the `inside`
+//! third — see `corpus/suites/od/README.md`, and
+//! `research/GATE-P4-the-scope-sentence.md` for why n = 3 was not enough.
 //!
 //! ⚠ **Recall is not scored automatically and neither is precision.**
 //! `verify.sh` grades a *tree* and a reviewer's prose is not a tree, so what is
@@ -308,14 +317,15 @@ fn verdict(headline: &Headline) -> &'static str {
 ///
 /// * **`wrong`** — a first attempt that is wrong. *Did the reviewer see it?*
 /// * **`sham`** — the corpus's own tempting local fix, which fixes the symptom
-///   the ticket named. Only the K suite ships one, so there are 3. *Did the
-///   reviewer see past it?*
+///   the ticket named. K ships 3 and OD ships 24, so there are 27, and OD's
+///   carry a `shape` that says WHERE the defect is relative to the patch.
+///   *Did the reviewer see past it?*
 /// * **`correct`** — the answer key's right answer. 🚨 **A finding here is a
 ///   candidate false positive**, and that is the number the exit criterion's
 ///   second clause actually needs: the falsifier is whether these reports are
 ///   worth an operator's minutes, and a reviewer that finds something on a tree
 ///   that is fine spends them for nothing. ADR-0008's **1 of 34** is borrowed
-///   from Phase 1; 48 correct trees is this project's own.
+///   from Phase 1; 83 correct trees is this project's own.
 fn population(slug: &str) -> &'static str {
     if slug.ends_with("-correct") {
         "correct"

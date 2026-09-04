@@ -9,8 +9,9 @@
 //!
 //! # What the corpora are, and why they need no model call
 //!
-//! `corpus/suites/q56` (56 tasks, five languages) and `corpus/suites/k` (3 tasks,
-//! real multi-file python projects) each ship, per task:
+//! `corpus/suites/q56` (56 tasks, five languages), `corpus/suites/k` (3 tasks,
+//! real multi-file python projects) and `corpus/suites/od` (24 tasks, authored
+//! 2026-09-04) each ship, per task:
 //!
 //! ```text
 //! prompt.txt   the task in a user's voice, verbatim from the donor
@@ -18,11 +19,34 @@
 //! verify.sh    THE ANSWER KEY — hidden reviewer tests, written in at grade time
 //! fixture/     a tree that is already a WRONG answer
 //! refsol/      the solution file(s) of a RIGHT one — a partial overlay, not a tree
+//! sham/        the tempting LOCAL wrong answer — K and OD only
 //! ```
 //!
 //! So the answer key is on disk and both halves of the measurement are free of a
 //! model: `fixture` is the wrong tree and `fixture` overlaid with `refsol` is the
-//! right one. **59 tasks, 118 measured trees.**
+//! right one. **83 tasks; 83 correct, 83 wrong and 27 sham trees.**
+//!
+//! # The OD suite, and why it is not more of the same
+//!
+//! `suites/od` was authored for one question `research/GATE-P4-the-scope-sentence.md`
+//! could not answer with three shams: **does a reviewer notice a defect that lies
+//! outside the diff it is shown?** Its design rule is that the sham's defect must
+//! be *unreachable from the patch alone and reachable from the patch plus the
+//! ticket*, and it carries three shapes, eight tasks each, in
+//! `[donor_tags].shape`:
+//!
+//! * `outside_cover` — the sham patches a **strict subset** of `refsol`'s files.
+//! * `outside_file` — the sham patches a **different file** from `refsol`.
+//! * `inside` — the sham patches **the same file**, scope complete, logic wrong.
+//!   🚨 This third is the control. A switch that fires here as often as on the
+//!   other two thirds is producing volume, not scope.
+//!
+//! 🚨 **Every OD tree is `Green`: 24 correct, 24 wrong and 24 sham, measured.**
+//! That is the design and not an accident — a sham the ladder refuses is a tree
+//! whose reviewer is shown a red rung, and the tier exists to put the Judge on
+//! trees where it is the only opinion there is. It also means **the OD third of
+//! this population contributes nothing to the false-fail count** and everything
+//! to the Judge's.
 //!
 //! ⚠ `refsol/` is an **overlay**. It carries no `Cargo.toml` and never the test
 //! file. *After* is `fixture` copied and then overwritten by `refsol`'s files —
@@ -67,16 +91,24 @@
 //!    them: `bash` on PATH here is the WSL relay and it fails at exit 1 (F492),
 //!    so declaring one would manufacture false fails on eight correct trees,
 //!    which is the exact quantity this file exists to count.
+//! 3. 🚨 **`NothingToRun` is ELEVEN, not eight**, and this comment said eight for
+//!    two milestones. The other three are `q56/Q05`, `Q11` and `Q52`: rust trees
+//!    with a `Cargo.toml`, on which `cargo test` runs and reports *0 passed; 0
+//!    failed*, because the fixture has no test function. That is the rung being
+//!    honest about a tree with nothing in it to run — and it means a shell task
+//!    is not the only way to land there. The stored `correct.tsv` from the
+//!    Acceptance-C run says `UNVERIFIED` on all three, so the number was always
+//!    11 and only the prose was 8. [[verify-claims-against-code-not-docs]]
 //!
 //! # The profiles, and why they live here
 //!
-//! [`Toolchain::detect`] finds a profile on **14 of the 59 trees**: there is no
+//! [`Toolchain::detect`] finds a profile on **14 of the 83 trees**: there is no
 //! `pyproject.toml`, `pytest.ini`, `package.json` or `clippy.toml` anywhere in
-//! either corpus, and the only witness that exists is `Cargo.toml`, in the 14
-//! rust fixtures. The other 45 would land `Unmeasured { NoCheckerForArtifact }`,
-//! which is the type being honest and is **not** a false fail — but it is not a
-//! measurement either, and a run that produces 45 shrugs has not met the exit
-//! criterion.
+//! any of the three corpora, and the only witness that exists is `Cargo.toml`,
+//! in the 14 rust fixtures. The other 69 would land
+//! `Unmeasured { NoCheckerForArtifact }`, which is the type being honest and is
+//! **not** a false fail — but it is not a measurement either, and a run that
+//! produces 69 shrugs has not met the exit criterion.
 //!
 //! The fix needs no new mechanism: [`Gate::with_toolchain`] already takes an
 //! operator-configured profile, and this file builds one per `task.toml`'s
@@ -265,7 +297,13 @@ fn tasks() -> Vec<Task> {
     let suites = corpus_root();
     let only = env::var("ABCC_CORPUS_ONLY").unwrap_or_default();
     let mut out = Vec::new();
-    for suite in ["q56", "k"] {
+    // ⚠ `u40` and `u100` are on disk and are deliberately not here. `u40` is
+    // complete — 40 refsol, 40 verify.sh — and would add 80 trees for one line,
+    // but every one of its tasks is single-file, so it cannot host a defect
+    // outside its own diff and adds nothing the `od` suite was built for.
+    // `u100` ships one `refsol/` in 90 tasks. Adding either is a decision about
+    // breadth, and a separate one.
+    for suite in ["q56", "k", "od"] {
         let dir = suites.join(suite).join("tasks");
         let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("{} is not readable: {e}", dir.display()))
@@ -564,9 +602,14 @@ struct Row {
 ///
 /// ⚠ `Unverified` is neither a pass nor a fail — `Headline::is_pass` is `Green`
 /// and nothing else — so the table counts the three separately and the summary
-/// says how much of the population was measurable at all. A criterion met by 51
-/// greens and 8 shrugs is a different sentence from one met by 59 greens, and
+/// says how much of the population was measurable at all. A criterion met by 72
+/// greens and 11 shrugs is a different sentence from one met by 83 greens, and
 /// collapsing them is the vacuity this file exists to escape.
+///
+/// **Measured 2026-09-04 over 83 tasks: 72 `Green`, 0 `Red`, 11 `Unverified`.**
+/// ⚠ The 11 are the 8 shell tasks plus `Q05`, `Q11` and `Q52` — see point 3 of
+/// the module docs; this doc comment said *51 greens and 8 shrugs* while the
+/// stored `correct.tsv` beside it said 48 and 11.
 #[test]
 #[ignore = "needs the corpora on disk and a cold build per rust tree"]
 fn the_gate_refuses_no_correct_tree_the_corpora_ship() {
@@ -729,12 +772,11 @@ fn what_the_ladder_says_about_the_wrong_trees_the_corpora_ship() {
 /// 🚨 **The shams — `fixture` → `fixture`+`sham`, and this is the tier the whole
 /// argument turns on.**
 ///
-/// Only the K suite ships one (`point3 = "sound"` there, `"not_run"` in Q56), so
-/// it is **3 trees**. They are worth their own test anyway, because a sham is
-/// neither of the other two things: it is not a stub and it is not a naive first
-/// attempt, it is **the tempting local wrong answer** — a change that fixes the
-/// symptom the ticket reported and leaves the defect. The corpus says so in its
-/// own words:
+/// K and OD ship them (`point3 = "sound"` in both, `"not_run"` in Q56), so it is
+/// **27 trees: 3 and 24.** A sham is neither of the other two things: it is not a
+/// stub and it is not a naive first attempt, it is **the tempting local wrong
+/// answer** — a change that fixes the symptom the ticket reported and leaves the
+/// defect. The corpus says so in its own words:
 ///
 /// * `finish_the_cancelled_status` — *"fixing `sla.py` alone … fixes exactly what
 ///   the ticket described — SLA breaches drop from 6 to 2 — and leaves the
@@ -754,9 +796,17 @@ fn what_the_ladder_says_about_the_wrong_trees_the_corpora_ship() {
 /// ⚠ There is no assertion, for the wrong half's reason. A `Green` here is the
 /// deterministic ladder accepting a change the answer key rejects, and it is
 /// expected: the sham passes the visible tests, which is what makes it tempting.
+///
+/// **Measured 2026-09-04: 27 of 27 `Green`, 0 `Red`.** So on every sham tree in
+/// the corpora the deterministic gate says the change is fine and the answer key
+/// says it is not, which is the one population where a reviewer is the only
+/// opinion there is. 🚨 In the OD suite that is a **requirement** rather than an
+/// observation — `harness/scripts/gate-task.sh` refuses a task whose sham tree
+/// fails `python -m pytest -q` — and it has a consequence the suite README
+/// states: the behaviour a sham changes cannot be pinned by a visible test.
 #[test]
 #[ignore = "needs the corpora on disk"]
-fn what_the_ladder_says_about_the_shams_the_k_suite_ships() {
+fn what_the_ladder_says_about_the_shams_the_corpora_ship() {
     let tasks: Vec<Task> = tasks().into_iter().filter(has_sham).collect();
     assert!(!tasks.is_empty(), "no task in either corpus ships a sham/");
     let scratch = scratch_root();
