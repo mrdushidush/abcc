@@ -179,6 +179,16 @@ impl Head {
     /// (~4,300 tokens), in the same attempt a later call was cut. 16384 clears
     /// that with room for the trace and the answer beside it.
     ///
+    /// 🚨 **F625: that 17,157 is probably a measurement of the timeout, not of
+    /// the model.** The server buffers a tool call's arguments whole (F622), so
+    /// the whole of one is written into a socket that carries nothing — and the
+    /// per-read `idle_gap` is 90 s. At the 161–331 chars/s argument generation
+    /// measured, 90 s of silence buys roughly **14,000–30,000 characters**, and
+    /// 17,157 sits inside that band. A **successful** 33,962-char `apply_patch`
+    /// was measured at 211.2 s of unbroken silence, which this stack would kill.
+    /// So raising this budget alone does not raise the ceiling; the ceiling is
+    /// the gap. See `research/DEBUG-P1-the-buffered-argument.md`.
+    ///
     /// ⚠ **This is still a stop and not a promise.** A patch large enough to
     /// exceed it will be lost the same way; what changed is that the limit now
     /// sits above the observed working range instead of inside it.

@@ -315,12 +315,27 @@ pub enum Delta {
     /// [`Delta::ToolCall`], because a half-written argument is not a request
     /// (F506).
     ///
-    /// It exists because **the idle gap is a claim about whether the stream is
-    /// delivering**, and without this a model writing one large tool call
-    /// delivers bytes continuously while producing no delta at all: a 90 s
-    /// `apply_patch` argument read as a 90 s hang on a server measured at 75%
-    /// GPU utilisation throughout. Assembling the call silently is what made the
-    /// hang detector a content detector.
+    /// 🚨 **F624: the premise it was built on is false, and this delta cannot do
+    /// the job it was added for.** F537 reasoned that *a model writing one large
+    /// tool call delivers bytes continuously while producing no delta at all*,
+    /// and that assembling the call silently was what made the hang detector a
+    /// content detector. The raw SSE says otherwise: **LM Studio buffers the
+    /// whole tool call and delivers it in one delta at the end** — 231 chars and
+    /// 33,962 chars behave identically, the large one arriving in the last 4 ms
+    /// of a 226-second call — while `reasoning_content` streams token by token
+    /// in the same responses. So `pushed > 0` is true exactly once per call, in
+    /// its final milliseconds, and **this fires after the silence it exists to
+    /// break.** The field log agreed all along: every non-zero
+    /// `tool_call_chars` mark is the terminal mark of its call and none has ever
+    /// grown across two marks.
+    ///
+    /// ⚠ F537's *diagnosis* stands — the 90 s hang was real and the GPU was at
+    /// 75% throughout. What it got wrong is where the bytes were: they were not
+    /// arriving unnoticed, they were not arriving. See F625 for what that costs
+    /// (a **successful** 33,962-char `apply_patch` is 211.2 s of silence against
+    /// a 90 s per-read gap) and `research/DEBUG-P1-the-buffered-argument.md` §8
+    /// for the three repair shapes, which are the idle gap's semantics and so
+    /// are David's.
     ToolCallProgress {
         chars: u32,
     },
