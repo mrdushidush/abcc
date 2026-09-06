@@ -254,6 +254,10 @@ impl Provider for OpenAiCompat {
         Ok(Box::new(Streamed {
             deltas: rx,
             idle_gap: req.idle_gap,
+            tool_call_gap: req.tool_call_gap,
+            slice: req.liveness_slice,
+            awaiting_call: false,
+            silent_since: None,
             done: false,
         }))
     }
@@ -265,15 +269,78 @@ impl Provider for OpenAiCompat {
 
 /// A turn in flight, read one delta at a time.
 ///
-/// 🚨 **This is the hang detector** (F493). One number bounds the wait for the
-/// first byte and each subsequent read, separately rather than cumulatively,
-/// which is F199's semantic and is now enforced here rather than bought from the
-/// HTTP client. A long turn that keeps producing tokens runs as long as it likes;
-/// a silent one is [`ProviderError::IdleGap`] after the rung's budget.
+/// 🚨 **This is the hang detector** (F493). It bounds the wait for the first byte
+/// and each subsequent read, separately rather than cumulatively, which is F199's
+/// semantic and is enforced here rather than bought from the HTTP client. A long
+/// turn that keeps producing tokens runs as long as it likes; a silent one is
+/// [`ProviderError::IdleGap`] after the rung's budget.
+///
+/// # 🚨 Two budgets, because there are two silences (F625)
+///
+/// **`idle_gap` bounds a server that has stopped talking. `tool_call_gap` bounds
+/// a server that is writing one tool call.** LM Studio buffers a call's arguments
+/// whole and delivers them in a single delta at the end (F622), so between
+/// [`Delta::ToolCallOpened`] and [`Delta::ToolCall`] a *perfectly healthy* stream
+/// carries nothing for as long as the call takes to write — measured at 211.2 s
+/// for one that succeeded. Spending a 90 s per-read budget against that silence
+/// does not detect a hang; it caps how large a patch this system can write, which
+/// is why the largest patch ever seen intact sits inside the band 90 s buys.
+///
+/// The two are held apart by counting opens against deliveries, so the wider
+/// budget applies **only** in the state the wire says it applies in, and one
+/// unmatched open cannot widen the gap for the rest of the turn: `flush_calls`
+/// emits every opened call, including one whose arguments never came.
+///
+/// # 🚨 The wait is taken in slices (F592)
+///
+/// A silence detector that rides the data path cannot observe silence. The turn
+/// loop checks its liveness clock at the top of a loop whose next statement used
+/// to block here for the whole budget, so nothing was written to the log while
+/// the stream was quiet. The budget is now spent `slice` at a time and each
+/// expired slice returns [`Delta::Waiting`], which wakes that check without
+/// changing what the budget is or when it runs out.
 struct Streamed {
     deltas: Receiver<Result<Delta, ProviderError>>,
     idle_gap: Duration,
+    tool_call_gap: Duration,
+    /// How long one wait slice is. The turn loop's liveness period, so the log's
+    /// resolution is set by the thing that writes the log.
+    slice: Duration,
+    /// 🚨 Whether the last announced call has produced **any** bytes yet.
+    ///
+    /// ⚠ A bool, and the first version of this was a count of opens against
+    /// [`Delta::ToolCall`]s — which was wrong in a way no test I wrote at first
+    /// could see. `Delta::ToolCall` is emitted by `flush_calls` at
+    /// `finish_reason`, not when the arguments land, so counting against it kept
+    /// the wide budget open **from the first announcement to the end of the
+    /// turn**. On this stack the two are 4 ms apart and nothing would ever have
+    /// shown it; on a stream that did anything after a call, a dead socket would
+    /// have waited the tool-call budget instead of the ordinary one.
+    ///
+    /// The state that actually matters is *announced, and not one byte since* —
+    /// so it is set by [`Delta::ToolCallOpened`] and cleared by the first
+    /// [`Delta::ToolCallProgress`], which is the server delivering. A bool rather
+    /// than a count because a server announces and writes one call at a time.
+    awaiting_call: bool,
+    /// 🚨 When the current silence began, and **the reason slicing is correct
+    /// rather than a way to never time out.** A [`Delta::Waiting`] does not end
+    /// the read it interrupted, so the budget has to be spent against a clock
+    /// that survives it; a per-call clock would restart every slice and the gap
+    /// would become the slice. Cleared by any real delta, which is exactly
+    /// F199's per-read semantic.
+    silent_since: Option<Instant>,
     done: bool,
+}
+
+impl Streamed {
+    /// The budget this read is spent against.
+    fn budget(&self) -> Duration {
+        if self.awaiting_call {
+            self.tool_call_gap
+        } else {
+            self.idle_gap
+        }
+    }
 }
 
 impl TurnStream for Streamed {
@@ -281,19 +348,43 @@ impl TurnStream for Streamed {
         if self.done {
             return None;
         }
-        match self.deltas.recv_timeout(self.idle_gap) {
+        let since = *self.silent_since.get_or_insert_with(Instant::now);
+        // ⚠ Re-read every slice rather than captured once, because a call can
+        // open in the middle of a wait and the read already running is the one
+        // that then has to be allowed to take longer.
+        let budget = self.budget();
+        let left = budget.saturating_sub(since.elapsed());
+        if left.is_zero() {
+            self.done = true;
+            return Some(Err(ProviderError::IdleGap {
+                after_ms: millis(budget),
+            }));
+        }
+        match self.deltas.recv_timeout(self.slice.min(left)) {
             Ok(delta) => {
+                self.silent_since = None;
+                if let Ok(d) = &delta {
+                    match d {
+                        Delta::ToolCallOpened { .. } => self.awaiting_call = true,
+                        // Any byte of the call is the server delivering, and
+                        // `ToolCall` closes it too — for a server that sends one
+                        // whole call with no separate announcement.
+                        Delta::ToolCallProgress { .. } | Delta::ToolCall(_) => {
+                            self.awaiting_call = false;
+                        }
+                        _ => {}
+                    }
+                }
                 // One failure ends a turn. What follows it would be describing a
                 // stream that already stopped.
                 self.done = delta.is_err();
                 Some(delta)
             }
-            Err(RecvTimeoutError::Timeout) => {
-                self.done = true;
-                Some(Err(ProviderError::IdleGap {
-                    after_ms: millis(self.idle_gap),
-                }))
-            }
+            // The slice expired and the budget has not. Say so, so the turn loop
+            // can mark the log, and come back for the rest of the budget.
+            Err(RecvTimeoutError::Timeout) => Some(Ok(Delta::Waiting {
+                silent_ms: millis(since.elapsed()),
+            })),
             // The reader finished and dropped its end.
             Err(RecvTimeoutError::Disconnected) => {
                 self.done = true;
@@ -561,6 +652,7 @@ impl Parse {
         if let Some(id) = &fragment.id {
             slot.id.clone_from(id);
         }
+        let named_before = !slot.tool.is_empty();
         if let Some(function) = &fragment.function {
             if let Some(name) = &function.name {
                 slot.tool.push_str(name);
@@ -569,6 +661,19 @@ impl Parse {
                 slot.arguments.push_str(arguments);
                 pushed = u32::try_from(arguments.len()).unwrap_or(u32::MAX);
             }
+        }
+        // 🚨 F625. The moment a call has a name it has been *announced*, and on
+        // this stack that is the last thing the wire carries until the whole call
+        // parses — 211.2 s later for one that succeeded. Emitting it is what lets
+        // the idle gap tell "writing a tool call" from "stopped talking".
+        //
+        // ⚠ Keyed on the slot going from unnamed to named rather than on
+        // `arguments == ""`, because a server that sends the name and the whole
+        // argument in one chunk announces and delivers in the same fragment, and
+        // one that sends the name alone announces in its own. Both are one open.
+        if !named_before && !slot.tool.is_empty() {
+            let tool = slot.tool.clone();
+            self.out.push(Ok(Delta::ToolCallOpened { tool }));
         }
         // 🚨 F537. The assembled call is emitted once, at the ending; this
         // says the stream is delivering *now*, which is the only question the

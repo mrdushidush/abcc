@@ -201,6 +201,10 @@ fn request(head: Head, body: &Body, idle_gap: Duration) -> ApiRequest<'_> {
         body,
         schema: None,
         idle_gap,
+        // The cases here are about the ordinary read budget. F625's second gap
+        // has its own tests, which set it deliberately.
+        tool_call_gap: idle_gap,
+        liveness_slice: idle_gap,
     }
 }
 
@@ -748,6 +752,8 @@ fn a_schema_travels_as_strict_json_schema_and_never_as_json_object() {
             body: &body,
             schema: Some(VERDICT),
             idle_gap: BUDGET,
+            tool_call_gap: BUDGET,
+            liveness_slice: BUDGET,
         },
     );
 
@@ -893,6 +899,8 @@ fn a_live_turn_reports_usage_and_a_reasoning_trace() {
             body: &body,
             schema: None,
             idle_gap: Duration::from_secs(90),
+            tool_call_gap: Duration::from_mins(8),
+            liveness_slice: Duration::from_secs(10),
         },
     );
     for delta in &deltas {
@@ -1082,4 +1090,397 @@ fn a_turn_writing_only_tool_call_arguments_is_not_silent_and_must_not_read_as_a_
         })
         .expect("one assembled tool call");
     assert_eq!(call.tool, "apply_patch");
+}
+
+// ---------------------------------------------------------------------------
+// 🚨 F625 — the two budgets, and F592's slices
+// ---------------------------------------------------------------------------
+
+/// A request with the two gaps set apart, which is the only way to see F625.
+fn request_with_gaps(
+    head: Head,
+    body: &Body,
+    idle_gap: Duration,
+    tool_call_gap: Duration,
+    slice: Duration,
+) -> ApiRequest<'_> {
+    ApiRequest {
+        posting: head.posted(Tier::Exec),
+        model: MODEL,
+        body,
+        schema: None,
+        idle_gap,
+        tool_call_gap,
+        liveness_slice: slice,
+    }
+}
+
+/// The wire shape the raw capture found, scaled down: the call is **announced**
+/// with an empty argument string, then nothing, then the whole thing at once.
+///
+/// 🚨 This is not an invented shape. `research/spikes/f606-sse/bigarg.sse.jsonl`
+/// is exactly this: `name: "apply_patch", arguments: ""` at t=15,171 ms, then
+/// **211.2 s of nothing**, then a single fragment carrying all 33,962 characters
+/// at t=226,377 ms.
+fn buffered_call(silence: Duration) -> Vec<(Duration, String)> {
+    vec![
+        (
+            Duration::ZERO,
+            chunk(
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"apply_patch","arguments":""}}]}}]}"#,
+            ),
+        ),
+        (
+            silence,
+            chunk(
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":"{\"patch\":\"a big diff\"}"}}]}}]}"#,
+            ),
+        ),
+        (
+            Duration::ZERO,
+            chunk(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
+        ),
+        (Duration::ZERO, chunk(USAGE)),
+        (Duration::ZERO, "data: [DONE]\n\n".to_owned()),
+    ]
+}
+
+/// 🚨 **F625. The silence while a tool call is being written is not a hang, and
+/// the announcement is what makes the difference observable.**
+///
+/// The gap here is three times `idle_gap` and half `tool_call_gap` — which is
+/// the real proportion in miniature: a successful 33,962-character `apply_patch`
+/// was 211.2 s of unbroken silence against a 90 s per-read budget. Before this,
+/// that call died and the record said `Why::Timeout` about work that was about
+/// to land.
+#[test]
+fn the_silence_while_a_tool_call_is_written_is_not_a_hang() {
+    let stub = Stub::new(vec![Reply::sse(buffered_call(Duration::from_millis(600)))]);
+    let provider = stub.provider();
+    let body = Body::opening("write a big patch");
+
+    let deltas = drain(
+        &provider,
+        &request_with_gaps(
+            Head::Builders,
+            &body,
+            Duration::from_millis(200),
+            Duration::from_millis(1200),
+            Duration::from_millis(50),
+        ),
+    );
+
+    assert!(
+        !deltas.iter().any(std::result::Result::is_err),
+        "a call that was going to arrive was killed: {deltas:?}"
+    );
+    let opened: Vec<&str> = deltas
+        .iter()
+        .filter_map(|d| match d {
+            Ok(Delta::ToolCallOpened { tool }) => Some(tool.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opened, ["apply_patch"], "the announcement is the signal");
+    let calls: Vec<&str> = deltas
+        .iter()
+        .filter_map(|d| match d {
+            Ok(Delta::ToolCall(c)) => Some(c.tool.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, ["apply_patch"], "and the call itself arrived");
+}
+
+/// ⚠ **The wider budget is still a stop.** F625 moves the ceiling; it does not
+/// remove it, and a call that outlasts `tool_call_gap` is an `IdleGap` reporting
+/// **that** budget rather than the ordinary one — otherwise the record would
+/// name a number the read was never spent against.
+#[test]
+fn a_tool_call_that_outlasts_its_own_budget_is_still_a_hang() {
+    let stub = Stub::new(vec![Reply::sse(buffered_call(Duration::from_secs(30)))]);
+    let provider = stub.provider();
+    let body = Body::opening("write a big patch");
+
+    let deltas = drain(
+        &provider,
+        &request_with_gaps(
+            Head::Builders,
+            &body,
+            Duration::from_millis(100),
+            Duration::from_millis(400),
+            Duration::from_millis(50),
+        ),
+    );
+
+    match only_error(&deltas) {
+        ProviderError::IdleGap { after_ms } => assert_eq!(
+            *after_ms, 400,
+            "the record has to name the budget the read was spent against"
+        ),
+        other => panic!("expected IdleGap, got {other:?}"),
+    }
+}
+
+/// 🚨 **F592. A silence detector that rides the data path cannot observe silence
+/// — unless the wait is taken in slices.**
+///
+/// The stream says nothing for six slices. Before this the consumer blocked in
+/// one `recv_timeout(idle_gap)` and the turn loop's liveness check, which sits at
+/// the top of that loop, could not run — which is why the field log carries 25
+/// `model_call_started` → `liveness_mark` gaps of up to 73 s with nothing between
+/// them.
+#[test]
+fn a_quiet_stream_still_wakes_the_reader_often_enough_to_mark_the_log() {
+    let stub = Stub::new(vec![Reply::sse(vec![
+        (Duration::from_millis(300), text_chunk("finally")),
+        (Duration::ZERO, chunk(STOP)),
+        (Duration::ZERO, chunk(USAGE)),
+        (Duration::ZERO, "data: [DONE]\n\n".to_owned()),
+    ])]);
+    let provider = stub.provider();
+    let body = Body::opening("go");
+
+    let deltas = drain(
+        &provider,
+        &request_with_gaps(
+            Head::Recon,
+            &body,
+            Duration::from_millis(900),
+            Duration::from_millis(900),
+            Duration::from_millis(50),
+        ),
+    );
+
+    let waits: Vec<u64> = deltas
+        .iter()
+        .filter_map(|d| match d {
+            Ok(Delta::Waiting { silent_ms }) => Some(*silent_ms),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        waits.len() >= 3,
+        "a 300 ms silence at a 50 ms slice has to wake the reader repeatedly, got {waits:?}"
+    );
+    // 🚨 The silence accumulates across slices rather than restarting at each
+    // one. This is the defect the first draft of the fix had: a per-call clock
+    // would report the slice every time and the budget would never be spent.
+    assert!(
+        waits.windows(2).all(|w| w[1] > w[0]),
+        "the reported silence has to grow: {waits:?}"
+    );
+    assert!(
+        !deltas.iter().any(std::result::Result::is_err),
+        "and none of it is a failure: {deltas:?}"
+    );
+}
+
+/// 🚨 **Slicing the wait must not extend the budget**, which is the whole risk of
+/// the F592 repair: a clock restarted on every slice turns a 90 s gap into a
+/// forever. The gap here is far past the budget and the budget still ends it, at
+/// the budget, naming the budget.
+#[test]
+fn taking_the_wait_in_slices_does_not_lengthen_the_budget() {
+    let stub = Stub::new(vec![Reply::sse(vec![
+        (Duration::ZERO, text_chunk("half an ans")),
+        (Duration::from_secs(30), chunk(STOP)),
+    ])]);
+    let provider = stub.provider();
+    let body = Body::opening("go");
+
+    let started = Instant::now();
+    let deltas = drain(
+        &provider,
+        &request_with_gaps(
+            Head::Recon,
+            &body,
+            BUDGET,
+            BUDGET,
+            Duration::from_millis(20),
+        ),
+    );
+    let elapsed = started.elapsed();
+
+    match only_error(&deltas) {
+        ProviderError::IdleGap { after_ms } => assert_eq!(*after_ms, 400),
+        other => panic!("expected IdleGap, got {other:?}"),
+    }
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "twenty slices of 20 ms must still end at the 400 ms budget, took {elapsed:?}"
+    );
+}
+
+/// 🚨 **The wide budget applies inside a tool call and nowhere else.**
+///
+/// The counting is what enforces that, and getting it wrong is silent: if opens
+/// are never matched against deliveries, the first tool call of a turn widens the
+/// gap for the whole rest of it, and a genuinely dead socket after a successful
+/// call waits `tool_call_gap` instead of `idle_gap`. Nothing about the turn looks
+/// different — it just takes three times as long to notice.
+///
+/// Here the call opens, is delivered, and *then* the stream dies. That silence is
+/// an ordinary one and has to be spent against the ordinary budget.
+#[test]
+fn the_wider_budget_stops_applying_once_the_call_has_arrived() {
+    let stub = Stub::new(vec![Reply::sse(vec![
+        (
+            Duration::ZERO,
+            chunk(
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"apply_patch","arguments":""}}]}}]}"#,
+            ),
+        ),
+        (
+            Duration::from_millis(300),
+            chunk(
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"patch\":\"p\"}"}}]}}]}"#,
+            ),
+        ),
+        // Delivered. Now the socket goes quiet for far longer than `idle_gap`,
+        // and this is no longer a call being written.
+        (Duration::from_secs(30), chunk(STOP)),
+    ])]);
+    let provider = stub.provider();
+    let body = Body::opening("write a patch then stall");
+
+    let started = Instant::now();
+    let deltas = drain(
+        &provider,
+        &request_with_gaps(
+            Head::Builders,
+            &body,
+            Duration::from_millis(200),
+            Duration::from_millis(1500),
+            Duration::from_millis(50),
+        ),
+    );
+    let elapsed = started.elapsed();
+
+    match only_error(&deltas) {
+        ProviderError::IdleGap { after_ms } => assert_eq!(
+            *after_ms, 200,
+            "the silence after a delivered call is an ordinary one"
+        ),
+        other => panic!("expected IdleGap, got {other:?}"),
+    }
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "it waited the tool-call budget for a silence that was not one: {elapsed:?}"
+    );
+}
+
+/// 🚨 **F625, end to end against the real server: the call that used to die.**
+///
+/// This is `research/tools/ssecapture.py`'s big-argument arm, driven through
+/// `OpenAiCompat` instead of through a raw socket — the same prompt, the same
+/// tool, the same model. The capture that produced F625 measured **211.2 s of
+/// unbroken silence** between the announcement and the call, against a 90 s
+/// per-read budget: the arguments arrived in the last 4 ms of a 226-second call.
+/// Under the old single budget this turn was `ProviderError::IdleGap` and the
+/// attempt was recorded `Why::Timeout` for work that was about to land.
+///
+/// It asserts three things and prints the fourth:
+///
+/// 1. the call **arrives**, which is the fix;
+/// 2. the announcement arrives **long before** it, which is the signal the fix
+///    rests on — if the server ever stops buffering, this is where we find out;
+/// 3. the wait produced [`Delta::Waiting`] deltas, which is F592: without them
+///    the turn loop cannot mark a silence it is sitting inside.
+///
+/// ⚠ `#[ignore]`d, like every `*_live_*` test here: it needs a model server, and
+/// it costs minutes rather than milliseconds.
+#[test]
+#[ignore = "needs a model server; the port and key change on every load"]
+fn a_live_turn_writing_a_large_tool_call_survives_its_own_silence() {
+    let model = std::env::var("ABCC_MODEL").unwrap_or_else(|_| MODEL.to_owned());
+    let provider = OpenAiCompat::from_env().expect("build a client");
+
+    // ssecapture.py's `USER` arm, verbatim: one prompt that forces a long
+    // `diff` argument out of the builders head's shape.
+    let body = Body::opening(
+        "Create a new file `metrics.py` holding a complete Python module for a streaming \
+         statistics accumulator. It must implement, with full docstrings and type hints: a \
+         Welford mean/variance accumulator, a P-square quantile estimator for p50/p90/p95/p99, \
+         an exponentially weighted moving average, a reservoir sampler, a bounded histogram \
+         with configurable bucket edges, and a `Summary` dataclass that renders all of them as \
+         an aligned table. Include a `__main__` block that demonstrates every class on \
+         synthetic data. Write it in one `apply_patch` call as a unified diff creating the \
+         file. Do not abbreviate and do not elide any function body.",
+    );
+
+    let started = Instant::now();
+    let mut announced_at = None;
+    let mut waits = 0usize;
+    let mut longest_quiet = 0u64;
+    let mut arrived = None;
+
+    let req = ApiRequest {
+        model: &model,
+        posting: Head::Builders.posted(Tier::Exec),
+        body: &body,
+        schema: None,
+        idle_gap: Duration::from_secs(90),
+        tool_call_gap: Duration::from_mins(8),
+        liveness_slice: Duration::from_secs(10),
+    };
+    let mut stream = provider.start(&req).expect("open the turn");
+    while let Some(delta) = stream.next_delta() {
+        match delta.expect("the live turn failed") {
+            Delta::ToolCallOpened { tool } => {
+                announced_at = Some(started.elapsed());
+                println!("  announced {tool} at {:?}", started.elapsed());
+            }
+            Delta::Waiting { silent_ms } => {
+                waits += 1;
+                longest_quiet = longest_quiet.max(silent_ms);
+            }
+            Delta::ToolCall(call) => {
+                println!(
+                    "  {} arrived at {:?}, {} chars",
+                    call.tool,
+                    started.elapsed(),
+                    call.arguments.len()
+                );
+                arrived = Some(call);
+            }
+            _ => {}
+        }
+    }
+
+    let call = arrived.expect("the tool call never arrived — F625 is not fixed");
+    let announced = announced_at.expect("the call was never announced");
+    let quiet = started.elapsed().saturating_sub(announced);
+    println!(
+        "  announcement -> call: {quiet:?}; {waits} Waiting deltas, longest quiet {longest_quiet} ms"
+    );
+
+    // ⚠ Either write-class tool is a pass. The first run of this asserted
+    // `apply_patch` and the model chose `write_file`, which is *correct* — the
+    // task creates a file rather than editing one, and the Builders head offers
+    // both. `ssecapture.py` only ever offered `apply_patch`, so this is the first
+    // time the real tool set has been in front of this prompt.
+    assert!(
+        matches!(call.tool.as_str(), "apply_patch" | "write_file"),
+        "expected a write-class tool, got {}",
+        call.tool
+    );
+    assert!(
+        call.arguments.len() > 2_000,
+        "this arm is meant to force a large argument, got {} chars",
+        call.arguments.len()
+    );
+    // 🚨 The premise, re-checked every run rather than remembered: this server
+    // buffers, so the announcement precedes the call by most of the turn. If
+    // this ever fails, LM Studio has started streaming arguments and F537's
+    // instrument becomes the right one again.
+    assert!(
+        quiet > Duration::from_secs(5),
+        "the server no longer buffers tool calls — re-read F622 before trusting F625's fix"
+    );
+    // 🚨 F592: the silence was observable while it was happening.
+    assert!(
+        waits > 0,
+        "no Waiting delta arrived, so nothing could have marked the log during the silence"
+    );
 }

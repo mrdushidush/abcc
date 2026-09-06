@@ -146,9 +146,58 @@ pub struct Limits {
     pub rounds: u32,
     /// The per-read budget on the stream, which is therefore also the idle-gap
     /// timeout: a stream silent this long is a hang (F198, F199).
+    ///
+    /// ⚠ It bounds *a server that has stopped talking*. It does **not** bound a
+    /// server writing one tool call — see [`Limits::tool_call_gap`], which is
+    /// F625 and is the reason the two are separate numbers.
     pub idle_gap: Duration,
+    /// 🚨 **F625: the per-read budget while a tool call is open.**
+    ///
+    /// **480 s, and it is derived from two wire captures rather than chosen.**
+    /// LM Studio delivers a tool call's arguments in one delta at the end (F622),
+    /// so the silence between the announcement and the call is the time the model
+    /// spends writing it, and that is bounded by the token budget.
+    ///
+    /// | capture | chars | true silence | rate |
+    /// |---|---|---|---|
+    /// | F622's `bigarg` | 33,962 | 211.2 s | **160.8 chars/s** |
+    /// | F627's `fullbudget` | 21,112 | 49.9 s | 422.9 chars/s |
+    ///
+    /// ⚠ **Both are *true* silence.** In each capture the largest gap between any
+    /// two SSE frames other than this one is under 110 ms, so nothing at all
+    /// arrives between the announcement and the call — the reasoning trace has
+    /// finished streaming by then. The 2.6× spread between the two rates is why
+    /// the bound is taken against the slower one.
+    ///
+    /// [`Head::budget`](crate::Head::budget) is 16,384 tokens and the measured
+    /// argument density is **3.84 chars/token**, so a call spending the *entire*
+    /// budget on arguments is ~62,900 characters, and at 160.8 chars/s that is
+    /// **391 s**. 480 s covers it with 23% margin.
+    ///
+    /// 🚨 **Covering the whole budget is the point, not generosity.** Any value
+    /// below it leaves the timeout capping how large a patch this system can
+    /// write, which is the defect F625 names — it would only move the ceiling
+    /// rather than remove it. The budget is already the stop; a second, tighter
+    /// stop hidden inside the transport is the thing that made the largest patch
+    /// ever seen (17,157 chars) a measurement of the timeout.
+    ///
+    /// ⚠ **What it costs, stated plainly: a server that dies *during* a tool call
+    /// now takes eight minutes to detect instead of ninety seconds.** That is
+    /// survivable only because the silence is no longer unobserved — the liveness
+    /// mark names the tool and the elapsed quiet every
+    /// [`Limits::liveness_gap`], and the desk's `kill` reaches a worker between
+    /// deltas. ▶ **Tightening it is David's**, and the thing to tighten it
+    /// against is a re-measured argument rate, not a feeling about eight minutes.
+    pub tool_call_gap: Duration,
     /// How long a stream may say nothing before the log says it is alive.
     /// ADR-0012 §5's bar is that no gap over ten seconds goes unmarked.
+    ///
+    /// 🚨 **F592: this is now also the wait slice**, which is what makes the bar
+    /// reachable. The mark is written from inside the read loop, and that loop
+    /// used to block for the whole `idle_gap` — so the detector could not observe
+    /// the silence it existed to report, and 25 gaps of up to 73 s went unmarked.
+    /// The provider now returns [`Delta::Waiting`](crate::provider::Delta) every
+    /// slice, which wakes the check without changing any budget.
     pub liveness_gap: Duration,
     /// 🚨 **F503: how many times a phase asks again when the model answers with
     /// nothing.**
@@ -171,6 +220,9 @@ impl Default for Limits {
             // The champion's rung: ~2.4x its measured worst-case TTFB, and
             // 1.7-3.3x tighter than the 300 s inherited (F199).
             idle_gap: Duration::from_secs(90),
+            // F625. 480 s = the 16,384-token budget at the slowest argument rate
+            // ever measured, plus margin. Derived, not chosen; see the field.
+            tool_call_gap: Duration::from_mins(8),
             liveness_gap: Duration::from_secs(10),
             nudges: 2,
         }
@@ -464,6 +516,8 @@ impl<'a> TurnLoop<'a> {
             body,
             schema,
             idle_gap: self.limits.idle_gap,
+            tool_call_gap: self.limits.tool_call_gap,
+            liveness_slice: self.limits.liveness_gap,
         };
         journal.record(Event::ModelCallStarted {
             attempt,
@@ -594,13 +648,7 @@ impl<'a> TurnLoop<'a> {
             if last_mark.elapsed() >= self.limits.liveness_gap {
                 journal.record(Event::LivenessMark {
                     attempt,
-                    note: format!(
-                        "{} streaming: {} chars of answer, {} of trace, {} of tool-call arguments",
-                        posting.key(),
-                        acc.text.len(),
-                        acc.reasoning_chars,
-                        acc.tool_call_chars
-                    ),
+                    note: acc.mark(posting.key()),
                 });
                 last_mark = Instant::now();
             }
@@ -665,6 +713,13 @@ struct Accumulator {
     reasoning_open: bool,
     tool_calls: Vec<ToolCall>,
     ended: Option<(Usage, Finish)>,
+    /// 🚨 F625/F592. The tool call the server has announced and not yet
+    /// delivered, and how long the stream has been quiet inside it. Together
+    /// these are the whole content of a liveness mark taken during the one
+    /// silence this stack produces on purpose — without them the mark says
+    /// *0 chars of everything*, which is what a dead socket says too.
+    writing: Option<String>,
+    silent_ms: u64,
 }
 
 impl Accumulator {
@@ -682,8 +737,20 @@ impl Accumulator {
             }
             Delta::ToolCall(call) => {
                 self.reasoning_open = false;
+                self.writing = None;
+                self.silent_ms = 0;
                 self.tool_calls.push(call);
             }
+            // 🚨 F625. The announcement, kept so the silence after it has a name
+            // in the log. It is not content and moves no counter.
+            Delta::ToolCallOpened { tool } => {
+                self.reasoning_open = false;
+                self.writing = Some(tool);
+            }
+            // 🚨 F592. The read loop saying it is still waiting. The only delta
+            // that is *about* the absence of deltas, so it is the one thing a
+            // mark written during a silence can report.
+            Delta::Waiting { silent_ms } => self.silent_ms = silent_ms,
             // 🚨 F537. Not content, and counted anyway: this is the only
             // record that a turn spending its whole budget on one argument was
             // working rather than hanging.
@@ -692,6 +759,37 @@ impl Accumulator {
                 self.tool_call_chars = self.tool_call_chars.saturating_add(chars);
             }
             Delta::Closed { usage, finish } => self.ended = Some((usage, finish)),
+        }
+    }
+
+    /// What a liveness mark says, which depends on what the stream is doing.
+    ///
+    /// 🚨 **The two sentences are the point.** A mark taken while bytes are
+    /// flowing reports the counters, as it always did. A mark taken during a
+    /// silence reports *which tool call is being written and for how long* —
+    /// because on this stack that silence is the normal way a large patch is
+    /// produced (F622), and the old sentence described it as a stream delivering
+    /// nothing, which is indistinguishable from a dead socket.
+    fn mark(&self, key: &str) -> String {
+        match (&self.writing, self.silent_ms) {
+            (Some(tool), ms) if ms > 0 => format!(
+                "{key} writing a tool call: {tool}, quiet for {}, {} chars of trace so far",
+                seconds(ms),
+                self.reasoning_chars
+            ),
+            (Some(tool), _) => format!("{key} writing a tool call: {tool}"),
+            (None, ms) if ms > 0 => format!(
+                "{key} waiting: quiet for {}, {} chars of answer, {} of trace",
+                seconds(ms),
+                self.text.len(),
+                self.reasoning_chars
+            ),
+            (None, _) => format!(
+                "{key} streaming: {} chars of answer, {} of trace, {} of tool-call arguments",
+                self.text.len(),
+                self.reasoning_chars,
+                self.tool_call_chars
+            ),
         }
     }
 
@@ -736,4 +834,13 @@ impl Ending {
 
 fn elapsed_ms(from: Instant) -> u64 {
     u64::try_from(from.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Milliseconds as a person reads them, to one decimal.
+///
+/// Integer arithmetic rather than a float, because this lands in a log line an
+/// operator reads during a silence and a rounding artefact there is a number
+/// somebody will try to explain.
+fn seconds(ms: u64) -> String {
+    format!("{}.{} s", ms / 1000, (ms % 1000) / 100)
 }

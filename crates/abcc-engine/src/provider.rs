@@ -262,6 +262,24 @@ pub struct ApiRequest<'a> {
     /// Set from the rung: champion 90 s, R3 180 s (F199), roughly 2.4× each one's
     /// measured worst-case TTFB and 1.7–3.3× tighter than the 300 s inherited.
     pub idle_gap: Duration,
+    /// 🚨 **F625: the per-read budget while a tool call is open**, between
+    /// [`Delta::ToolCallOpened`] and the call itself.
+    ///
+    /// A second number rather than a larger first one, because the two bound
+    /// different things. `idle_gap` bounds *the server has stopped talking*, and
+    /// 90 s is right for that. This bounds *the server is writing one tool call
+    /// that it will deliver whole* — a silence proportional to the call's length
+    /// and to nothing else — so spending `idle_gap` against it does not detect a
+    /// hang, it caps the patch size.
+    pub tool_call_gap: Duration,
+    /// 🚨 **F592: how long one wait slice is**, so that a stream which is quiet
+    /// still wakes the caller often enough for it to mark the log.
+    ///
+    /// It changes neither budget above and it is not a timeout — it is the
+    /// resolution at which silence becomes visible. Set from the turn loop's
+    /// liveness period, so the thing that writes the log chooses how often it
+    /// can.
+    pub liveness_slice: Duration,
 }
 
 impl ApiRequest<'_> {
@@ -338,6 +356,43 @@ pub enum Delta {
     /// are David's.
     ToolCallProgress {
         chars: u32,
+    },
+    /// 🚨 **F625: a tool call has opened, and its arguments have not arrived.**
+    /// This is the announcement the server makes the moment it starts writing a
+    /// call — on the wire it is a `tool_calls` fragment carrying an `id`, a
+    /// `type` and the function's **name**, with `arguments: ""` — and until F625
+    /// it was received and discarded.
+    ///
+    /// It is what makes the silence that follows *observable*, which is the one
+    /// thing the idle gap needed and did not have. Measured on the raw stream,
+    /// this delta to [`Delta::ToolCall`] is **0.7 s** for a 231-character call,
+    /// **211.2 s** for a 33,962-character one, and **never** for a call cut at
+    /// the token cap. A per-read budget that cannot tell those apart does not
+    /// detect a hang; it caps the patch size.
+    ///
+    /// ⚠ It carries the tool's name because the name is what the wire gives us,
+    /// and because *waiting for `apply_patch`* is a different sentence to put in
+    /// front of an operator than *waiting*.
+    ToolCallOpened {
+        tool: String,
+    },
+    /// 🚨 **F592: the stream has been quiet for a while and is still open.** Not
+    /// content and not an error — it is the read loop saying *nothing has arrived
+    /// yet*, so that a silence detector which rides the data path can observe
+    /// silence at all.
+    ///
+    /// Before this, the turn loop checked its liveness clock at the top of a loop
+    /// whose next statement then blocked for the whole idle gap, so **no liveness
+    /// mark could be written while the stream was quiet** — the field log carries
+    /// 25 `model_call_started` → `liveness_mark` gaps of up to 73 s, the model's
+    /// entire TTFB unmarked. The wait is now taken in slices, and this is what a
+    /// slice returns when it expires.
+    ///
+    /// `silent_ms` is the silence so far on **this** read rather than since the
+    /// turn began, because the quantity a gap is spent against is the per-read
+    /// one (F199).
+    Waiting {
+        silent_ms: u64,
     },
     /// The turn ended, and how.
     Closed {
