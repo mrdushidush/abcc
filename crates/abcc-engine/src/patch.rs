@@ -129,16 +129,13 @@ impl FilePatch {
         for (n, hunk) in self.hunks.iter().enumerate() {
             let expects = hunk.expects();
             let claims = isize::try_from(hunk.claims.saturating_sub(1)).unwrap_or(0);
-            let at = locate(lines, &expects, claims + drift, cursor).ok_or_else(|| {
-                PatchError::NoMatch {
-                    path: self.path.clone(),
-                    hunk: n + 1,
-                    claims: hunk.claims,
-                    first: expects
-                        .first()
-                        .map_or_else(String::new, |l| (*l).to_owned()),
-                }
-            })?;
+            // F638. When the exact search fails, a second and purely
+            // *diagnostic* pass finds where the context came closest and reports
+            // the first line that differs. It decides nothing — the patch is
+            // already refused by the time it runs.
+            let Some(at) = locate(lines, &expects, claims + drift, cursor) else {
+                return Err(nearest_miss(&self.path, n + 1, lines, &expects, cursor));
+            };
 
             out.extend_from_slice(&lines[cursor..at]);
             for (op, text) in &hunk.lines {
@@ -169,6 +166,12 @@ impl Patch {
     /// [`PatchError::Malformed`] for a hunk header that is not one.
     pub fn parse(diff: &str) -> Result<Patch, PatchError> {
         let lines: Vec<&str> = diff.lines().collect();
+        // F637, before anything else: a payload carrying tool-call markup is a
+        // transcript, and every message the rest of this function can produce
+        // would describe it as a broken diff instead.
+        if let Some(bad) = markup(&lines) {
+            return Err(bad);
+        }
         let mut files: Vec<FilePatch> = Vec::new();
         let mut i = 0usize;
 
@@ -321,6 +324,111 @@ fn locate(lines: &[&str], expects: &[&str], guess: isize, floor: usize) -> Optio
     None
 }
 
+/// The markers a tool-call transcript carries and a unified diff never does.
+///
+/// Deliberately a short, literal list rather than a general "does this look like
+/// XML" rule: a diff legitimately contains almost anything, including angle
+/// brackets and the word `function`. These four strings are the tool-call
+/// syntax this family of models emits, and a diff that contains one of them at
+/// the start of a line is not a diff that happens to mention it.
+const TOOL_MARKUP: [&str; 4] = ["<tool_call>", "</tool_call>", "<function=", "<parameter="];
+
+/// F637: is this payload a transcript rather than a diff?
+///
+/// 🚨 **Only *bare* lines count — ones carrying no diff prefix at all.** A diff
+/// may legitimately add a line containing `<tool_call>`: this repository's own
+/// research notes do, and refusing that would be a new way to reject correct
+/// work. Inside a hunk every line starts with `' '`, `'+'` or `'-'`, so the
+/// markup that matters is the markup that is *outside* one — which is exactly
+/// where a concatenated transcript puts it.
+fn markup(lines: &[&str]) -> Option<PatchError> {
+    lines.iter().enumerate().find_map(|(n, line)| {
+        if line.starts_with([' ', '+', '-']) {
+            return None;
+        }
+        let text = line.trim_start();
+        TOOL_MARKUP
+            .iter()
+            .find(|m| text.starts_with(**m))
+            .map(|m| PatchError::NotADiff {
+                marker: (*m).to_owned(),
+                line: n + 1,
+            })
+    })
+}
+
+/// 🚨 **F638: where did the context come closest, and what differs there?**
+///
+/// Runs only after [`locate`] has already failed, so it cannot change whether a
+/// patch applies — it changes only what the model is told about why it did
+/// not. That separation is deliberate: the module refuses to *match* loosely,
+/// and this is not matching, it is reporting.
+///
+/// Scores every window at or after `floor` by how many of its lines agree, and
+/// keeps the first best one. Ties go to the earliest position, which is the same
+/// nearest-wins rule [`locate`] uses.
+fn nearest_miss(
+    path: &str,
+    hunk: usize,
+    lines: &[&str],
+    expects: &[&str],
+    floor: usize,
+) -> PatchError {
+    let span = expects.len();
+    let mut best_at = floor.min(lines.len());
+    let mut best_hits = 0usize;
+    let last = lines.len().saturating_sub(span);
+    for at in floor..=last.max(floor) {
+        let hits = expects
+            .iter()
+            .enumerate()
+            .filter(|(i, want)| {
+                lines
+                    .get(at + i)
+                    .is_some_and(|got| got.trim_end_matches('\r') == want.trim_end_matches('\r'))
+            })
+            .count();
+        if hits > best_hits {
+            best_hits = hits;
+            best_at = at;
+        }
+    }
+
+    // The first line that differs at that position, which is the one thing a
+    // model can act on. `expects` is never empty here: `locate` answers `Some`
+    // for an empty context, so this function is unreachable for one.
+    let (line, wrote, found) = expects
+        .iter()
+        .enumerate()
+        .find_map(|(i, want)| {
+            let got = lines.get(best_at + i);
+            let differs =
+                got.is_none_or(|g| g.trim_end_matches('\r') != want.trim_end_matches('\r'));
+            differs.then(|| {
+                (
+                    i + 1,
+                    (*want).to_owned(),
+                    got.map_or_else(
+                        || "<past the end of the file>".to_owned(),
+                        |g| (*g).to_owned(),
+                    ),
+                )
+            })
+        })
+        .unwrap_or((1, String::new(), String::new()));
+
+    PatchError::NoMatch {
+        path: path.to_owned(),
+        hunk,
+        at: best_at + 1,
+        matched: best_hits,
+        of: span,
+        line,
+        wrote,
+        found,
+    }
+}
+
 /// Exact, apart from a trailing carriage return. See the module note.
 fn same(found: &[&str], expects: &[&str]) -> bool {
     found
@@ -362,17 +470,66 @@ fn join(lines: &[&str], ending: &str, trailing: bool) -> String {
 pub enum PatchError {
     #[error("the diff has no file header; a unified diff needs `--- <path>` and `+++ <path>`")]
     NoHeader,
+    /// F637: the argument carries tool-call markup, so it is a transcript
+    /// rather than a diff.
+    ///
+    /// Measured on this project's log: **32 of 46 recoverable `apply_patch`
+    /// refusals (70%) contain `<tool_call>`, `<function=` or `<parameter=`
+    /// inside the `diff` string** — several attempted calls concatenated with
+    /// the model's prose between them, and present on the *first* call of an
+    /// attempt in 14 of 14 cases, so it is not a reaction to being refused.
+    ///
+    /// Without this, `parse` accepts such a payload (it finds a real header
+    /// near the top), applies nothing, and fails several hunks later with
+    /// [`PatchError::NoMatch`] — a sentence about line numbers, for a payload
+    /// whose problem is that it is not one diff. The round is spent either way;
+    /// this at least spends it on a sentence the model can act on.
+    #[error(
+        "the diff argument contains tool-call markup ({marker:?} at line {line}), so it is a \
+         transcript and not a diff. Send one call, whose `diff` is only the unified diff text: \
+         no `<tool_call>` wrappers, no commentary, and nothing after the last hunk."
+    )]
+    NotADiff { marker: String, line: usize },
     #[error("the diff is malformed: {detail}")]
     Malformed { detail: String },
+    /// 🚨 **F638: it says what the file actually has, because the old
+    /// message sent the model to fix the wrong thing.**
+    ///
+    /// It used to read *"hunk 1 claims line 187 and its context is nowhere in
+    /// the file"*, and the observed response was the model changing the line
+    /// number — 195, then 196, then 187. But the hunk header is a
+    /// **hint**: [`locate`] searches the whole file outward from it, so the
+    /// claimed line is the one part of a hunk that cannot cause this failure.
+    /// The message named it anyway, and named it first.
+    ///
+    /// So the sentence now carries the evidence the model needs to write an
+    /// exact patch next round: where the context came closest, how much of it
+    /// matched there, and **the file's own text at the first line that
+    /// differs**. Measured motivation: `apply_patch` is refused 77% of the time
+    /// on this project's log. Of the refusals that genuinely ARE diffs, more
+    /// than half are one context line out — `everywhere:` for
+    /// `Everywhere:`, one character.
+    ///
+    /// ⚠ **This is a change to the diagnosis and not to the matching.**
+    /// Application stays exact (module docs: whitespace-insensitive matching is
+    /// a guess about intent, and what it hides is a patch applied in the wrong
+    /// place). Nothing here makes a patch apply that would not have applied.
     #[error(
-        "{path}: hunk {hunk} claims line {claims} and its context is nowhere in the file; \
-         it starts {first:?}"
+        "{path}: hunk {hunk} does not match. The closest place is line {at}, where {matched} of \
+         its {of} context lines match. The first difference is line {line} of the hunk:\n  \
+         you wrote:    {wrote:?}\n  the file has: {found:?}"
     )]
     NoMatch {
         path: String,
         hunk: usize,
-        claims: usize,
-        first: String,
+        /// 1-based, in the file.
+        at: usize,
+        matched: usize,
+        of: usize,
+        /// 1-based, within the hunk's expected lines.
+        line: usize,
+        wrote: String,
+        found: String,
     },
 }
 

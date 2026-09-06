@@ -187,7 +187,20 @@ fn one_hunk_that_does_not_match_leaves_every_file_alone() {
         Some(Why::FailedBeforeRunning { detail }) => {
             assert!(detail.contains("second.txt"), "{detail}");
             assert!(detail.contains("hunk 1"), "{detail}");
-            assert!(detail.contains("nowhere in the file"), "{detail}");
+            // F638. The message has to carry the EVIDENCE rather than the
+            // claimed line. It used to say "nowhere in the file", and the
+            // model's observed response was to change the line number - which
+            // is the one part of a hunk that `locate` never reads.
+            assert!(detail.contains("you wrote:"), "{detail}");
+            assert!(detail.contains("the file has:"), "{detail}");
+            assert!(
+                detail.contains("nothing like this"),
+                "the model's own line has to be quoted back: {detail}"
+            );
+            assert!(
+                detail.contains("gamma"),
+                "and the file's real text at the closest place: {detail}"
+            );
         }
         other => panic!("expected a refusal, got {other:?}: {}", result.text),
     }
@@ -220,5 +233,149 @@ fn a_diff_cannot_write_outside_the_workspace() {
     assert_eq!(
         fs::read_to_string(outer.path().join("target.txt")).expect("read"),
         "untouched\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 🚨 F637 / F638 — what the model actually sends, and what it is told back
+// ---------------------------------------------------------------------------
+
+/// 🚨 **F637: a payload carrying tool-call markup is refused as what it is.**
+///
+/// This is not a hypothetical shape. **32 of the 46 recoverable `apply_patch`
+/// refusals on this project's log (70%) look exactly like this** — a real diff,
+/// then the model's prose, then another `<tool_call>` block, concatenated into
+/// one `diff` argument. It is present on the *first* `apply_patch` of an attempt
+/// in 14 of 14 attempts, so it is not a reaction to being refused.
+///
+/// Before this, `Patch::parse` accepted it: there is a genuine `--- / +++` pair
+/// at the top, so the payload parses, applies nothing, and fails several hunks
+/// later with a sentence about a line number. The round is spent either way —
+/// the difference is whether the model is told something it can act on.
+#[test]
+fn a_diff_argument_carrying_tool_call_markup_is_refused_as_a_transcript() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "first.txt", "alpha\nbeta\n");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    // Abridged from a real payload on the log.
+    let diff = "--- a/first.txt\n+++ b/first.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA\n\
+                \"\n\nWait, that last patch block is broken. Let me redo this properly.\n\n\
+                <tool_call>\n<function=apply_patch>\n<parameter=diff>\n\
+                --- a/first.txt\n+++ b/first.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA\n";
+    let result = apply(&workspace, diff);
+
+    match &result.unmeasured {
+        Some(Why::FailedBeforeRunning { detail }) => {
+            assert!(
+                detail.contains("tool-call markup"),
+                "it has to name the real problem: {detail}"
+            );
+            assert!(detail.contains("<tool_call>"), "{detail}");
+            assert!(
+                !detail.contains("claims line") && !detail.contains("closest place"),
+                "and must NOT talk about line numbers or near misses: {detail}"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}: {}", result.text),
+    }
+    // ⚠ All or nothing still holds: the first hunk is perfectly valid and is
+    // still not applied, because a transcript is not a request.
+    assert_eq!(read(dir.path(), "first.txt"), "alpha\nbeta\n");
+}
+
+/// ⚠ **A diff that *adds* a line containing tool-call markup is not a
+/// transcript.** The check reads bare lines only — inside a hunk every line
+/// carries a `' '`, `'+'` or `'-'` prefix — because this repository's own
+/// research notes quote `<tool_call>` and refusing to patch them would be a new
+/// way to reject correct work.
+#[test]
+fn a_diff_that_adds_a_line_containing_markup_still_applies() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "notes.md", "one\ntwo\n");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let diff = "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,3 @@\n one\n two\n+<tool_call> is what it emits\n";
+    let result = apply(&workspace, diff);
+
+    assert!(
+        result.unmeasured.is_none(),
+        "a legitimate addition was refused: {:?} {}",
+        result.unmeasured,
+        result.text
+    );
+    assert_eq!(
+        read(dir.path(), "notes.md"),
+        "one\ntwo\n<tool_call> is what it emits\n"
+    );
+}
+
+/// 🚨 **F638: when a real diff does not match, say what the file actually has.**
+///
+/// The old message named the claimed line, and the model's observed response was
+/// to change it — three times in one attempt, 195 then 196 then 187. But the
+/// hunk header is a *hint*: `locate` searches the whole file, so the claimed line
+/// is the one part of a hunk that cannot cause the failure.
+///
+/// ⚠ The diagnosis is not the matching. Application stays exact; this only
+/// changes the sentence, and the sentence now carries the evidence.
+#[test]
+fn a_hunk_that_does_not_match_is_told_where_it_came_closest_and_what_differs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "cli.rs",
+        "Everywhere:\n  --repo <path>\n  --home <path>\n",
+    );
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    // One character wrong, exactly the real case: lowercase `everywhere:`.
+    let diff = "--- a/cli.rs\n+++ b/cli.rs\n@@ -1,3 +1,4 @@\n everywhere:\n   --repo <path>\n   --home <path>\n+  --version\n";
+    let result = apply(&workspace, diff);
+
+    match &result.unmeasured {
+        Some(Why::FailedBeforeRunning { detail }) => {
+            assert!(detail.contains("2 of its 3"), "how much matched: {detail}");
+            assert!(detail.contains("line 1"), "where it came closest: {detail}");
+            assert!(
+                detail.contains(r#"you wrote:    "everywhere:""#),
+                "the model's own line: {detail}"
+            );
+            assert!(
+                detail.contains(r#"the file has: "Everywhere:""#),
+                "and the file's: {detail}"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}: {}", result.text),
+    }
+}
+
+/// 🚨 **And the case the bare-line rule actually exists for: markup in a hunk's
+/// CONTEXT.**
+///
+/// A `+` prefix is not stripped by `trim_start`, so an *added* line was never at
+/// risk — which is why the first version of the test above passed with the guard
+/// removed and therefore taught nothing. A **context** line carries a leading
+/// space, and stripping that leaves `<tool_call>` at the head of the line. This
+/// is the real shape: editing a file that already quotes the markup, such as
+/// this project's own research notes.
+#[test]
+fn markup_in_a_hunks_context_is_content_and_not_a_transcript() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "notes.md", "<tool_call>\nis what it emits\n");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let diff = "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,3 @@\n <tool_call>\n is what it emits\n+and we refuse it\n";
+    let result = apply(&workspace, diff);
+
+    assert!(
+        result.unmeasured.is_none(),
+        "markup quoted as context is content: {:?} {}",
+        result.unmeasured,
+        result.text
+    );
+    assert_eq!(
+        read(dir.path(), "notes.md"),
+        "<tool_call>\nis what it emits\nand we refuse it\n"
     );
 }
