@@ -92,6 +92,17 @@ pub enum Command {
     Accept { task: TaskRef, note: Option<String> },
     /// The operator has read the work and stops the task.
     Reject { task: TaskRef, note: Option<String> },
+    /// 🚨 ADR-0012 §4's eighth verb: the operator takes the keyboard **and a
+    /// tree to use it in**.
+    ///
+    /// ⚠ It is narrower than [`abcc_core::task::Command::Commandeer`], which is
+    /// legal from every non-terminal state. This one refuses while the fleet
+    /// holds the slot, because the transition moves a state and the verb has to
+    /// move a directory. See [`crate::takeover`].
+    Take { task: TaskRef },
+    /// The operator hands a task they took over back to the fleet, snapshotting
+    /// whatever they did in it first.
+    Release { task: TaskRef },
     /// 🚨 One frame of the battlefield, as a sixel, straight to stdout.
     ///
     /// ADR-0012's flagship, made visible before it is wired to the log. It is
@@ -167,6 +178,9 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc review <change> <minutes> [--by W] [--boundary]
   abcc accept <task> [--note N]       the work is good; you take responsibility
   abcc reject <task> [--note N]       stop the task
+  abcc take <task>                    take the keyboard: a worktree of your own, and the
+                                      fleet will not admit it while you hold it
+  abcc release <task>                 hand it back queued, snapshotting your work first
   abcc paint [--sprites DIR]          the fleet on the battlefield, as a sixel
 
 Everywhere:
@@ -211,8 +225,16 @@ Both run and fleet read control verbs from stdin, and they differ in one thing:
 
   Three of the five have a mechanism all the way down: pause, halt and kill.
   redirect stops the attempt and records the prompt but forks no attempt from it
-  yet, and nothing acts on resume at all -- `abcc accept` and `abcc reject` are
-  the ways out of Holding. Both desks say so when you use them.
+  yet, and nothing acts on resume at all -- `abcc take`, `abcc accept` and
+  `abcc reject` are the ways out of Holding. Both desks say so when you use them.
+
+take and release are not desk verbs, and that is the point: a desk verb is
+addressed to an attempt that is flying, and you may only take over a task when
+nothing is. `abcc take t42` moves it to UNDER MANUAL CONTROL and cuts you a
+worktree at its last checkpoint -- the work as the fleet left it, or a fresh
+snapshot of your checkout if it never ran. `abcc release t42` snapshots what you
+did, takes the tree down and puts the task back on the board. accept and reject
+close your workspace too: no task goes terminal still holding one.
 ";
 
 /// Parse an argument list, without the program name.
@@ -301,15 +323,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
                 crossed_boundary,
             }
         }
-        "accept" | "reject" => {
-            let note = take_flag(&mut args, "--note")?;
-            let task = task_ref(&one_positional(&args, &verb, "a task")?)?;
-            if verb == "accept" {
-                Command::Accept { task, note }
-            } else {
-                Command::Reject { task, note }
-            }
-        }
+        "accept" | "reject" | "take" | "release" => operator_verb(&verb, &mut args)?,
         other => {
             return Err(CliError::Usage(format!("{other:?} is not a command")));
         }
@@ -319,6 +333,29 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
         repo,
         home,
         command,
+    })
+}
+
+/// The four verbs that are a person acting on one task, and nothing else.
+///
+/// Their own function because they are one shape — a task id, and at most a
+/// note — and because `parse` is at clippy's line ceiling; `paint_args` is here
+/// for the same reason.
+///
+/// ⚠ `take` and `release` deliberately have no `--note`. A note on `accept` or
+/// `reject` is the record of *why a task ended*; a take-over is the beginning of
+/// some work, and its record is the checkpoint at the other end.
+fn operator_verb(verb: &str, args: &mut Vec<String>) -> Result<Command, CliError> {
+    let note = match verb {
+        "accept" | "reject" => take_flag(args, "--note")?,
+        _ => None,
+    };
+    let task = task_ref(&one_positional(args, verb, "a task")?)?;
+    Ok(match verb {
+        "accept" => Command::Accept { task, note },
+        "reject" => Command::Reject { task, note },
+        "take" => Command::Take { task },
+        _ => Command::Release { task },
     })
 }
 

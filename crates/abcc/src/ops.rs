@@ -372,6 +372,15 @@ pub enum Finish {
 /// names an attempt and is legal only from `Engaged`: from `AwaitingOrders` the
 /// attempt is already over, and the thing being ended is the task.
 ///
+/// 🚨 **Both close the operator's workspace on the way out, and the reason is in
+/// the type.** All three terminal states have `holds_workspace: false` on their
+/// [`abcc_core::task::StateContract`], and until `abcc take` existed that was a
+/// claim nothing could break: the driver removes its own worktree before it sends
+/// the landing command, so no task had one left to hold. A task the operator took
+/// over does, and a task may not go terminal still holding a directory. The work
+/// is snapshotted before the tree comes down — which is what `reject` already
+/// promises when it says the checkpoints are still on refs.
+///
 /// # Errors
 ///
 /// [`AppError::Refused`] if the task is not there or a command was refused;
@@ -411,6 +420,11 @@ pub fn finish(
         })?;
     }
 
+    // Before the abort, because the abort is what makes it terminal. `None` for
+    // every task nobody took over, which is every task on a log written before
+    // the verb existed.
+    let kept = crate::takeover::hand_back(&mut store, &ground, &row, out)?;
+
     let by = operator();
     let reason = match finish {
         Finish::Accept => {
@@ -431,6 +445,9 @@ pub fn finish(
              work, so the record says a person accepted it, not that a gate passed it."
         )?,
         Finish::Reject => writeln!(out, "Stopped by {by}. The checkpoints are still on refs.")?,
+    }
+    if let Some(sha) = kept {
+        writeln!(out, "Your workspace is closed; what was in it is at {sha}.")?;
     }
     Ok(())
 }

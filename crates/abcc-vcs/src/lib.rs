@@ -382,6 +382,31 @@ impl Repo {
         })
     }
 
+    /// Take hold of a worktree this process did not create.
+    ///
+    /// 🚨 **The durable record of a worktree is the log, not a [`Worktree`]
+    /// value.** [`open_worktree`](Self::open_worktree) hands one back to the
+    /// process that cut it, and that process is the driver — but the operator's
+    /// `abcc release` is a *different* process reading `WorktreeOpened { path,
+    /// sha }` off the event log, and it has to be able to close what it finds
+    /// there. Without this the only way to take a worktree down is to have been
+    /// the one who put it up.
+    ///
+    /// It runs no git and checks nothing, deliberately: the check that matters
+    /// is *will git remove this*, and that is [`Worktree::close`]'s, which is
+    /// git's own answer at the moment of use. A second check here — reading
+    /// `git worktree list` and comparing paths — would be a reimplementation
+    /// that can disagree with the one that acts, on a platform where two
+    /// spellings of one directory are routine.
+    #[must_use]
+    pub fn adopt_worktree(&self, path: &Path, sha: &Sha) -> Worktree {
+        Worktree {
+            repo_root: self.root.clone(),
+            path: path.to_path_buf(),
+            sha: sha.clone(),
+        }
+    }
+
     /// A scratch index path outside the working tree, so `git add -A` is never
     /// asked to stage the file it is writing.
     fn scratch_index_path(&self) -> Result<PathBuf> {

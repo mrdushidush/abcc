@@ -378,6 +378,44 @@ fn closing_a_worktree_removes_it_and_prunes_the_metadata() {
     );
 }
 
+/// 🚨 A worktree can be closed by a process that did not open it, because the
+/// durable record of one is the event log and not a value held in memory.
+///
+/// `abcc take` cuts the operator a tree in one process and `abcc release` takes
+/// it down in another, an hour later; without this the only thing that could
+/// close a worktree was the `Worktree` handed back by `open_worktree`, which
+/// dies with the process that made it. The two paths have to end in the same
+/// place — same removal, same prune — so this asserts the metadata as well as
+/// the directory.
+#[test]
+fn a_worktree_can_be_adopted_by_its_path_and_closed_by_whoever_finds_it() {
+    let (dir, root) = fixture();
+    let repo = Repo::open(&root).expect("open");
+    let head = repo.head().expect("head");
+    let path = dir.path().join("wt");
+
+    // The process that opened it drops its handle without closing.
+    drop(repo.open_worktree(&path, &head).expect("worktree"));
+    assert!(path.exists());
+
+    // A second `Repo`, as a second process would have.
+    let found = Repo::open(&root).expect("open again");
+    found.adopt_worktree(&path, &head).close().expect("close");
+
+    assert!(!path.exists(), "the adopted worktree survived");
+    let listed = Command::new("git")
+        .current_dir(&root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .expect("list");
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert_eq!(
+        listed.matches("worktree ").count(),
+        1,
+        "stale worktree metadata remains:\n{listed}"
+    );
+}
+
 /// A worktree is where the isolation is enforced, so it must be at the sha it
 /// was asked for rather than at whatever the operator's checkout happens to be.
 #[test]

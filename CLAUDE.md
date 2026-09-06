@@ -277,6 +277,25 @@ do not reformat around it.
   task and finishes it by hand — `Aborted { CompletedByOperator }` — and `reject`
   is `Aborted { Operator }`. `Fail` is deliberately not reachable from
   `AwaitingOrders`: it names an attempt, and by then the attempt is over.
+- 🚨 **`abcc take` is narrower than `Command::Commandeer`, on purpose.** The
+  transition is legal from every non-terminal state; the verb refuses while the
+  task holds a slot, because *the transition moves a state and the verb moves a
+  directory* — and that directory belongs to a driver still writing in it. The
+  test is `StateContract::holds_slot` rather than a list of state names. Its
+  order is also the inverse of the driver's opening (log first, worktree second),
+  because only `abcc run` calls `Store::boot`: nothing sweeps up after an
+  operator command, so the recoverable failure is the one that leaves the task
+  moved and the directory missing.
+- **A task may not go terminal still holding a workspace.** All three terminal
+  states say `holds_workspace: false`, and until `abcc take` nothing could break
+  that claim — the driver closes its own worktree before it sends the landing
+  command. `accept`, `reject` and `release` all go through
+  `takeover::hand_back`, which snapshots the tree before it takes it down.
+- **There is one recipe for a checkpoint and it is `abcc_drive::snapshot`.** It
+  is a free function rather than a `Driver` method because the operator's verbs
+  are a second caller with their own `Store` and no `Driver`. The ref name is
+  what stops `git gc --prune=now` collecting the snapshot (F330), so two places
+  that name refs would be work quietly lost rather than a message somebody reads.
 - **A stopped tool child is `Cancelled`, never `exit: 1`.** `TerminateProcess`
   hands back 1, so `Killer::kill` takes a `by` and `finish()` reads it — otherwise
   the record says *the tests failed* about work nobody ran.

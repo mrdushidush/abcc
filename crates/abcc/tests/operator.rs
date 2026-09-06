@@ -26,6 +26,13 @@ use abcc_store::Store;
 // ---------------------------------------------------------------------------
 
 fn git(cwd: &Path, args: &[&str]) {
+    git_out(cwd, args);
+}
+
+/// The same, handing back what git said. Used to read a checkpoint's tree, which
+/// is how a test asks *did the operator's work actually land in the snapshot*
+/// rather than *did we write an event saying it did*.
+fn git_out(cwd: &Path, args: &[&str]) -> String {
     let out = OsCommand::new("git")
         .current_dir(cwd)
         .args(args)
@@ -36,6 +43,7 @@ fn git(cwd: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 struct Subject {
@@ -447,4 +455,358 @@ fn the_ground_refuses_a_directory_that_is_not_a_repository() {
         panic!("a bare directory is not a repository");
     };
     assert_eq!(refused.exit_code(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// take / release — ADR-0012 §4's eighth verb
+// ---------------------------------------------------------------------------
+
+/// The worktree the log says is open for a task, folded here rather than read
+/// back from `abcc::takeover`.
+///
+/// 🚨 A second implementation on purpose. F600: a test that asserts the inputs to
+/// a thing cannot see a defect in the thing — so the fold these tests check
+/// against is not the fold that ships.
+fn open_worktree(subject: &Subject, task: TaskId) -> Option<PathBuf> {
+    let mut open = None;
+    for logged in subject.store().task_history(task).expect("history") {
+        match logged.event {
+            Event::WorktreeOpened { path, .. } => open = Some(PathBuf::from(path)),
+            Event::WorktreeClosed { .. } => open = None,
+            _ => {}
+        }
+    }
+    open
+}
+
+/// Every checkpoint sha recorded for a task, oldest first.
+fn checkpoints(subject: &Subject, task: TaskId) -> Vec<String> {
+    subject
+        .store()
+        .task_history(task)
+        .expect("history")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::CheckpointTaken { sha, .. } => Some(sha),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn taking_over_hands_the_operator_the_state_and_a_tree_to_work_in() {
+    // 🚨 The half of *take over manually* that was missing. The lifecycle has had
+    // `Commandeer` since Skeleton; what an operator could not get was a directory
+    // to stand in.
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+
+    let said = subject
+        .run(Command::Take {
+            task: TaskRef(task.born().get()),
+        })
+        .expect("take");
+
+    let TaskState::Commandeered { .. } = subject.state(task) else {
+        panic!("take has to leave the task under manual control");
+    };
+    let path = open_worktree(&subject, task).expect("a worktree on the log");
+    assert!(path.is_dir(), "{} is not there", path.display());
+    assert!(
+        path.join("src.rs").is_file(),
+        "the tree has the repository in it"
+    );
+    assert!(said.contains(&path.display().to_string()), "{said}");
+
+    // 🚨 The log first and the directory second. Nothing boots after an operator
+    // command, so a task moved with no directory is recoverable and a directory
+    // with no task on the log is an orphan nobody can find.
+    let kinds = subject.kinds();
+    assert_eq!(
+        &kinds[kinds.len() - 3..],
+        ["task_transitioned", "checkpoint_taken", "worktree_opened"],
+        "{kinds:?}"
+    );
+}
+
+#[test]
+fn a_take_over_cuts_the_tree_at_the_last_checkpoint_and_not_at_head() {
+    // The tree is *the work as the fleet left it*. A take-over that cut at HEAD
+    // would hand the operator a directory with the attempt's work missing — and
+    // every assertion about paths and events would still pass.
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+
+    // Stand in for an attempt: change the tree, snapshot it the way the driver
+    // does, then put the checkout back.
+    fs::write(subject.root.join("src.rs"), "pub fn one() -> u32 { 2 }\n").expect("write");
+    let repo = abcc_vcs::Repo::open(&subject.root).expect("repo");
+    let git_ref = abcc_vcs::checkpoint_ref("m1", 7);
+    let sha = repo
+        .checkpoint(&git_ref, "an attempt's closing snapshot")
+        .expect("checkpoint");
+    fs::write(subject.root.join("src.rs"), "pub fn one() -> u32 { 1 }\n").expect("write back");
+    subject
+        .store()
+        .append(Event::CheckpointTaken {
+            task,
+            sha: sha.to_string(),
+            git_ref,
+        })
+        .expect("record it");
+
+    subject
+        .run(Command::Take {
+            task: TaskRef(task.born().get()),
+        })
+        .expect("take");
+
+    let path = open_worktree(&subject, task).expect("a worktree");
+    let content = fs::read_to_string(path.join("src.rs")).expect("read");
+    assert!(
+        content.contains("{ 2 }"),
+        "the tree was cut at HEAD rather than at the checkpoint: {content:?}"
+    );
+    // And no second snapshot was taken: there was already one to stand on.
+    assert_eq!(checkpoints(&subject, task), vec![sha.to_string()]);
+}
+
+#[test]
+fn taking_over_is_refused_while_the_fleet_holds_the_slot() {
+    // 🚨 `Commandeer` is legal from `Engaged` and this verb is not: the
+    // transition moves a state and the verb has to move a directory, and that
+    // directory belongs to a driver still writing in it.
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+    engaged(&subject, task);
+
+    let refused = subject
+        .run(Command::Take {
+            task: TaskRef(task.born().get()),
+        })
+        .expect_err("the fleet is holding it");
+
+    let said = refused.to_string();
+    assert!(
+        said.contains("halt"),
+        "the refusal has to name the way out: {said}"
+    );
+    let TaskState::Engaged { .. } = subject.state(task) else {
+        panic!("a refused take may not move the task");
+    };
+    assert!(
+        open_worktree(&subject, task).is_none(),
+        "and may not cut a tree"
+    );
+    assert!(
+        !subject.kinds().contains(&"checkpoint_taken"),
+        "or take a snapshot"
+    );
+}
+
+#[test]
+fn taking_over_a_finished_task_is_refused_and_sent_to_the_replay() {
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+    let reference = TaskRef(task.born().get());
+    subject
+        .run(Command::Accept {
+            task: reference,
+            note: None,
+        })
+        .expect("accept");
+
+    let refused = subject
+        .run(Command::Take { task: reference })
+        .expect_err("it is over");
+    assert!(refused.to_string().contains("replay"), "{refused}");
+}
+
+#[test]
+fn taking_over_twice_adopts_the_tree_that_is_already_standing() {
+    // Idempotence is the small half. The real one: the driver records a worktree
+    // it could not remove as a `Note` and leaves the directory there, so the tree
+    // that is standing is sometimes fresher than the last checkpoint.
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+    let reference = TaskRef(task.born().get());
+
+    subject
+        .run(Command::Take { task: reference })
+        .expect("take");
+    let first = open_worktree(&subject, task).expect("a worktree");
+    fs::write(first.join("mine.txt"), "the operator was here\n").expect("write");
+
+    let said = subject
+        .run(Command::Take { task: reference })
+        .expect("take again");
+
+    assert_eq!(open_worktree(&subject, task).as_ref(), Some(&first));
+    assert!(
+        first.join("mine.txt").is_file(),
+        "the operator's work is still there"
+    );
+    assert!(said.contains("already standing"), "{said}");
+    assert_eq!(
+        subject
+            .kinds()
+            .iter()
+            .filter(|k| **k == "worktree_opened")
+            .count(),
+        1,
+        "a second take may not cut a second tree"
+    );
+    assert_eq!(
+        checkpoints(&subject, task).len(),
+        1,
+        "nor take a second snapshot"
+    );
+}
+
+#[test]
+fn releasing_snapshots_what_the_operator_did_and_hands_the_task_back() {
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+    let reference = TaskRef(task.born().get());
+    subject
+        .run(Command::Take { task: reference })
+        .expect("take");
+    let path = open_worktree(&subject, task).expect("a worktree");
+    fs::write(path.join("src.rs"), "pub fn one() -> u32 { 2 }\n").expect("the operator works");
+
+    let said = subject
+        .run(Command::Release { task: reference })
+        .expect("release");
+
+    assert_eq!(subject.state(task), TaskState::Queued);
+    assert!(!path.exists(), "the tree is down: {}", path.display());
+    assert!(
+        open_worktree(&subject, task).is_none(),
+        "and the log says so"
+    );
+
+    // 🚨 The claim worth testing is not that an event was written — it is that the
+    // work is in the object database and outlives the directory.
+    let closing = checkpoints(&subject, task)
+        .pop()
+        .expect("a closing snapshot");
+    let kept = git_out(&subject.root, &["show", &format!("{closing}:src.rs")]);
+    assert!(
+        kept.contains("{ 2 }"),
+        "the operator's work is not in the snapshot: {kept:?}"
+    );
+    assert!(said.contains(&closing), "{said}");
+}
+
+#[test]
+fn releasing_a_task_nobody_took_over_is_refused_before_anything_is_touched() {
+    // 🚨 The order matters more than the refusal. `hand_back` snapshots a tree and
+    // removes it; running it before the legality check would take the *driver's*
+    // worktree down under a live attempt and only then discover that `Release` is
+    // not legal from `Engaged`.
+    //
+    // ⚠ F586's shape: with no worktree on the log there is nothing for an
+    // unguarded `hand_back` to destroy, so the test would pass having measured
+    // nothing. The attempt gets a real tree, the way the driver would.
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+    engaged(&subject, task);
+    let repo = abcc_vcs::Repo::open(&subject.root).expect("repo");
+    let head = repo.head().expect("head");
+    let flying = subject.home.join("the-drivers-tree");
+    repo.open_worktree(&flying, &head)
+        .expect("the driver cuts its own");
+    subject
+        .store()
+        .append(Event::WorktreeOpened {
+            task,
+            path: flying.display().to_string(),
+            sha: head.to_string(),
+        })
+        .expect("record it");
+    let before = subject.kinds();
+
+    let refused = subject
+        .run(Command::Release {
+            task: TaskRef(task.born().get()),
+        })
+        .expect_err("nobody took it over");
+
+    assert!(refused.to_string().contains("abcc take"), "{refused}");
+    assert_eq!(subject.kinds(), before, "a refused release writes nothing");
+    assert!(
+        flying.is_dir(),
+        "and takes down no tree it does not own: {}",
+        flying.display()
+    );
+}
+
+#[test]
+fn a_task_may_not_go_terminal_still_holding_a_workspace() {
+    // 🚨 All three terminal states say `holds_workspace: false` on their contract.
+    // Until `abcc take` there was no way to break that claim, because the driver
+    // closes its own worktree before it sends the landing command.
+    for finish in ["accept", "reject"] {
+        let subject = subject();
+        let task = queue(&subject, "make one() return two");
+        let reference = TaskRef(task.born().get());
+        subject
+            .run(Command::Take { task: reference })
+            .expect("take");
+        let path = open_worktree(&subject, task).expect("a worktree");
+        fs::write(path.join("src.rs"), "pub fn one() -> u32 { 2 }\n").expect("the operator works");
+
+        let said = subject
+            .run(if finish == "accept" {
+                Command::Accept {
+                    task: reference,
+                    note: None,
+                }
+            } else {
+                Command::Reject {
+                    task: reference,
+                    note: None,
+                }
+            })
+            .expect(finish);
+
+        let state = subject.state(task);
+        assert!(state.is_terminal(), "{finish}: {state:?}");
+        assert!(!state.contract().holds_workspace, "{finish}: {state:?}");
+        assert!(!path.exists(), "{finish} left {} standing", path.display());
+        assert!(open_worktree(&subject, task).is_none(), "{finish}");
+
+        let closing = checkpoints(&subject, task)
+            .pop()
+            .expect("a closing snapshot");
+        let kept = git_out(&subject.root, &["show", &format!("{closing}:src.rs")]);
+        assert!(
+            kept.contains("{ 2 }"),
+            "{finish} threw the work away: {kept:?}"
+        );
+        assert!(said.contains(&closing), "{finish}: {said}");
+    }
+}
+
+#[test]
+fn a_workspace_the_operator_deleted_is_closed_on_the_log_rather_than_failing() {
+    let subject = subject();
+    let task = queue(&subject, "make one() return two");
+    let reference = TaskRef(task.born().get());
+    subject
+        .run(Command::Take { task: reference })
+        .expect("take");
+    let path = open_worktree(&subject, task).expect("a worktree");
+    fs::remove_dir_all(&path).expect("the operator tidies up by hand");
+
+    subject
+        .run(Command::Release { task: reference })
+        .expect("release still works");
+
+    assert_eq!(subject.state(task), TaskState::Queued);
+    assert!(open_worktree(&subject, task).is_none());
+    assert!(
+        subject.kinds().contains(&"note"),
+        "and it says what happened"
+    );
 }

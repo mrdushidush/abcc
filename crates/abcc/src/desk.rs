@@ -238,8 +238,11 @@ fn control(head: &str, prompt: &str) -> Option<Control> {
 ///   recommendation nothing acts on. A sortie admits `Queued` tasks and a redirect
 ///   leaves this one `Holding`, so no attempt is ever forked from the prompt.
 /// * **`resume`** is not a stop, so the control point ignores it; and
-///   `Command::Resume`, the lifecycle's way out of `Holding`, has no caller in the
-///   binary at all.
+///   `Command::Resume`, the lifecycle's way out of `Holding` *back onto a slot*,
+///   has no caller in the binary at all. ⚠ `abcc take` is not that
+///   edge and does not close this gap: it moves the task to `Commandeered` and
+///   hands the tree to a person, which is the operator taking the work off the
+///   fleet rather than the fleet picking it back up.
 #[must_use]
 pub fn caveat(control: &Control) -> Option<&'static str> {
     match control {
@@ -249,8 +252,8 @@ pub fn caveat(control: &Control) -> Option<&'static str> {
              no attempt is forked from it yet",
         ),
         Control::Resume => Some(
-            "    \u{26a0} nothing acts on resume yet \u{2014} `abcc accept <task>` and \
-             `abcc reject <task>` are the ways out of Holding",
+            "    \u{26a0} nothing acts on resume yet \u{2014} `abcc take <task>` puts you in \
+             the tree, and `abcc accept <task>` / `abcc reject <task>` end it",
         ),
     }
 }

@@ -39,8 +39,17 @@ abcc task "make one() return two"   put a task on the board
 abcc run --task t3               one attempt, Localize then Change
 abcc watch                       the reader, over the event log alone
 abcc accept t3 / abcc reject t3  the operator's two endings
+abcc take t3 / abcc release t3   take the keyboard, and hand it back
 abcc review <sha> <minutes>      the measurement W13's ladder is defined in
 ```
+
+`abcc take t3` is *take over manually*, and it hands over a directory as well as
+a state: the task goes `UNDER MANUAL CONTROL` and you get a worktree cut at its
+last checkpoint — the work as the fleet left it. `abcc release t3` snapshots
+what you did, takes the tree down and puts the task back on the board;
+`abcc accept` and `abcc reject` end it and close the workspace on the way out.
+It is refused while an attempt is flying, because that worktree belongs to a
+driver that is still writing in it.
 
 The log and the attempt worktrees live **outside** the repository, in a
 per-checkout directory under the platform data directory; `abcc where` prints it

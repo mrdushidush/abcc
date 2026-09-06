@@ -272,8 +272,14 @@ fn review_needs_both_the_change_and_the_minutes() {
 #[test]
 fn every_verb_the_parser_accepts_is_in_the_usage_text() {
     // A command that parses and is not in `--help` is a command nobody finds.
+    //
+    // ⚠ The list is written out and therefore does not grow by itself, which
+    // is the trap `CLAUDE.md` names about the cheap test rung: a list of names
+    // does not fail when the workspace grows, it just stops covering things.
+    // Check it against the `match` in `cli::parse` when a verb is added.
     for verb in [
-        "where", "task", "board", "fun", "run", "watch", "check", "review", "accept", "reject",
+        "where", "task", "board", "replay", "fun", "run", "fleet", "watch", "check", "breaker",
+        "review", "accept", "reject", "paint", "take", "release",
     ] {
         // The verb is known to the parser: whatever else it complains about, it
         // never complains that this is not a command.
@@ -288,6 +294,36 @@ fn every_verb_the_parser_accepts_is_in_the_usage_text() {
         assert!(
             cli::USAGE.contains(&format!("abcc {verb}")),
             "{verb} is missing from the usage text"
+        );
+    }
+}
+
+/// The eighth verb takes a task and nothing else, at both spellings of an id.
+///
+/// ⚠ No `--note`: `accept` and `reject` end a task and a note is the record of
+/// why, while a take-over is the *beginning* of some work and the record of it is
+/// the checkpoint at the other end.
+#[test]
+fn take_and_release_each_name_one_task_and_take_no_flags() {
+    let Command::Take { task } = parse("take t42").expect("take").command else {
+        panic!("take has to parse to a take");
+    };
+    assert_eq!(task, cli::TaskRef(42));
+    let Command::Release { task } = parse("release 42").expect("release").command else {
+        panic!("release has to parse to a release");
+    };
+    assert_eq!(task, cli::TaskRef(42));
+
+    for line in ["take", "release"] {
+        let Err(CliError::Usage(said)) = parse(line) else {
+            panic!("{line} with no task is a usage error");
+        };
+        assert!(said.contains("a task"), "{line}: {said}");
+    }
+    for line in ["take t42 --note x", "release t42 now"] {
+        assert!(
+            parse(line).is_err(),
+            "{line} took something it does not have"
         );
     }
 }

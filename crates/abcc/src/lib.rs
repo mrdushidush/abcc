@@ -43,6 +43,7 @@ mod paint;
 pub mod pulse;
 pub mod replay;
 pub mod run;
+pub mod takeover;
 
 pub use cli::{Command, Invocation};
 pub use home::Home;
@@ -161,6 +162,8 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
         Command::Reject { task, note } => {
             ops::finish(invocation, *task, note.as_deref(), ops::Finish::Reject, out)
         }
+        Command::Take { task } => takeover::take(invocation, *task, out),
+        Command::Release { task } => takeover::release(invocation, *task, out),
     }
 }
 

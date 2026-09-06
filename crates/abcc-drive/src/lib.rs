@@ -706,26 +706,8 @@ impl<'a> Driver<'a> {
         self.snapshot(&repo, row, when)
     }
 
-    /// Snapshot `repo`, write it to a ref, and record it.
-    ///
-    /// 🚨 The ref name is disambiguated by the log head at the moment it is
-    /// taken. Every checkpoint appends this event, so two of them always have an
-    /// event between them and two names cannot collide — and the name then says
-    /// *where in the replay* the snapshot was taken, which under ADR-0005 is the
-    /// same fact as when.
     fn snapshot(&mut self, repo: &Repo, row: &TaskRow, when: &str) -> Result<Kept> {
-        let at = self.store.head()?;
-        let git_ref = checkpoint_ref(&row.mission.to_string(), at.get());
-        let sha = repo.checkpoint(&git_ref, &format!("abcc {} {when} {at}", row.id))?;
-        let logged = self.store.append(Event::CheckpointTaken {
-            task: row.id,
-            sha: sha.to_string(),
-            git_ref,
-        })?;
-        Ok(Kept {
-            id: CheckpointId::at(logged.seq),
-            sha,
-        })
+        snapshot(self.store, repo, row, when)
     }
 
     // -- the store, through one door ---------------------------------------
@@ -788,10 +770,50 @@ struct Opened {
     watch: Watch,
 }
 
+/// Snapshot `repo`, write it to a ref, and record it on the log.
+///
+/// 🚨 The ref name is disambiguated by the log head at the moment it is taken.
+/// Every checkpoint appends this event, so two of them always have an event
+/// between them and two names cannot collide — and the name then says *where in
+/// the replay* the snapshot was taken, which under ADR-0005 is the same fact as
+/// when.
+///
+/// 🚨 **It is a free function rather than a method because the driver is not the
+/// only thing that takes checkpoints any more.** `abcc take` cuts the operator a
+/// worktree and `abcc release` snapshots what they did in it, and both are a
+/// second process with its own [`Store`] and no [`Driver`] at all. Two copies of
+/// these six lines would be two places that could disagree about what a
+/// checkpoint ref is called — and the ref name is the thing that stops
+/// `git gc --prune=now` collecting the snapshot (F330), so a disagreement there
+/// is work quietly lost rather than a message somebody reads.
+///
+/// # Errors
+///
+/// [`DriveError::Store`] if the log will not take the event, [`DriveError::Vcs`]
+/// if git will not take the snapshot.
+pub fn snapshot(store: &mut Store, repo: &Repo, row: &TaskRow, when: &str) -> Result<Kept> {
+    let at = store.head()?;
+    let git_ref = checkpoint_ref(&row.mission.to_string(), at.get());
+    let sha = repo.checkpoint(&git_ref, &format!("abcc {} {when} {at}", row.id))?;
+    let logged = store.append(Event::CheckpointTaken {
+        task: row.id,
+        sha: sha.to_string(),
+        git_ref,
+    })?;
+    Ok(Kept {
+        id: CheckpointId::at(logged.seq),
+        sha,
+    })
+}
+
 /// A snapshot that was taken and recorded.
-struct Kept {
-    id: CheckpointId,
-    sha: Sha,
+///
+/// Public because [`snapshot`] is: the operator's take-over is a second caller
+/// of the same recipe, in another crate.
+#[derive(Debug, Clone)]
+pub struct Kept {
+    pub id: CheckpointId,
+    pub sha: Sha,
 }
 
 /// Where the driver takes the task when the attempt is over.
