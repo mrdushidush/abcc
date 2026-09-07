@@ -604,6 +604,45 @@ fn a_pause_lets_the_round_in_flight_finish() {
     );
 }
 
+/// 🚨 **F645: `tool_call_gap` is arithmetic, not taste — so this asserts the
+/// arithmetic and not the number.**
+///
+/// LM Studio buffers a tool call's arguments and delivers them in one delta at
+/// the end (F622), so the announced-but-silent window is the whole time the
+/// model spends writing the call, and `Head::budget` bounds how many tokens that
+/// can be. The gap must cover **the entire budget at the slowest decode this
+/// machine has produced** — F622's `bigarg` capture, 9,743 completion tokens
+/// across 226.0 s of stream — or the transport goes back to capping how large a
+/// patch this system can write, which is the defect F625 names.
+///
+/// ⚠ **The upper bound is asserted too, and it is the other half of the trade:**
+/// every second above what the budget needs is a second a server that died
+/// mid-call goes unnoticed. 833 logged calls put the floor at **72.2 tok/s** for
+/// calls of this size, so the capture's 43.1 tok/s already carries the margin —
+/// piling more on top buys nothing and costs detection.
+#[test]
+fn the_tool_call_gap_covers_the_whole_budget_at_the_slowest_measured_decode() {
+    // F622's `bigarg`: usage.completion_tokens against total_ms - first_byte_ms.
+    const SLOWEST_TOKENS: f64 = 9_743.0;
+    const SLOWEST_SECONDS: f64 = 226.0;
+
+    let budget = Head::Builders.budget();
+    let needed = f64::from(budget) * SLOWEST_SECONDS / SLOWEST_TOKENS;
+    let gap = Limits::default().tool_call_gap.as_secs_f64();
+
+    assert!(
+        gap >= needed,
+        "a {gap:.0} s gap caps the budget: {budget} tokens at {:.1} tok/s needs {needed:.0} s",
+        SLOWEST_TOKENS / SLOWEST_SECONDS,
+    );
+    assert!(
+        gap <= needed * 1.25,
+        "a {gap:.0} s gap is {:.0}% over the {needed:.0} s the budget needs, and every second \
+         of that overshoot is a dead server going unnoticed",
+        (gap / needed - 1.0) * 100.0,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Instrumentation
 // ---------------------------------------------------------------------------

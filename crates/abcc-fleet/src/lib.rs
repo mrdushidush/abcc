@@ -91,8 +91,8 @@ pub mod breaker;
 pub mod budget;
 
 use abcc_core::attempt::{Cause, NextAction};
-use abcc_core::event::Event;
-use abcc_core::seq::{AttemptId, TaskId, UnitId};
+use abcc_core::event::{Control, Event};
+use abcc_core::seq::{AttemptId, Seq, TaskId, UnitId};
 use abcc_core::task::TaskState;
 use abcc_drive::{DriveError, Driver, Landed};
 use abcc_engine::control::{ControlPoint, InFlight};
@@ -127,7 +127,22 @@ pub enum Admission {
     /// This task, with this cause. `Fresh` when the task has never run, and
     /// [`Cause::Retry`] naming the attempt it follows when it has.
     Run { task: TaskId, cause: Cause },
-    /// Nothing is `Queued`. The board is quiet.
+    /// 🚨 **F646: a `Holding` task the operator asked for back.**
+    ///
+    /// A hold is the operator having stopped this task, so it is never admitted
+    /// on its own — [`Fleet::held`] is the fold that says one was asked for, and
+    /// what with. `Queued` is scanned first, because `Queued` is the state whose
+    /// contract *is* eligible for admission and a held task re-enters behind the
+    /// board rather than in front of it.
+    Resume {
+        task: TaskId,
+        cause: Cause,
+        /// The prompt a `redirect` named. `None` is a plain `resume`: the same
+        /// question again, from the checkpoint the hold was taken at.
+        redirect: Option<String>,
+    },
+    /// Nothing is `Queued`, and nothing held has been asked for. The board is
+    /// quiet.
     Quiet,
     /// 🚨 Something is `Queued` whose line of enquiry has already had its
     /// attempts.
@@ -138,6 +153,33 @@ pub enum Admission {
     /// spend the GPU forever, and one that panicked would take the log's word for
     /// a state it could describe instead.
     HeldBack { task: TaskId, spent: u32 },
+}
+
+/// 🚨 **F646: what the operator asked for while a task was held.**
+///
+/// `pause`, `halt` and `redirect` all park a task in `Holding` and until now
+/// nothing put it back to work — [`Command::Resume`](abcc_core::task::Command),
+/// the lifecycle's only edge out of `Holding`, had no caller in the binary at
+/// all. The edge was never missing; **the reader was**. `FleetDesk::request`
+/// writes `ControlRequested` to the log before it pokes the channel (ADR-0006's
+/// ordering), so the operator's `resume` has been on the log the whole time with
+/// nothing folding over it.
+///
+/// ⚠ And it could never have been a channel verb.
+/// [`ControlPoint::check`](abcc_engine::control::ControlPoint::check) drops
+/// `Control::Resume` on purpose — *it belongs to a task in `Holding`, which by
+/// definition has no worker to receive it.* So the whole of `resume` lives on
+/// the log side, which is why this is a fold and not a delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Held {
+    /// Nobody has asked for it. The hold stands.
+    Stays,
+    /// `resume <task>`, typed after the hold. The same question again.
+    Asked,
+    /// The hold came from `redirect <task> <prompt>` — the operator saying what
+    /// to do *instead*, which is an answer rather than a stop, so it needs no
+    /// second verb to pick it back up.
+    Redirected { prompt: String },
 }
 
 /// The operator's stand-down: **fly out what is in flight, then admit nothing
@@ -307,36 +349,89 @@ impl<'a> Fleet<'a> {
     ///
     /// [`FleetError::Store`] if the projection will not read.
     pub fn admit(&self) -> Result<Admission> {
-        let Some(row) = self
-            .store
-            .tasks()?
-            .into_iter()
-            .find(|row| row.state == TaskState::Queued)
-        else {
-            return Ok(Admission::Quiet);
-        };
+        let rows = self.store.tasks()?;
 
-        let causes = self.causes(row.id)?;
-        let spent = budget::spent(&causes);
-        if !budget::available(&causes) {
-            return Ok(Admission::HeldBack {
-                task: row.id,
-                spent,
-            });
+        if let Some(row) = rows.iter().find(|row| row.state == TaskState::Queued) {
+            // The cause is derived, never chosen: a task with attempts behind it
+            // is being retried, and one without is fresh. There is no third
+            // answer here — `Edit` and `Rescope` reach the log through the
+            // operator's verbs, and `Edit` reaches admission below.
+            let cause = match self.last_attempt(row.id)? {
+                Some(of) => Cause::Retry { of },
+                None => Cause::Fresh,
+            };
+            return self.affordable(row.id, |task, cause| Admission::Run { task, cause }, cause);
         }
 
-        // The cause is derived, never chosen: a task with attempts behind it is
-        // being retried, and one without is fresh. There is no third answer, and
-        // `Edit` and `Rescope` reach the log through the operator's verbs rather
-        // than through admission.
-        let cause = match self.last_attempt(row.id)? {
-            Some(of) => Cause::Retry { of },
-            None => Cause::Fresh,
-        };
-        Ok(Admission::Run {
-            task: row.id,
-            cause,
-        })
+        // 🚨 **F646, and the order is the design.** A held task re-enters behind
+        // the board: `Queued` is the state whose contract is *eligible for
+        // admission*, and `Holding` is the operator having stopped this one. So
+        // nothing here can delay fresh work, and a redirect issued mid-sortie is
+        // picked up on the next turn of this loop rather than jumping a queue.
+        for row in &rows {
+            if !matches!(row.state, TaskState::Holding { .. }) {
+                continue;
+            }
+            let (cause, redirect) = match self.held(row.id, row.since)? {
+                Held::Stays => continue,
+                // The same question, from the checkpoint — so it spends a retry,
+                // which is exactly what the budget is for. ⚠ That makes `pause`
+                // cost something, and it should: the fleet is being asked for a
+                // second run at one question.
+                Held::Asked => (
+                    match self.last_attempt(row.id)? {
+                        Some(of) => Cause::Retry { of },
+                        None => Cause::Fresh,
+                    },
+                    None,
+                ),
+                // 🚨 A different question, so `Cause::Edit` — which resets the
+                // chain (`budget::spent`) rather than spending from it. The
+                // operator changed what is being asked, and ADR-0010's budget is
+                // spent on *one question asked repeatedly*.
+                Held::Redirected { prompt } => match self.last_attempt(row.id)? {
+                    Some(of) => (Cause::Edit { of }, Some(prompt)),
+                    // Unreachable — a task cannot be `Holding` without an attempt
+                    // having been stopped — and stated rather than asserted,
+                    // because a redirect with nothing to fork from is a fresh
+                    // start on the new prompt and not a panic.
+                    None => (Cause::Fresh, Some(prompt)),
+                },
+            };
+            return self.affordable(
+                row.id,
+                |task, cause| Admission::Resume {
+                    task,
+                    cause,
+                    redirect,
+                },
+                cause,
+            );
+        }
+
+        Ok(Admission::Quiet)
+    }
+
+    /// The budget check both admissions share, so there is one place that can
+    /// say `HeldBack` and one definition of what a spent line of enquiry is.
+    ///
+    /// ⚠ The cause is passed in rather than derived here: a redirect's `Edit`
+    /// resets the chain and a resume's `Retry` extends it, and which of those it
+    /// is has to be settled **before** the budget is asked about it.
+    fn affordable(
+        &self,
+        task: TaskId,
+        admit: impl FnOnce(TaskId, Cause) -> Admission,
+        cause: Cause,
+    ) -> Result<Admission> {
+        let causes = self.causes(task)?;
+        if !budget::admits(&causes, &cause) {
+            return Ok(Admission::HeldBack {
+                task,
+                spent: budget::spent(&causes),
+            });
+        }
+        Ok(admit(task, cause))
     }
 
     /// Fly attempts until the board is quiet or the operator stops one.
@@ -364,8 +459,16 @@ impl<'a> Fleet<'a> {
                 });
             }
 
-            let (task, cause) = match self.admit()? {
-                Admission::Run { task, cause } => (task, cause),
+            let (task, cause, redirect) = match self.admit()? {
+                Admission::Run { task, cause } => (task, cause, None),
+                // 🚨 F646. The only difference at this level is the prompt: the
+                // driver picks `Resume` over `Deploy` from the task's own state,
+                // so there is one dispatch path and not two.
+                Admission::Resume {
+                    task,
+                    cause,
+                    redirect,
+                } => (task, cause, redirect),
                 Admission::Quiet => {
                     return Ok(Sortie {
                         flown,
@@ -393,7 +496,11 @@ impl<'a> Fleet<'a> {
             // off-by-one: the attempt about to be dispatched is not on the log
             // yet.
             let causes = self.causes(task)?;
-            let retry_available = budget::in_hand_after(&causes);
+            // 🚨 F646: asked **beside the cause**. A redirect's `Cause::Edit`
+            // resets the line of enquiry, so `in_hand_after` — which assumes the
+            // dispatch extends it — would tell the driver no retry was left on
+            // the very attempt the operator had just bought.
+            let retry_available = budget::in_hand_beside(&causes, &cause);
 
             let mut driver = Driver::new(
                 self.store,
@@ -404,7 +511,8 @@ impl<'a> Fleet<'a> {
             )
             .limits(self.limits)
             .retry_available(retry_available)
-            .ceiling(self.ceiling);
+            .ceiling(self.ceiling)
+            .redirect(redirect);
             if let Some(toolchain) = &self.toolchain {
                 driver = driver.toolchain(*toolchain);
             }
@@ -445,6 +553,56 @@ impl<'a> Fleet<'a> {
                 _ => None,
             })
             .collect())
+    }
+
+    /// 🚨 **F646: whether a held task has been asked for, and what with.**
+    ///
+    /// Two readings, and the order between them is the whole of it:
+    ///
+    /// 1. **A `resume` typed after the hold.** `since` is the seq of the
+    ///    transition that produced this `Holding`, so a `ControlRequested` newer
+    ///    than it belongs to *this* hold. An older one belonged to a hold the
+    ///    task has already left, and honouring it would resume a task the
+    ///    operator has since stopped again — which is also why this can never
+    ///    loop: a task that holds again gets a newer `since` and the request
+    ///    falls behind it.
+    /// 2. **The hold's own cause.** A redirect names what to do instead, so it
+    ///    needs no second verb; the verb that caused the current hold is the last
+    ///    one the driver acknowledged with `ControlApplied`, because the
+    ///    transition into `Holding` follows it immediately and a later `resume`
+    ///    writes `ControlRequested` rather than `ControlApplied`.
+    ///
+    /// ⚠ The request is read and never consumed. There is no acknowledgement
+    /// row, because `since` already moves — an event that had to be marked as
+    /// used would be a mutation of the log, which ADR-0004 does not have.
+    fn held(&self, task: TaskId, since: Seq) -> Result<Held> {
+        let history = self.store.task_history(task)?;
+
+        if history.iter().any(|logged| {
+            logged.seq > since
+                && matches!(
+                    &logged.event,
+                    Event::ControlRequested {
+                        control: Control::Resume,
+                        ..
+                    }
+                )
+        }) {
+            return Ok(Held::Asked);
+        }
+
+        let caused_by = history.iter().rev().find_map(|logged| match &logged.event {
+            Event::ControlApplied { control, .. } => Some(control),
+            _ => None,
+        });
+        Ok(match caused_by {
+            Some(Control::Redirect { prompt }) => Held::Redirected {
+                prompt: prompt.clone(),
+            },
+            // `pause`, `halt`, or a hold with no verb behind it at all. All three
+            // are the operator having stopped this task, and they wait.
+            _ => Held::Stays,
+        })
     }
 
     /// The last attempt this task had, which is the one a retry follows.

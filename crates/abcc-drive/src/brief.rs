@@ -16,15 +16,43 @@ use abcc_store::TaskRow;
 
 /// What Recon is asked, opening the Localize phase.
 #[must_use]
-pub fn localize(row: &TaskRow) -> String {
+pub fn localize(row: &TaskRow, redirect: Option<&str>) -> String {
     format!(
-        "## The task\n\n{}\n\n{}\n\n## What is wanted from you now\n\n\
+        "## The task\n\n{}\n\n{}\n{}\n## What is wanted from you now\n\n\
          Find the place. Name the files and the specific lines the change belongs in, \
          and say what is already there. You are read-only: nothing you do can change \
          the tree, so look as widely as you need to. When you know where the work \
          goes, say so and stop asking for tools.\n",
-        row.title, row.prompt
+        row.title,
+        row.prompt,
+        redirected(redirect)
     )
+}
+
+/// 🚨 **F646: what the operator said to do instead, if they said anything.**
+///
+/// An **addendum**, deliberately: the task's own prompt is still above it. A
+/// redirect is the operator turning work that already had a definition, and a
+/// brief that replaced the task with the redirect would leave the model holding
+/// one sentence with nothing behind it.
+///
+/// ⚠ It also says where the tree is, because that is the half a redirected
+/// attempt cannot work out for itself: it opens on the checkpoint the stopped
+/// attempt reached rather than on a clean tree, so work already done is present
+/// and re-doing it is the failure this paragraph exists to prevent.
+///
+/// An empty string when there is no redirect, so the brief has one shape.
+fn redirected(prompt: Option<&str>) -> String {
+    prompt.map_or_else(String::new, |prompt| {
+        format!(
+            "\n## The operator has redirected this task\n\n{prompt}\n\n\
+             This was typed while an earlier attempt was running, and it stopped that \
+             attempt. Where it and the task above differ, this is the more recent \
+             instruction and it wins. The tree you are looking at is the one that \
+             attempt left behind, at its checkpoint - so work it already did is \
+             there, and doing it again is not what was asked for.\n"
+        )
+    })
 }
 
 /// What Builders is asked, opening the Change phase.
@@ -34,15 +62,17 @@ pub fn localize(row: &TaskRow) -> String {
 /// or time: on 98 unimpeded attempts a test really ran 81 of 81 times and 14 of
 /// those green, measured, true claims sat on trees the gate fails.
 #[must_use]
-pub fn change(row: &TaskRow, found: &str) -> String {
+pub fn change(row: &TaskRow, found: &str, redirect: Option<&str>) -> String {
     format!(
-        "## The task\n\n{}\n\n{}\n\n## What Recon reported\n\n{found}\n\n\
+        "## The task\n\n{}\n\n{}\n{}\n## What Recon reported\n\n{found}\n\n\
          ## What is wanted from you now\n\n\
          Make the change. Recon's report is a claim about the tree rather than a \
          measurement of it, so check the part you are about to rely on before you \
          rely on it. When the change is made, say what you changed and where, and \
          stop asking for tools.\n",
-        row.title, row.prompt
+        row.title,
+        row.prompt,
+        redirected(redirect)
     )
 }
 

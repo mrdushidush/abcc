@@ -35,7 +35,8 @@ use abcc_engine::openai::OpenAiCompat;
 use abcc_engine::provider::{ApiRequest, Delta, ProviderError, Role, Schema};
 use abcc_engine::tools::{TOOLS, ToolSpec};
 use abcc_engine::{
-    Body, ControlPoint, Head, PhaseEnded, Provider, Tier, ToolCall, ToolResult, Tools, TurnLoop,
+    Body, ControlPoint, Head, Limits, PhaseEnded, Provider, Tier, ToolCall, ToolResult, Tools,
+    TurnLoop,
 };
 use serde_json::Value;
 
@@ -899,7 +900,7 @@ fn a_live_turn_reports_usage_and_a_reasoning_trace() {
             body: &body,
             schema: None,
             idle_gap: Duration::from_secs(90),
-            tool_call_gap: Duration::from_mins(8),
+            tool_call_gap: Limits::default().tool_call_gap,
             liveness_slice: Duration::from_secs(10),
         },
     );
@@ -1421,7 +1422,7 @@ fn a_live_turn_writing_a_large_tool_call_survives_its_own_silence() {
         body: &body,
         schema: None,
         idle_gap: Duration::from_secs(90),
-        tool_call_gap: Duration::from_mins(8),
+        tool_call_gap: Limits::default().tool_call_gap,
         liveness_slice: Duration::from_secs(10),
     };
     let mut stream = provider.start(&req).expect("open the turn");

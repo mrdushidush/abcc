@@ -153,26 +153,35 @@ pub struct Limits {
     pub idle_gap: Duration,
     /// 🚨 **F625: the per-read budget while a tool call is open.**
     ///
-    /// **480 s, and it is derived from two wire captures rather than chosen.**
-    /// LM Studio delivers a tool call's arguments in one delta at the end (F622),
-    /// so the silence between the announcement and the call is the time the model
-    /// spends writing it, and that is bounded by the token budget.
+    /// **400 s, and it is derived rather than chosen.** LM Studio delivers a tool
+    /// call's arguments in one delta at the end (F622), so the silence between the
+    /// announcement and the call is the time the model spends writing it, and that
+    /// is bounded by [`Head::budget`](crate::Head::budget) — 16,384 tokens.
     ///
-    /// | capture | chars | true silence | rate |
+    /// 🚨 **F645: the first derivation rested on two wire captures; this one rests
+    /// on 833 logged calls, and the two disagree about where the floor is.** Every
+    /// row below is that budget divided by a decode rate, so they are the same
+    /// arithmetic over different evidence:
+    ///
+    /// | basis | n | slowest decode | whole budget at it |
     /// |---|---|---|---|
-    /// | F622's `bigarg` | 33,962 | 211.2 s | **160.8 chars/s** |
-    /// | F627's `fullbudget` | 21,112 | 49.9 s | 422.9 chars/s |
+    /// | F622's `bigarg` capture — *the old basis* | 1 | **43.1 tok/s** | **380 s** |
+    /// | the log, any call size | 833 | 48.5 tok/s | 338 s |
+    /// | the log, calls ≥ 8,000 tokens | 15 | 72.2 tok/s | 227 s |
+    /// | the log's **longest call ever**, measured | — | — | **138.5 s** |
     ///
-    /// ⚠ **Both are *true* silence.** In each capture the largest gap between any
-    /// two SSE frames other than this one is under 110 ms, so nothing at all
-    /// arrives between the announcement and the call — the reasoning trace has
-    /// finished streaming by then. The 2.6× spread between the two rates is why
-    /// the bound is taken against the slower one.
+    /// 🚨 **F645's finding is that decode does not degrade with size — it
+    /// improves.** The 48.5 tok/s floor comes from a **721-token** call; every call
+    /// that approaches the budget runs at 72—140 tok/s. So a bound of *the whole
+    /// budget at the slowest rate ever seen* composes the largest size with a rate
+    /// that only occurs at small ones, and is pessimistic by construction.
     ///
-    /// [`Head::budget`](crate::Head::budget) is 16,384 tokens and the measured
-    /// argument density is **3.84 chars/token**, so a call spending the *entire*
-    /// budget on arguments is ~62,900 characters, and at 160.8 chars/s that is
-    /// **391 s**. 480 s covers it with 23% margin.
+    /// ⚠ **The capture is still the binding number, and deliberately so.** At 43.1
+    /// tok/s it is 1.7× slower than anything in the log's own 8,000+ band, and the
+    /// conditions that produced it were not recorded — but it is a real observation
+    /// on this machine, and `ssecapture.py` is a direct client rather than a proxy,
+    /// so it is not an instrument-in-the-path artifact. 400 s covers its 380 s with
+    /// 5% margin. Anything below that tightens past a rate this machine has shown.
     ///
     /// 🚨 **Covering the whole budget is the point, not generosity.** Any value
     /// below it leaves the timeout capping how large a patch this system can
@@ -182,12 +191,11 @@ pub struct Limits {
     /// ever seen (17,157 chars) a measurement of the timeout.
     ///
     /// ⚠ **What it costs, stated plainly: a server that dies *during* a tool call
-    /// now takes eight minutes to detect instead of ninety seconds.** That is
-    /// survivable only because the silence is no longer unobserved — the liveness
-    /// mark names the tool and the elapsed quiet every
-    /// [`Limits::liveness_gap`], and the desk's `kill` reaches a worker between
-    /// deltas. ▶ **Tightening it is David's**, and the thing to tighten it
-    /// against is a re-measured argument rate, not a feeling about eight minutes.
+    /// takes 6m40s to detect instead of ninety seconds** — 80 s better than the
+    /// eight minutes this shipped with. That is survivable only because the silence
+    /// is no longer unobserved: the liveness mark names the tool and the elapsed
+    /// quiet every [`Limits::liveness_gap`], and the desk's `kill` reaches a worker
+    /// between deltas.
     pub tool_call_gap: Duration,
     /// How long a stream may say nothing before the log says it is alive.
     /// ADR-0012 §5's bar is that no gap over ten seconds goes unmarked.
@@ -220,9 +228,10 @@ impl Default for Limits {
             // The champion's rung: ~2.4x its measured worst-case TTFB, and
             // 1.7-3.3x tighter than the 300 s inherited (F199).
             idle_gap: Duration::from_secs(90),
-            // F625. 480 s = the 16,384-token budget at the slowest argument rate
-            // ever measured, plus margin. Derived, not chosen; see the field.
-            tool_call_gap: Duration::from_mins(8),
+            // F625/F645. 400 s = the 16,384-token budget at 43.1 tok/s, the
+            // slowest decode this machine has produced, plus 5%. Derived from
+            // 833 logged calls, not chosen; see the field.
+            tool_call_gap: Duration::from_secs(400),
             liveness_gap: Duration::from_secs(10),
             nudges: 2,
         }

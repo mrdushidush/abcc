@@ -188,6 +188,19 @@ pub struct Driver<'a> {
     /// Default [`Tier::Exec`]: the slot allows whatever the role asks for, so an
     /// unset ceiling changes nothing.
     ceiling: Tier,
+    /// 🚨 **F646: the prompt a `redirect` named, carried into both briefs.**
+    ///
+    /// The operator stopped an attempt and said what to do instead. `Cause::Edit`
+    /// records *that* they changed the question and names the attempt it forked
+    /// from; it does not carry the words, because an attempt's cause is a fact
+    /// about the fork and the prompt is a fact about the log. So the fleet folds
+    /// it out of the `ControlApplied` the landing already wrote and hands it here.
+    ///
+    /// ⚠ It is an **addendum and not a replacement**. The task's own prompt still
+    /// opens both briefs: a redirect that silently dropped it would leave the
+    /// model working on a sentence with no task behind it, and the operator wrote
+    /// the redirect expecting the task to still be the task.
+    redirect: Option<String>,
 }
 
 impl<'a> Driver<'a> {
@@ -213,6 +226,7 @@ impl<'a> Driver<'a> {
             toolchain: None,
             retry_available: false,
             ceiling: Tier::Exec,
+            redirect: None,
         }
     }
 
@@ -248,6 +262,14 @@ impl<'a> Driver<'a> {
         self
     }
 
+    /// Carry a redirect's prompt into this attempt's briefs. See
+    /// [`Driver::redirect`](Driver#structfield.redirect).
+    #[must_use]
+    pub fn redirect(mut self, prompt: Option<String>) -> Driver<'a> {
+        self.redirect = prompt;
+        self
+    }
+
     /// Run one attempt on `task` in `unit`, and land the task where its ending
     /// implies.
     ///
@@ -267,7 +289,16 @@ impl<'a> Driver<'a> {
         control: &mut ControlPoint,
     ) -> Result<Landed> {
         let row = self.row(task)?;
-        self.command(task, Command::Deploy { unit })?;
+        // 🚨 **F646: the way onto a slot depends on where the task was.**
+        // `Deploy` is `Queued -> Deployed` and `Resume` is `Holding -> Deployed`;
+        // they land on the same state, and this chooses which to *ask* rather
+        // than whether it is allowed — `TaskState::apply` stays the one authority
+        // on legality, which is F629's rule about a second `match` that can drift.
+        let onto_slot = match row.state {
+            TaskState::Holding { .. } => Command::Resume { unit },
+            _ => Command::Deploy { unit },
+        };
+        self.command(task, onto_slot)?;
 
         let opened = self.open_workspace(&row, control.watch())?;
 
@@ -283,7 +314,7 @@ impl<'a> Driver<'a> {
         // Two phases, two heads, two bodies. The body cannot be shared across
         // them: a phase is a different frozen prefix, so continuing one body into
         // the other would be a cold prefill wearing a warm one's clothes.
-        let mut recon = Body::opening(brief::localize(&row));
+        let mut recon = Body::opening(brief::localize(&row, self.redirect.as_deref()));
         let localize = self.phase(
             Call {
                 attempt,
@@ -298,7 +329,8 @@ impl<'a> Driver<'a> {
 
         let change = match &localize {
             PhaseEnded::Answered { text, .. } => {
-                let mut builders = Body::opening(brief::change(&row, text));
+                let mut builders =
+                    Body::opening(brief::change(&row, text, self.redirect.as_deref()));
                 Some(self.phase(
                     Call {
                         attempt,

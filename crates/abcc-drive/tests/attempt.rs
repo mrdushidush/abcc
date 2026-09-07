@@ -1135,3 +1135,186 @@ fn a_retryable_ending_with_no_attempt_in_hand_asks_a_person_and_names_the_budget
     // The work is still kept, and the operator is told where.
     assert!(landed.kept.is_some());
 }
+
+// ---------------------------------------------------------------------------
+// F646 — a held task's way back onto a slot
+// ---------------------------------------------------------------------------
+
+/// Walk a task to `Holding` the way an operator's `pause` walks it.
+fn hold(store: &mut Store, task: TaskId) {
+    store
+        .apply(task, abcc_core::task::Command::Deploy { unit: UnitId(0) })
+        .expect("deploy");
+    let started = store
+        .append(Event::AttemptStarted {
+            task,
+            unit: UnitId(0),
+            cause: Cause::Fresh,
+            checkpoint_from: None,
+        })
+        .expect("started");
+    store
+        .apply(
+            task,
+            abcc_core::task::Command::Engage {
+                attempt: abcc_core::seq::AttemptId::at(started.seq),
+            },
+        )
+        .expect("engage");
+    store
+        .apply(
+            task,
+            abcc_core::task::Command::Hold {
+                checkpoint: abcc_core::seq::CheckpointId::at(started.seq),
+            },
+        )
+        .expect("hold");
+}
+
+/// 🚨🚨 **F646: the way onto a slot depends on where the task was.**
+///
+/// `Deploy` is `Queued -> Deployed` and `Resume` is `Holding -> Deployed`. They
+/// land on the same state, and the driver has always sent the first
+/// unconditionally — so a held task could not be run at all, which is the whole
+/// of why `Command::Resume` had no caller in the binary.
+///
+/// ⚠ The assertion is that the attempt **ran**, not that a particular command
+/// went out: `TaskState::apply` is the authority on legality (F629), so sending
+/// the wrong one here is a `Refused` and the run fails. That makes this a test of
+/// the contract rather than of a `match` arm's spelling.
+#[test]
+fn a_held_task_reaches_the_slot_and_a_queued_one_still_does() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+
+    let queued = seed(&mut store);
+    let landed = drive(&subject, &mut store, queued, changing());
+    assert!(
+        !matches!(landed.outcome, AttemptOutcome::HardFailure { .. }),
+        "a queued task stopped reaching the slot: {landed:?}"
+    );
+
+    let held = seed(&mut store);
+    hold(&mut store, held);
+    assert!(
+        matches!(
+            store.task(held).expect("row").expect("row").state,
+            TaskState::Holding { .. }
+        ),
+        "the fixture did not hold the task"
+    );
+
+    let landed = drive(&subject, &mut store, held, changing());
+    assert!(
+        !matches!(landed.outcome, AttemptOutcome::HardFailure { .. }),
+        "a held task could not be resumed onto a slot: {landed:?}"
+    );
+    assert!(
+        store
+            .task_history(held)
+            .expect("history")
+            .iter()
+            .any(|l| matches!(l.event, Event::AttemptStarted { .. })),
+        "the resumed task never started an attempt"
+    );
+}
+
+/// 🚨 **The redirect's prompt reaches both briefs, and the task's own prompt
+/// survives beside it.**
+///
+/// `Cause::Edit` records *that* the operator changed the question and names the
+/// attempt it forked from; it does not carry the words. So the addendum is the
+/// only path the prompt has, and it is an addendum on purpose — a brief that
+/// replaced the task with the redirect would leave the model holding one sentence
+/// with nothing behind it.
+#[test]
+fn a_redirects_prompt_is_an_addendum_to_both_briefs_and_not_a_replacement() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+    hold(&mut store, task);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(changing());
+    let repo = Repo::open(&subject.root).expect("open");
+    let landed = Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .redirect(Some("look in src/other.rs instead".to_owned()))
+        .run(
+            task,
+            UnitId(0),
+            Cause::Edit {
+                of: abcc_core::seq::AttemptId::at(Seq::new(1)),
+            },
+            &mut control,
+        )
+        .expect("run");
+    assert!(
+        !matches!(landed.outcome, AttemptOutcome::HardFailure { .. }),
+        "{landed:?}"
+    );
+
+    // ⚠ Both *working* heads, and not every call: `Engineering` judges the diff
+    // from a fresh body of its own (`judge::brief`), which is a different
+    // question and has no business being told what the operator typed at the
+    // console. Asserting over every call would have quietly required that.
+    let working: Vec<_> = provider
+        .seen()
+        .into_iter()
+        .filter(|call| matches!(call.head_key, "recon" | "builders"))
+        .collect();
+    assert!(
+        working.iter().any(|c| c.head_key == "recon")
+            && working.iter().any(|c| c.head_key == "builders"),
+        "both working phases should have run: {:?}",
+        working.iter().map(|c| c.head_key).collect::<Vec<_>>()
+    );
+    for call in &working {
+        let opening = &call.messages.first().expect("an opening message").content;
+        assert!(
+            opening.contains("look in src/other.rs instead"),
+            "{} lost the redirect: {opening}",
+            call.head_key
+        );
+        assert!(
+            opening.contains(PROMPT),
+            "{} lost the task's own prompt: {opening}",
+            call.head_key
+        );
+    }
+}
+
+/// ⚠ **And an attempt with no redirect behind it says nothing about one.** The
+/// addendum is an empty string, so the brief has one shape — a heading that
+/// appeared on every ordinary attempt would be teaching the model to look for an
+/// instruction that is not there.
+#[test]
+fn an_ordinary_attempt_carries_no_redirect_heading() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(changing());
+    let repo = Repo::open(&subject.root).expect("open");
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+
+    for call in provider
+        .seen()
+        .into_iter()
+        .filter(|call| matches!(call.head_key, "recon" | "builders"))
+    {
+        let opening = &call.messages.first().expect("an opening message").content;
+        assert!(
+            !opening.contains("redirected"),
+            "{} grew a redirect heading with no redirect: {opening}",
+            call.head_key
+        );
+        assert!(
+            opening.contains(PROMPT),
+            "{} lost the prompt",
+            call.head_key
+        );
+    }
+}

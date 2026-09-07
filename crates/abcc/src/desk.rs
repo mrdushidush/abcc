@@ -135,7 +135,7 @@ impl Desk {
                 let _ = writeln!(out, "  ? {typed:?} is not one of: {VERBS}");
                 continue;
             };
-            let caveat = caveat(&control);
+            let caveat = caveat(&control, Behind::OneAttempt);
             match self.request(control) {
                 Ok(Delivered::ToTheWorker) => {
                     let _ = writeln!(out, "  > logged and sent");
@@ -221,39 +221,54 @@ fn control(head: &str, prompt: &str) -> Option<Control> {
     }
 }
 
-/// 🚨 **What a verb does not do yet, said at the moment it is used.**
+/// Which desk is asking, because the same verb has a different mechanism behind
+/// it at each.
+///
+/// 🚨 **F646.** `abcc run` flies one attempt and the process ends, so it has no
+/// admission loop to pick a held task back up; a sortie has one, and that is the
+/// whole of the difference. Making it a parameter rather than two copies of the
+/// table keeps the two desks from drifting about what a verb means — which is
+/// the same reason [`control`] is one `match` in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Behind {
+    /// `abcc run`: one attempt, then the process exits.
+    OneAttempt,
+    /// `abcc fleet`: an admission loop that outlives the attempt.
+    ASortie,
+}
+
+/// 🚨 **What a verb does not do here, said at the moment it is used.**
 ///
 /// ADR-0012 §4 names the risk in one sentence — *eight verbs that half-work are
-/// worse than three that work* — and three of these five have a mechanism all the
-/// way down while two do not. The honest place to say so is the line the operator
-/// gets back: a verb that is quietly inert teaches them to trust a control that
-/// is not there, and they find out on the run where it mattered.
+/// worse than three that work* — and the honest place to say so is the line the
+/// operator gets back: a verb that is quietly inert teaches them to trust a
+/// control that is not there, and they find out on the run where it mattered.
 ///
-/// ⚠ Both are still parsed, still written to the log, and still spelled the same
-/// at both desks. The gap is in the mechanism and not in the word, and removing
-/// the word would only move the surprise to `abcc run`.
+/// ✅ **F646 wired both of the two that had no mechanism, and this is now a
+/// statement about the desk rather than about the verb.** At a sortie all five
+/// return `None`: `redirect` stops the attempt, records the prompt, and the next
+/// turn of [`Fleet::admit`](abcc_fleet::Fleet::admit) forks an attempt from it;
+/// `resume` writes the `ControlRequested` row that the same fold reads.
 ///
-/// * **`redirect`** reaches [`abcc_engine::control::Keep::AndFork`] and the
-///   landing turns it into `NextAction::Attempt { Cause::Edit }` — a
-///   recommendation nothing acts on. A sortie admits `Queued` tasks and a redirect
-///   leaves this one `Holding`, so no attempt is ever forked from the prompt.
-/// * **`resume`** is not a stop, so the control point ignores it; and
-///   `Command::Resume`, the lifecycle's way out of `Holding` *back onto a slot*,
-///   has no caller in the binary at all. ⚠ `abcc take` is not that
-///   edge and does not close this gap: it moves the task to `Commandeered` and
-///   hands the tree to a person, which is the operator taking the work off the
-///   fleet rather than the fleet picking it back up.
+/// ⚠ At `abcc run` both are still inert, and for a reason no wiring can remove:
+/// **there is no loop after the attempt.** The rows are still written, so a
+/// sortie started afterwards honours them — which is what the caveats now say,
+/// because *nothing happened* and *nothing happens until you start a sortie* are
+/// different things for an operator to do next.
 #[must_use]
-pub fn caveat(control: &Control) -> Option<&'static str> {
-    match control {
-        Control::Pause | Control::Halt | Control::Kill => None,
-        Control::Redirect { .. } => Some(
-            "    \u{26a0} it stops the attempt and records the prompt; \
-             no attempt is forked from it yet",
+pub fn caveat(control: &Control, behind: Behind) -> Option<&'static str> {
+    match (control, behind) {
+        // The three that were always wired, and — since F646, and only where
+        // there is an admission loop to wire them to — the two that were not.
+        (Control::Pause | Control::Halt | Control::Kill, _)
+        | (Control::Redirect { .. } | Control::Resume, Behind::ASortie) => None,
+        (Control::Redirect { .. }, Behind::OneAttempt) => Some(
+            "    \u{26a0} it stops the attempt and records the prompt; this run then ends, \
+             and the next `abcc fleet` forks an attempt from it",
         ),
-        Control::Resume => Some(
-            "    \u{26a0} nothing acts on resume yet \u{2014} `abcc take <task>` puts you in \
-             the tree, and `abcc accept <task>` / `abcc reject <task>` end it",
+        (Control::Resume, Behind::OneAttempt) => Some(
+            "    \u{26a0} logged, and there is nothing here to resume into \u{2014} a held task \
+             is picked back up by `abcc fleet`",
         ),
     }
 }
@@ -515,7 +530,7 @@ impl FleetDesk {
                     };
                 }
                 Ok(Order::ToTask { task, control }) => {
-                    let caveat = caveat(&control);
+                    let caveat = caveat(&control, Behind::OneAttempt);
                     let _ = match self.request(task, control) {
                         Ok(Delivered::ToTheWorker) => {
                             writeln!(out, "  > logged and sent to {task}")

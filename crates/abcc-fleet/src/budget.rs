@@ -71,6 +71,42 @@ pub fn available(causes: &[Cause]) -> bool {
     spent(causes) < ATTEMPTS
 }
 
+/// How long the line of enquiry would be **with this attempt on it** — the causes
+/// the log already holds, plus the one about to be dispatched.
+///
+/// 🚨 **F646: this exists because the dispatched cause is no longer always a
+/// `Retry`.** A redirect dispatches [`Cause::Edit`], which *resets* the chain
+/// rather than extending it — the operator changed the question — so a budget
+/// asked before the cause is known would refuse the very attempt the redirect
+/// just bought. Asking [`spent`] about the causes *before* the dispatch and then
+/// adding one is only correct while every dispatch is a retry, which stopped
+/// being true when `Holding` grew a way back onto a slot.
+#[must_use]
+pub fn spent_with(causes: &[Cause], next: &Cause) -> u32 {
+    let mut chain = Vec::with_capacity(causes.len() + 1);
+    chain.extend_from_slice(causes);
+    chain.push(next.clone());
+    spent(&chain)
+}
+
+/// Whether the fleet may dispatch **this** attempt on this line of enquiry.
+///
+/// The counterpart of [`available`] for a caller that already knows the cause.
+#[must_use]
+pub fn admits(causes: &[Cause], next: &Cause) -> bool {
+    spent_with(causes, next) <= ATTEMPTS
+}
+
+/// Whether dispatching **this** attempt would still leave one in hand.
+///
+/// The counterpart of [`in_hand_after`], and the one a caller with a cause in
+/// hand should use: `in_hand_after` carries the off-by-one for a retry and this
+/// one carries it for whatever the cause turns out to be.
+#[must_use]
+pub fn in_hand_beside(causes: &[Cause], next: &Cause) -> bool {
+    spent_with(causes, next) < ATTEMPTS
+}
+
 /// Whether an attempt dispatched **now** would still leave one in hand — which is
 /// what [`Driver::retry_available`](abcc_drive::Driver::retry_available) is asking,
 /// and it is asked *before* the attempt starts.

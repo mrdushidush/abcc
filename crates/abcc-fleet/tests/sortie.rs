@@ -25,9 +25,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
-use abcc_core::event::Event;
-use abcc_core::seq::{MissionId, Seq, TaskId};
-use abcc_core::task::TaskState;
+use abcc_core::event::{Control, Event};
+use abcc_core::seq::{AttemptId, CheckpointId, MissionId, Seq, TaskId, UnitId};
+use abcc_core::task::{Command, TaskState};
 use abcc_engine::control::{Delivery, InFlight};
 use abcc_engine::provider::{
     ApiRequest, Provider, ProviderClass, ProviderError, ProviderId, TurnStream,
@@ -176,6 +176,339 @@ fn a_task_that_has_never_run_is_admitted_fresh() {
             cause: Cause::Fresh
         }
     );
+}
+
+// ---------------------------------------------------------------------------
+// F646 — the way back out of `Holding`
+// ---------------------------------------------------------------------------
+
+/// Walk a task to `Holding` the way the driver walks it, so the fold under test
+/// reads a shape this system can actually produce.
+///
+/// ⚠ `by` is the verb the driver **acknowledged** — the `ControlApplied` written
+/// at rule 4, before anything acts on it — and not the operator's request. That
+/// is the distinction the fold turns on, so the fixture has to keep it.
+///
+/// 🚨 And `cause` is a parameter rather than always `Fresh`, because it is the
+/// **line of enquiry** this attempt joins: a fixture that quietly appended a
+/// `Fresh` would reset `budget::spent` and hand the budget test a task whose
+/// budget it had just refilled. It did, and the test caught it.
+fn held_at(store: &mut Store, task: TaskId, cause: Cause, by: Option<Control>) -> AttemptId {
+    let unit = UnitId(1);
+    store.apply(task, Command::Deploy { unit }).expect("deploy");
+    let started = store
+        .append(Event::AttemptStarted {
+            task,
+            unit,
+            cause,
+            checkpoint_from: None,
+        })
+        .expect("started");
+    let attempt = AttemptId::at(started.seq);
+    store
+        .apply(task, Command::Engage { attempt })
+        .expect("engage");
+    if let Some(control) = by {
+        store
+            .append(Event::ControlApplied { task, control })
+            .expect("applied");
+    }
+    store
+        .apply(
+            task,
+            Command::Hold {
+                checkpoint: CheckpointId::at(started.seq),
+            },
+        )
+        .expect("hold");
+    attempt
+}
+
+fn resume_typed(store: &mut Store, task: TaskId) {
+    store
+        .append(Event::ControlRequested {
+            task,
+            control: Control::Resume,
+        })
+        .expect("requested");
+}
+
+/// 🚨 **A hold is the operator having stopped this task, so it stays stopped.**
+///
+/// The negative side of the whole feature, and it is asserted first because
+/// every other test here is only interesting against it: if `Holding` were
+/// admitted on sight, `pause` would be a hiccup rather than a stop and the tests
+/// below would all pass for the wrong reason.
+#[test]
+fn a_held_task_nobody_asked_for_is_not_admitted() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+    held_at(&mut store, task, Cause::Fresh, Some(Control::Pause));
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+    assert_eq!(fleet.admit().expect("admit"), Admission::Quiet);
+}
+
+/// `resume t42`, typed after the hold. The same question again, so it spends a
+/// retry — which is what the budget is for.
+#[test]
+fn a_resume_typed_after_the_hold_puts_the_task_back_in_the_pool() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+    let attempt = held_at(&mut store, task, Cause::Fresh, Some(Control::Pause));
+    resume_typed(&mut store, task);
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+    assert_eq!(
+        fleet.admit().expect("admit"),
+        Admission::Resume {
+            task,
+            cause: Cause::Retry { of: attempt },
+            redirect: None,
+        }
+    );
+}
+
+/// 🚨🚨 **The loop guard, and it is the one with teeth.**
+///
+/// The request is read and never consumed — there is no acknowledgement row,
+/// because marking an event as used would be a mutation of the log. What keeps
+/// this from resuming a task for ever is `since`: a `resume` older than the
+/// current hold belonged to a hold the task has already left, and a task that
+/// holds again gets a newer `since` that the old request falls behind.
+///
+/// ⚠ So this is not a spelling test. Drop the `logged.seq > since` and the fleet
+/// re-admits a task the operator has since stopped a second time, for ever.
+#[test]
+fn a_resume_from_before_the_hold_belongs_to_a_hold_the_task_has_left() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+
+    // Resumed once, ran, and stopped again — the second hold is the live one and
+    // nobody has asked for that one.
+    let first = held_at(&mut store, task, Cause::Fresh, Some(Control::Pause));
+    resume_typed(&mut store, task);
+    store
+        .apply(task, Command::Resume { unit: UnitId(1) })
+        .expect("resume");
+    let second = store
+        .append(Event::AttemptStarted {
+            task,
+            unit: UnitId(1),
+            cause: Cause::Retry { of: first },
+            checkpoint_from: None,
+        })
+        .expect("started");
+    store
+        .apply(
+            task,
+            Command::Engage {
+                attempt: AttemptId::at(second.seq),
+            },
+        )
+        .expect("engage");
+    store
+        .append(Event::ControlApplied {
+            task,
+            control: Control::Halt,
+        })
+        .expect("applied");
+    store
+        .apply(
+            task,
+            Command::Hold {
+                checkpoint: CheckpointId::at(second.seq),
+            },
+        )
+        .expect("hold");
+
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+    assert_eq!(
+        fleet.admit().expect("admit"),
+        Admission::Quiet,
+        "the first resume was honoured once and must not be honoured again"
+    );
+}
+
+/// 🚨 **A redirect needs no second verb.** The operator said what to do instead,
+/// which is an answer rather than a stop — and the prompt comes back out of the
+/// log so the driver can put it in the brief.
+#[test]
+fn a_hold_caused_by_a_redirect_is_admitted_with_the_prompt() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+    let attempt = held_at(
+        &mut store,
+        task,
+        Cause::Fresh,
+        Some(Control::Redirect {
+            prompt: "look in src/lib.rs instead".to_owned(),
+        }),
+    );
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+    assert_eq!(
+        fleet.admit().expect("admit"),
+        Admission::Resume {
+            task,
+            cause: Cause::Edit { of: attempt },
+            redirect: Some("look in src/lib.rs instead".to_owned()),
+        }
+    );
+}
+
+/// 🚨 **`Queued` is scanned first, and the order is the design.** `Queued` is the
+/// state whose contract *is* eligible for admission; `Holding` is the operator
+/// having stopped one. So a redirect issued mid-sortie cannot jump the board —
+/// it is picked up on the next turn of the admission loop.
+#[test]
+fn fresh_work_is_admitted_before_anything_held() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let redirected = seed(&mut store, "the held one");
+    held_at(
+        &mut store,
+        redirected,
+        Cause::Fresh,
+        Some(Control::Redirect {
+            prompt: "instead".to_owned(),
+        }),
+    );
+    let fresh = seed(&mut store, "the fresh one");
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+    assert_eq!(
+        fleet.admit().expect("admit"),
+        Admission::Run {
+            task: fresh,
+            cause: Cause::Fresh
+        }
+    );
+}
+
+/// 🚨🚨 **A redirect buys a fresh line of enquiry, and a resume does not.**
+///
+/// ADR-0010's budget is spent on *one question asked repeatedly*, so
+/// `Cause::Edit` resets the chain and `Cause::Retry` extends it. The two are
+/// asserted against the **same exhausted task**, which is the only way to see
+/// that the budget is asked *beside the cause* rather than before it: asked
+/// before, both of these come back `HeldBack`.
+#[test]
+fn a_redirect_resets_the_spent_budget_and_a_resume_does_not() {
+    let subject = subject();
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+
+    for verb in [
+        Control::Redirect {
+            prompt: "a different question".to_owned(),
+        },
+        Control::Pause,
+    ] {
+        let mut store = Store::in_memory().expect("store");
+        let task = seed(&mut store, "one returns two");
+
+        // Spend the whole budget first: one fresh attempt and one retry, both on
+        // the log, so the line of enquiry is over before the verb lands.
+        let first = store
+            .append(Event::AttemptStarted {
+                task,
+                unit: UnitId(1),
+                cause: Cause::Fresh,
+                checkpoint_from: None,
+            })
+            .expect("first");
+
+        // 🚨 The held attempt **is** the retry that exhausts the chain. Landing a
+        // third `Fresh` here would refill the budget this test exists to find
+        // empty — which is what the first version of it did, and the assertion
+        // caught it rather than passing on a task that had been quietly reset.
+        let redirected = verb != Control::Pause;
+        let held = held_at(
+            &mut store,
+            task,
+            Cause::Retry {
+                of: AttemptId::at(first.seq),
+            },
+            Some(verb),
+        );
+        if !redirected {
+            resume_typed(&mut store, task);
+        }
+
+        let fleet = Fleet::new(
+            &mut store,
+            &repo,
+            &provider,
+            MODEL,
+            subject.worktrees.clone(),
+        );
+        let admission = fleet.admit().expect("admit");
+        if redirected {
+            assert_eq!(
+                admission,
+                Admission::Resume {
+                    task,
+                    cause: Cause::Edit { of: held },
+                    redirect: Some("a different question".to_owned()),
+                },
+                "a redirect is a new question, so the budget resets"
+            );
+        } else {
+            assert_eq!(
+                admission,
+                Admission::HeldBack {
+                    task,
+                    spent: budget::ATTEMPTS
+                },
+                "a resume is the same question, and the budget is gone"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

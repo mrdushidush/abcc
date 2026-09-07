@@ -33,7 +33,7 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 
 When you want tests inside the middle rung, name them:
 `cargo test --workspace --test assets --test battlefield --test breaker --test cli --test confirm --test control --test corpus_review --test desk --test durability --test endings --test feed --test films --test frame_cost --test fun --test heads --test home --test http --test journal --test judge --test keys --test lifecycle --test lines --test patch --test policy --test properties --test pulse --test reading --test roster --test screen --test sixel --test theme --test turn_loop --test view --test workspace`
-is **2.5 s** for 383 tests and covers everything that does not start a process.
+is **2.5 s** for 384 tests and covers everything that does not start a process.
 
 🚨 **That list is derived, not remembered — check it against `crates/*/tests/`
 whenever a test file is added.** It has now drifted twice. The first time it
@@ -53,7 +53,8 @@ that is not about processes**: two crates have a target of that name
 (`abcc-core` and `abcc`, and the same is true of `fun`), and `--test replay`
 runs both, so the pair is as cheap as its more expensive half.
 
-The full suite costs **28.9 s**, and almost all of that is seven targets:
+The full suite costs **27.9 s** over **536 tests** (19 ignored), and almost all of
+that is seven targets:
 `ladder` 3.5 s, `attempt` 2.7 s, `sortie` 2.5 s, `exec` 2.5 s, `child` 2.3 s,
 `operator` 2.0 s and `isolation` 1.3 s — real children, real git, and in
 `ladder`'s case both. That time is processes, not compilation, and it is the

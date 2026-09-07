@@ -11,7 +11,8 @@
 use std::path::Path;
 
 use abcc::desk::{
-    Delivered, Desk, FleetDesk, GROUND_NOTE, Misread, Order, caveat, parse_order, parse_verb,
+    Behind, Delivered, Desk, FleetDesk, GROUND_NOTE, Misread, Order, caveat, parse_order,
+    parse_verb,
 };
 use abcc_core::event::{Control, Event};
 use abcc_core::seq::{MissionId, Seq, TaskId};
@@ -550,30 +551,64 @@ fn the_two_desks_agree_about_what_a_word_means() {
     }
 }
 
-/// 🚨 **Three of the five verbs have a mechanism, and two do not.** ADR-0012 §4:
-/// *eight verbs that half-work are worse than three that work*. This test is the
-/// tripwire on that sentence — the day `resume` is wired, it fails, and the line
-/// telling operators it is not wired has to go with it.
+/// 🚨 **F646: all five verbs have a mechanism at a sortie, and two of them still
+/// have none at `abcc run` — because there is no loop after the attempt.**
+///
+/// The test that stood here was the tripwire on ADR-0012 §4's *eight verbs that
+/// half-work are worse than three that work*, and it said in its own words: *the
+/// day `resume` is wired, it fails, and the line telling operators it is not
+/// wired has to go with it.* It fired. What replaces it asks the same sentence
+/// **per desk**, so the day the one-attempt path grows a loop this fails the same
+/// way rather than quietly going stale.
 #[test]
-fn the_two_verbs_with_no_mechanism_behind_them_say_so() {
-    for wired in [Control::Pause, Control::Halt, Control::Kill] {
-        assert_eq!(caveat(&wired), None, "{wired:?} grew a caveat");
+fn every_verb_is_wired_at_a_sortie_and_two_are_not_at_a_run() {
+    let all_five = || {
+        [
+            Control::Pause,
+            Control::Halt,
+            Control::Kill,
+            Control::Resume,
+            Control::Redirect {
+                prompt: "look elsewhere".to_owned(),
+            },
+        ]
+    };
+
+    for control in all_five() {
+        assert_eq!(
+            caveat(&control, Behind::ASortie),
+            None,
+            "{control:?} still owes a sortie a caveat"
+        );
+    }
+    for control in [Control::Pause, Control::Halt, Control::Kill] {
+        assert_eq!(
+            caveat(&control, Behind::OneAttempt),
+            None,
+            "{control:?} grew a caveat"
+        );
     }
 
-    let redirect = caveat(&Control::Redirect {
-        prompt: "look elsewhere".to_owned(),
-    })
-    .expect("redirect is not wired, so it owes the operator a sentence");
-    assert!(redirect.contains("no attempt is forked"), "{redirect}");
+    let redirect = caveat(
+        &Control::Redirect {
+            prompt: "look elsewhere".to_owned(),
+        },
+        Behind::OneAttempt,
+    )
+    .expect("a run ends after the attempt, so it forks nothing");
+    let resume = caveat(&Control::Resume, Behind::OneAttempt)
+        .expect("a run has no admission loop to resume into");
 
-    let resume = caveat(&Control::Resume).expect("resume is not wired");
-    assert!(resume.contains("accept"), "{resume}");
-    assert!(resume.contains("reject"), "{resume}");
-
-    // ⚠ The warning sign is a character in a string literal, not the six
-    // characters of an escape nothing ever read. F558 is that mistake, made in a
-    // comment; this is the same check one line from where it would happen.
+    // 🚨 The point of both sentences is what to do next, not that nothing
+    // happened: the row **is** on the log, and a sortie is what reads it. A
+    // caveat that only said "inert" would leave the operator thinking the verb
+    // was lost.
     for line in [redirect, resume] {
+        assert!(line.contains("abcc fleet"), "{line:?} names no way forward");
+        // ⚠ The warning sign is a character in a string literal, not the six
+        // characters of an escape nothing ever read. F558 is that mistake, made
+        // in a comment; this is the same check one line from where it would
+        // happen.
         assert!(line.contains('\u{26a0}'), "{line:?} lost its mark");
         assert!(!line.contains("\\u{"), "{line:?} carries a dead escape");
     }
