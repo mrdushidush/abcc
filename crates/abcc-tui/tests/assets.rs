@@ -5,9 +5,10 @@
 //! `abcc`'s `ABCC_LOG` reader test: an instrument kept because the claim it
 //! checks is about files this workspace did not synthesise.
 
-use abcc_tui::assets::{self, Corpus, Design, Facing, Pose, Poses};
+use abcc_tui::assets::{self, Corpus, Design, Facing, Film, Pose, Poses};
 use abcc_tui::sixel::Sprite;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The shipped corpus, when a run points at one.
 fn corpus_root() -> Option<PathBuf> {
@@ -420,4 +421,232 @@ fn the_shipped_corpus_fills_every_pose_and_nothing_it_names_is_broken() {
         .expect("building");
     assert_eq!((coder.height(), building.height()), (150, 150));
     assert_eq!((coder.width(), building.width()), (100, 100));
+}
+
+// ---------------------------------------------------------------------------
+// films: the frames the still loader threw away
+// ---------------------------------------------------------------------------
+
+/// A solid frame, so a decoder that gives back the wrong one is obvious.
+fn solid(colour: [u8; 4]) -> Sprite {
+    Sprite::from_rgba(2, 2, colour.repeat(4)).expect("solid")
+}
+
+/// A GIF on disk, because [`Film::open`] takes a path and the question here is
+/// what comes back through a real decode.
+///
+/// ⚠ **Frames are solid colours on purpose.** GIF quantises to a 256-colour
+/// palette, so a test that told frames apart by a gradient would be measuring
+/// the quantiser.
+///
+/// 🚨 **Each frame is a [`figure`], not a block.** A solid rectangle fills its
+/// own top row, and [`Poses::open`] refuses art that touches its ceiling — so a
+/// fixture of blocks would be admitted by nothing and the test would be
+/// measuring its own fixture.
+fn a_gif(dir: &Path, name: &str, colours: &[[u8; 4]], ms: u32) -> PathBuf {
+    let path = dir.join(name);
+    let file = std::fs::File::create(&path).expect("create");
+    let mut encoder = image::codecs::gif::GifEncoder::new(std::io::BufWriter::new(file));
+    encoder
+        .set_repeat(image::codecs::gif::Repeat::Infinite)
+        .expect("repeat");
+    for colour in colours {
+        let mut buffer = image::RgbaImage::new(8, 8);
+        for (_, y, px) in buffer.enumerate_pixels_mut() {
+            px.0 = if y == 0 { [0, 0, 0, 0] } else { *colour };
+        }
+        encoder
+            .encode_frame(image::Frame::from_parts(
+                buffer,
+                0,
+                0,
+                image::Delay::from_numer_denom_ms(ms, 1),
+            ))
+            .expect("frame");
+    }
+    drop(encoder);
+    path
+}
+
+/// The middle of a frame, which is the part of these fixtures that carries the
+/// colour. The top row is deliberately empty.
+fn body(sprite: &Sprite) -> [u8; 4] {
+    let mid = ((sprite.height() / 2 * sprite.width() + sprite.width() / 2) * 4) as usize;
+    sprite.rgba()[mid..mid + 4].try_into().expect("four bytes")
+}
+
+/// 🚨 **The play head is a clock, not a counter.**
+///
+/// Asking by elapsed time is what makes a dropped frame cost the animation
+/// nothing: a console that misses its slot resumes where the clock is, and the
+/// loop stays as long as the art says it is. A counter would stretch the
+/// animation by exactly the time it lost.
+#[test]
+fn the_play_head_holds_each_frame_for_its_own_time_and_wraps() {
+    let film = Film::from_frames(vec![
+        (solid([255, 0, 0, 255]), Duration::from_millis(10)),
+        (solid([0, 255, 0, 255]), Duration::from_millis(100)),
+        (solid([0, 0, 255, 255]), Duration::from_millis(10)),
+    ])
+    .expect("three frames");
+
+    assert_eq!(film.duration(), Duration::from_millis(120));
+    assert_eq!(film.hold(1), Duration::from_millis(100));
+    for (ms, want) in [
+        (0, 0),
+        (9, 0),
+        // The boundary belongs to the frame that starts on it, or a frame with
+        // a 10 ms hold would be up for 11 ms.
+        (10, 1),
+        (109, 1),
+        (110, 2),
+        (119, 2),
+        // ...and around again, at the loop's length rather than at frame 3.
+        (120, 0),
+        (130, 1),
+        (240, 0),
+    ] {
+        assert_eq!(
+            film.index_at(Duration::from_millis(ms)),
+            want,
+            "at {ms} ms the wrong frame is up"
+        );
+    }
+    assert_eq!(film.at(Duration::from_millis(130)), &film.frames()[1]);
+}
+
+/// A film with no frames is refused, because [`Film::still`] promises one and a
+/// zero-length loop is a division the play head cannot do.
+#[test]
+fn a_film_of_no_frames_is_not_a_film() {
+    assert!(Film::from_frames(Vec::new()).is_none());
+}
+
+/// 🚨 **A frame that declares no delay does not make a zero-length loop.**
+///
+/// GIF's 0 means *as fast as the viewer can manage* and every browser has read
+/// it as 100 ms. Taken literally it is a loop of length zero, and the play head
+/// divides by that — so the substitution is at construction, where both the
+/// decoder and a caller building frames by hand go through it.
+#[test]
+fn a_declared_zero_delay_becomes_a_hold_rather_than_a_division_by_zero() {
+    let film = Film::from_frames(vec![
+        (solid([1, 2, 3, 255]), Duration::ZERO),
+        (solid([4, 5, 6, 255]), Duration::ZERO),
+    ])
+    .expect("two frames");
+    assert_eq!(film.duration(), Duration::from_millis(200));
+    assert_eq!(film.index_at(Duration::from_millis(250)), 0);
+    assert_eq!(film.shortest_hold(), Duration::from_millis(100));
+}
+
+/// A still is a film of one frame — the caller does not have to know which it
+/// opened, and the first frame is what [`assets::load`] would have handed back.
+#[test]
+fn a_still_is_a_film_of_one_frame() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("building-E-attacking.png");
+    write_png(&path, &figure(4, 6));
+
+    let film = Film::open(&path, 0).expect("open");
+    assert_eq!(film.len(), 1);
+    assert!(!film.is_animated(), "one frame is a picture, not a film");
+    assert_eq!(film.still(), &assets::load(&path).expect("load"));
+    assert_eq!(film.at(Duration::from_hours(1)), film.still());
+}
+
+/// 🚨 **Every frame comes back, in order, with the delay the file gave it** —
+/// which is the whole complaint against the still loader.
+#[test]
+fn every_frame_of_a_gif_comes_back_in_order() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let colours = [
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+        [255, 255, 0, 255],
+    ];
+    let path = a_gif(dir.path(), "coder-E-attacking.gif", &colours, 40);
+
+    let film = Film::open(&path, 0).expect("open");
+    assert_eq!(film.len(), 4, "frames were dropped");
+    assert!(film.is_animated());
+    assert_eq!(film.duration(), Duration::from_millis(160));
+    assert_eq!(film.shortest_hold(), Duration::from_millis(40));
+    // The still loader's answer is frame 0 and only frame 0 — the defect, in
+    // one assertion.
+    assert_eq!(film.still(), &assets::load(&path).expect("load"));
+
+    for (i, colour) in colours.iter().enumerate() {
+        let frame = film.at(Duration::from_millis(40 * i as u64));
+        assert_eq!(
+            body(frame),
+            *colour,
+            "frame {i} is not the colour it was encoded as"
+        );
+    }
+}
+
+/// Every frame of one film is the same size, which is what lets
+/// [`Poses::extent`] measure a film by its first frame. A GIF frame is a whole
+/// canvas — `into_frames` applies disposal — so this is a property of the
+/// decoder rather than of the corpus, and it is worth pinning because the
+/// layout depends on it.
+#[test]
+fn every_frame_of_a_film_is_one_size() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = a_gif(
+        dir.path(),
+        "coder-W-attacking.gif",
+        &[[1, 1, 1, 255], [2, 2, 2, 255], [3, 3, 3, 255]],
+        40,
+    );
+    let film = Film::open(&path, 30).expect("open");
+    let (w, h) = (film.still().width(), film.still().height());
+    assert_eq!(h, 30, "the scale is a height");
+    for (i, frame) in film.frames().iter().enumerate() {
+        assert_eq!((frame.width(), frame.height()), (w, h), "frame {i}");
+    }
+}
+
+/// 🚨 **`Still` and `Playing` differ in what they hold and in nothing else.**
+///
+/// Both admit the same pictures by the same two questions, so a still field and
+/// a playing one stand the same units in the same places; what changes is
+/// whether there is anything to play. This is the guard on a `--play` that
+/// quietly draws a different fleet.
+#[test]
+fn a_still_corpus_and_a_playing_one_admit_the_same_pictures() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let colours = [[7, 7, 7, 255], [8, 8, 8, 255], [9, 9, 9, 255]];
+    a_gif(dir.path(), "coder-E-attacking.gif", &colours, 40);
+    a_gif(dir.path(), "building-W-attacking.gif", &colours, 40);
+
+    let still = Poses::open(dir.path(), 20).expect("still");
+    let playing = Poses::open_playing(dir.path(), 20).expect("playing");
+
+    assert_eq!(still.len(), 2);
+    assert_eq!(playing.len(), 2);
+    assert_eq!(still.missing(), playing.missing());
+    assert_eq!(still.extent(), playing.extent());
+    for pose in Pose::ALL {
+        assert_eq!(
+            still.sprite(pose).is_some(),
+            playing.sprite(pose).is_some(),
+            "{pose} stands in one and not the other"
+        );
+        // The still is the first frame either way, so nothing on the field
+        // moves when `--play` is passed except the frames after it.
+        assert_eq!(still.sprite(pose), playing.sprite(pose), "{pose}");
+    }
+
+    assert!(!still.is_animated(), "a still corpus has nothing to play");
+    assert!(playing.is_animated());
+    assert_eq!(still.frames(), 2);
+    assert_eq!(playing.frames(), 6);
+    assert!(
+        playing.bytes() == still.bytes() * 3,
+        "three frames each should cost three times a still"
+    );
+    assert_eq!(playing.shortest_hold(), Some(Duration::from_millis(40)));
 }

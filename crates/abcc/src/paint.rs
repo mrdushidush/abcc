@@ -30,15 +30,17 @@
 //! discipline here: `abcc_tui::sixel::Sprite` has no encoder, so the only way
 //! any of this reaches stdout is `Canvas::blend`.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use abcc_tui::assets::{self, Poses};
+use abcc_tui::assets::{self, Motion, Poses};
 use abcc_tui::battlefield::{Battlefield, Unit};
 use abcc_tui::roster::{Post, RANK, Roster, Standing};
 use abcc_tui::sixel::{Encoder, Sprite};
 use abcc_tui::{Card, Theme, View};
 
+use crate::cli::Paint;
 use crate::ops::{self, open_log};
 use crate::{AppError, Invocation};
 
@@ -57,19 +59,16 @@ const RULE: [u8; 3] = [56, 66, 44];
 ///
 /// [`AppError::Refused`] if no sprite directory was named or it holds nothing
 /// this build can draw, [`AppError::Io`] if the terminal will not take it.
-pub fn paint(
-    invocation: &Invocation,
-    sprites: Option<&str>,
-    px: u32,
-    size: (u32, u32),
-    corpus: bool,
-    out: &mut impl Write,
-) -> Result<(), AppError> {
-    let root = corpus_root(sprites)?;
-    if corpus {
+pub fn paint(invocation: &Invocation, args: &Paint, out: &mut impl Write) -> Result<(), AppError> {
+    let root = corpus_root(args.sprites.as_deref())?;
+    let (px, size) = (args.px, args.size);
+    if args.corpus {
         return the_corpus(&root, px, size, out);
     }
-    the_field(invocation, &root, px, size, out)
+    match args.play {
+        Some(run_for) => play_the_field(invocation, &root, px, size, run_for, args.cell, out),
+        None => the_field(invocation, &root, px, size, out),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +83,29 @@ fn the_field(
     size: (u32, u32),
     out: &mut impl Write,
 ) -> Result<(), AppError> {
-    let poses = Poses::open(root, px)
+    let poses = open_corpus(root, px, Motion::Still)?;
+    let staged = stage(invocation, &poses, px, size)?;
+    let drawn = staged.frame(&poses, Duration::ZERO, &mut Encoder::new())?;
+
+    out.write_all(&drawn.stream)?;
+    out.write_all(b"\n")?;
+    writeln!(
+        out,
+        "the field, from the log \u{2014} {} unit(s) on a {}x{} field, {} bytes of sixel",
+        drawn.units,
+        size.0,
+        size.1,
+        drawn.stream.len()
+    )?;
+    staged.report(out, &poses, &drawn)?;
+    caveat(out)?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Read the corpus, or say what was in the way.
+fn open_corpus(root: &Path, px: u32, motion: Motion) -> Result<Poses, AppError> {
+    let poses = Poses::open_with(root, px, motion)
         .map_err(|e| AppError::Refused(format!("cannot read the corpus: {e}")))?;
     if poses.is_empty() {
         return Err(AppError::Refused(format!(
@@ -96,7 +117,42 @@ fn the_field(
             poses.unnamed()
         )));
     }
+    Ok(poses)
+}
 
+/// Everything a frame needs that does not change between frames: who is on the
+/// field, and where the camera is.
+///
+/// 🚨 **The roster is read once.** `--play` plays the *art*, not the log: a
+/// player that re-folded the log every frame would be a live console, which is
+/// a different thing to build and a different thing to get wrong — it has to
+/// survive a task changing rank mid-loop without the field re-laying itself out.
+/// What this animates is the picture, and the legend under it is the picture's
+/// own caption at the moment it started.
+struct Staged {
+    view: View,
+    roster: Roster,
+    /// Tile width, and where cell (0, 0) sits. Fixed for the run, for the same
+    /// reason the layout is measured against the whole corpus.
+    tile: u32,
+    origin: (i32, i32),
+    size: (u32, u32),
+    widest: u32,
+}
+
+/// One frame, and what it left out.
+struct Drawn {
+    stream: Vec<u8>,
+    units: usize,
+    undrawn: usize,
+}
+
+fn stage(
+    invocation: &Invocation,
+    poses: &Poses,
+    px: u32,
+    size: (u32, u32),
+) -> Result<Staged, AppError> {
     let ground = ops::ground(invocation)?;
     let store = open_log(&ground.home)?;
     let mut view = View::new(Theme::Command);
@@ -112,42 +168,279 @@ fn the_field(
     let (widest, tallest) = poses.extent().unwrap_or((px, px));
     let cells = roster.cells();
     let (tile, origin) = geometry(width, height, widest, tallest, &cells);
+    Ok(Staged {
+        view,
+        roster,
+        tile,
+        origin,
+        size,
+        widest,
+    })
+}
 
-    let mut field = Battlefield::new(width, height, GROUND, tile)
-        .map_err(|e| AppError::Refused(format!("that is not a field: {e}")))?;
-    field.set_origin(origin);
-    field.rule_tiles(6, RULE);
+impl Staged {
+    /// The field as it stands `elapsed` into the animation.
+    ///
+    /// ⚠ **A fresh canvas every frame.** Blending is one-way — a sprite drawn
+    /// on the ground cannot be taken off it — so an animation that reused the
+    /// canvas would accumulate every frame it had ever drawn. F562 measured
+    /// this whole shape (fresh field, deploy, encode) at 1.91 ms for 16 sprites
+    /// on a 640x360 field, which is what makes throwing the canvas away
+    /// affordable.
+    fn frame(
+        &self,
+        poses: &Poses,
+        elapsed: Duration,
+        enc: &mut Encoder,
+    ) -> Result<Drawn, AppError> {
+        let (width, height) = self.size;
+        let mut field = Battlefield::new(width, height, GROUND, self.tile)
+            .map_err(|e| AppError::Refused(format!("that is not a field: {e}")))?;
+        field.set_origin(self.origin);
+        field.rule_tiles(6, RULE);
 
-    let mut undrawn = 0usize;
-    let mut units: Vec<Unit<'_>> = Vec::new();
-    for placed in roster.placed() {
-        match poses.sprite(placed.pose) {
-            Some(sprite) => units.push(Unit {
-                sprite,
-                cell: placed.cell,
-            }),
-            // A unit the log put on the field that the corpus has no picture
-            // for. Counted rather than substituted: the other facing would be a
-            // picture saying something the log did not.
-            None => undrawn += 1,
+        let mut undrawn = 0usize;
+        let mut units: Vec<Unit<'_>> = Vec::new();
+        for placed in self.roster.placed() {
+            match poses.film(placed.pose) {
+                // Every unit reads the same clock, so two coders are in step
+                // rather than each animating from whenever it was deployed.
+                // ⚠ That is a decision and not the only one: staggering them by
+                // task id would look more alive and would make the field's
+                // motion mean nothing, since the offset would be arbitrary.
+                Some(film) => units.push(Unit {
+                    sprite: film.at(elapsed),
+                    cell: placed.cell,
+                }),
+                // A unit the log put on the field that the corpus has no picture
+                // for. Counted rather than substituted: the other facing would be
+                // a picture saying something the log did not.
+                None => undrawn += 1,
+            }
         }
+        field.deploy(&mut units);
+        Ok(Drawn {
+            stream: field.encode(enc),
+            units: units.len(),
+            undrawn,
+        })
     }
-    field.deploy(&mut units);
 
-    let stream = field.encode(&mut Encoder::new());
-    out.write_all(&stream)?;
-    out.write_all(b"\n")?;
+    /// The words under the picture: who is standing where, what was left out,
+    /// and whether the field is too small for the art on it.
+    fn report(&self, out: &mut impl Write, poses: &Poses, drawn: &Drawn) -> Result<(), AppError> {
+        legend(out, &self.view, &self.roster)?;
+        footnotes(out, &self.roster, poses, drawn.undrawn)?;
+        crowding(out, self.tile, self.widest, drawn.units)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// the field, playing — and the number that costs
+// ---------------------------------------------------------------------------
+
+/// 🚨 **Play the field for `run_for`, then say what rate it actually reached.**
+///
+/// Every picture this corpus can draw is an animation (F642) and [`the_field`]
+/// shows the first frame of each, so the fleet stands frozen mid-swing. This
+/// plays them.
+///
+/// # What the number at the end is, and what it is not
+///
+/// The W5 spike's headline — **25.6–28.6 FPS for a full-viewport composite** —
+/// is an *end-to-end* number from a different encoder, and F562 could only take
+/// the generation half of ours (1.91 ms/frame for 16 sprites at 640x360). This
+/// closes the gap the honest way: it reports the cost of **building the frame,
+/// encoding it, and writing it out**, measured on the frames it actually drew.
+///
+/// ⚠ **Whether that includes the terminal drawing depends on where stdout
+/// goes.** Into a terminal, a display that cannot keep up eventually stops
+/// accepting bytes and the write blocks, so it is in the number; into a pipe or
+/// a file, nothing draws and the number is generation alone. The report says
+/// which of the two this run was.
+///
+/// # How it redraws without scrolling
+///
+/// The spike's method, which is the one that works: reserve the rows by writing
+/// newlines, walk back up, then per frame save the cursor, write the sixel, and
+/// restore it. **The cursor is not hidden** — a run stopped with Ctrl-C would
+/// leave the operator with an invisible caret, and a caret parked over the top
+/// left of the picture is the cheaper of those two.
+fn play_the_field(
+    invocation: &Invocation,
+    root: &Path,
+    px: u32,
+    size: (u32, u32),
+    run_for: Duration,
+    cell: u32,
+    out: &mut impl Write,
+) -> Result<(), AppError> {
+    let started_decode = Instant::now();
+    let poses = open_corpus(root, px, Motion::Playing)?;
+    let decode = started_decode.elapsed();
+    let staged = stage(invocation, &poses, px, size)?;
+
+    // The sampling rate is the corpus's own fastest frame. Anything slower
+    // skips it; anything faster draws the same picture twice.
+    let tick = poses.shortest_hold().unwrap_or(FALLBACK_TICK);
     writeln!(
         out,
-        "the field, from the log \u{2014} {} unit(s) on a {width}x{height} field, {} bytes of sixel",
-        units.len(),
-        stream.len()
+        "playing {} frame(s) across {} pose(s) \u{2014} {:.1} MB at {px} px, decoded in {:.2} s, \
+         longest loop {:.2} s, one frame every {} ms",
+        poses.frames(),
+        poses.len(),
+        count(poses.bytes()) / 1_048_576.0,
+        decode.as_secs_f64(),
+        poses.longest_loop().unwrap_or_default().as_secs_f64(),
+        tick.as_millis()
     )?;
-    legend(out, &view, &roster)?;
-    footnotes(out, &roster, &poses, undrawn)?;
-    crowding(out, tile, widest, units.len())?;
+    if !poses.is_animated() {
+        writeln!(
+            out,
+            "\u{26a0} nothing here has a second frame, so this plays a still picture at {} FPS. \
+             That is a fact about the art, not about the console.",
+            1.0 / tick.as_secs_f64()
+        )?;
+    }
+
+    // Reserve the rows the picture needs, then walk back up into them. `cell` is
+    // told rather than measured, so this is where a wrong cell height shows: too
+    // small and the picture overwrites the report under it, too large and there
+    // is a gap. Both are visible and neither is fatal.
+    let rows = size.1.div_ceil(cell);
+    for _ in 0..rows {
+        writeln!(out)?;
+    }
+    write!(out, "\u{1b}[{rows}A")?;
+
+    let mut enc = Encoder::new();
+    let mut costs: Vec<Duration> = Vec::new();
+    let mut bytes = 0usize;
+    let mut last = Drawn {
+        stream: Vec::new(),
+        units: 0,
+        undrawn: 0,
+    };
+    let clock = Instant::now();
+    while clock.elapsed() < run_for {
+        let elapsed = clock.elapsed();
+        let began = Instant::now();
+        let drawn = staged.frame(&poses, elapsed, &mut enc)?;
+        // Save, draw, restore: the picture lands in the same place every time
+        // and the caret ends where it started, whatever the terminal does with
+        // the cursor after a sixel.
+        write!(out, "\u{1b}7")?;
+        out.write_all(&drawn.stream)?;
+        write!(out, "\u{1b}8")?;
+        out.flush()?;
+        costs.push(began.elapsed());
+        bytes += drawn.stream.len();
+        last = drawn;
+
+        let now = clock.elapsed();
+        if let Some(left) = next_slot(now, tick).checked_sub(now) {
+            std::thread::sleep(left);
+        }
+    }
+    let ran = clock.elapsed();
+
+    // Down out of the picture and onto clean ground for the report.
+    write!(out, "\u{1b}[{rows}B\r")?;
+    writeln!(out)?;
+    played(out, &costs, ran, tick, bytes)?;
+    staged.report(out, &poses, &last)?;
     caveat(out)?;
     out.flush()?;
+    Ok(())
+}
+
+/// A count as a float, for a rate. Saturating rather than casting: `as` on a
+/// `usize` past `f64`'s mantissa loses digits silently, and a frame count or a
+/// byte count that big is a bug worth seeing as a flat number rather than a
+/// slightly wrong one.
+fn count(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// What one frame is held for when the corpus will not say — a still corpus has
+/// no rate of its own, and a player still has to wake up.
+const FALLBACK_TICK: Duration = Duration::from_millis(40);
+
+/// 🚨 **When the next frame is due, measured from the start of the run.**
+///
+/// Pace against the wall clock, not against a frame counter: a frame that
+/// overruns its slot must not push the next one later. Two slots into an
+/// overrun this answers the *next* boundary rather than the one already missed,
+/// so the player skips a frame instead of slowing the animation down — which is
+/// the same decision `Film::at` makes by taking a time rather than an index,
+/// and it only works if both halves make it.
+fn next_slot(now: Duration, tick: Duration) -> Duration {
+    let tick = if tick.is_zero() { FALLBACK_TICK } else { tick };
+    let slots = now.as_nanos() / tick.as_nanos();
+    tick.saturating_mul(u32::try_from(slots + 1).unwrap_or(u32::MAX))
+}
+
+/// The measurement, written out.
+///
+/// 🚨 **Two rates, because they answer two questions.** *Achieved* is what the
+/// operator saw: frames on the screen per second of wall clock, and it cannot
+/// beat the rate the art asks for. *Sustainable* is what this path could do
+/// unpaced — one over the mean frame cost — and it is the one that says whether
+/// there is room for a bigger field, more units, or a slower terminal.
+fn played(
+    out: &mut impl Write,
+    costs: &[Duration],
+    ran: Duration,
+    tick: Duration,
+    bytes: usize,
+) -> Result<(), AppError> {
+    if costs.is_empty() || ran.is_zero() {
+        writeln!(out, "no frame was drawn.")?;
+        return Ok(());
+    }
+    let mut sorted: Vec<f64> = costs.iter().map(|c| c.as_secs_f64() * 1000.0).collect();
+    sorted.sort_by(f64::total_cmp);
+    let drawn = count(costs.len());
+    let mean = sorted.iter().sum::<f64>() / drawn;
+    // The p95 index, floored: on 250 frames that is the 237th, and on a run of
+    // two it is the slower one. A percentile over a handful of frames is a
+    // gesture, which is why the frame count is printed beside it.
+    let p95 = sorted[(sorted.len() * 95 / 100).min(sorted.len() - 1)];
+    let asked = 1.0 / tick.as_secs_f64();
+    let achieved = drawn / ran.as_secs_f64();
+    // 🚨 **The frames asked for is a division of two integers**, done as one:
+    // taking it through `f64` and rounding would put a frame either side of the
+    // boundary depending on the last bit of a duration in seconds.
+    let wanted = ran.as_nanos() / tick.as_nanos().max(1);
+    let dropped = wanted.saturating_sub(costs.len() as u128);
+
+    writeln!(
+        out,
+        "played {} frame(s) in {:.2} s \u{2014} {achieved:.1} FPS achieved against {asked:.1} \
+         asked, {} dropped",
+        costs.len(),
+        ran.as_secs_f64(),
+        dropped
+    )?;
+    writeln!(
+        out,
+        "  frame cost mean {mean:.2} ms, p95 {p95:.2} ms \u{2014} {:.0} FPS sustainable unpaced, \
+         {:.2} MB/s of sixel at this rate",
+        if mean > 0.0 { 1000.0 / mean } else { 0.0 },
+        count(bytes) / 1_048_576.0 / ran.as_secs_f64()
+    )?;
+    writeln!(
+        out,
+        "  \u{26a0} that is build + encode + write. {}",
+        if std::io::stdout().is_terminal() {
+            "stdout is a terminal here, so a display that could not keep up is in the number \
+             \u{2014} but only through backpressure, and this does not measure what the terminal \
+             then did with the bytes."
+        } else {
+            "\u{1f6a8} stdout is NOT a terminal here, so nothing drew any of it: this is \
+             generation and writing alone, and the end-to-end question is still open."
+        }
+    )?;
     Ok(())
 }
 
@@ -571,7 +864,9 @@ fn stock(root: &Path, px: u32) -> Result<Stock, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cells, geometry};
+    use std::time::Duration;
+
+    use super::{FALLBACK_TICK, cells, geometry, next_slot, played};
 
     /// The corpus at the sizes the review used: `(px, width, height)` of the
     /// widest pose, `292x181` scaled to `px` tall, nine of them.
@@ -773,6 +1068,95 @@ mod tests {
         assert!(
             origin.0 > 0 && origin.1 > 0,
             "origin off the canvas: {origin:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // the player's clock, and the report it writes
+    // -----------------------------------------------------------------------
+
+    /// 🚨 **An overrun drops a frame; it does not move the beat.**
+    ///
+    /// The failure this rules out is the one that looks like it works: a player
+    /// that slept a whole tick after every frame would run at
+    /// `tick + frame cost` and the animation would be slower than the art says,
+    /// by an amount that changes with the size of the field.
+    #[test]
+    fn the_next_frame_is_due_on_the_beat_however_long_the_last_one_took() {
+        let tick = Duration::from_millis(40);
+        for (now, due) in [(0, 40), (1, 40), (39, 40), (40, 80), (79, 80), (80, 120)] {
+            assert_eq!(
+                next_slot(Duration::from_millis(now), tick),
+                Duration::from_millis(due),
+                "at {now} ms"
+            );
+        }
+        // Two slots late: the beat after the one it is standing on, not the one
+        // it already missed and not this instant.
+        assert_eq!(
+            next_slot(Duration::from_millis(95), tick),
+            Duration::from_millis(120)
+        );
+        // A corpus that asks for no time at all still has to wake up.
+        assert_eq!(next_slot(Duration::ZERO, Duration::ZERO), FALLBACK_TICK);
+    }
+
+    fn report(frames: usize, cost_ms: u64, ran_ms: u64) -> String {
+        let costs = vec![Duration::from_millis(cost_ms); frames];
+        let mut out = Vec::new();
+        played(
+            &mut out,
+            &costs,
+            Duration::from_millis(ran_ms),
+            Duration::from_millis(40),
+            frames * 100_000,
+        )
+        .expect("report");
+        String::from_utf8(out).expect("utf-8")
+    }
+
+    /// 🚨 **Two rates, and the report must not conflate them.** *Achieved* is
+    /// frames on the screen per second of wall clock and cannot beat the rate
+    /// the art asks for; *sustainable* is one over the mean frame cost, and it
+    /// is the one that says whether there is room for a bigger field. A player
+    /// that reported only the first would call a 191 FPS path and a 25 FPS path
+    /// the same result.
+    #[test]
+    fn the_report_separates_what_was_drawn_from_what_could_be() {
+        let kept_up = report(100, 5, 4_000);
+        assert!(
+            kept_up.contains("25.0 FPS achieved against 25.0 asked, 0 dropped"),
+            "{kept_up}"
+        );
+        assert!(kept_up.contains("200 FPS sustainable"), "{kept_up}");
+
+        // Half the frames in the same time: the same art, a path that cannot
+        // keep up, and a report that says so in both numbers.
+        let fell_behind = report(50, 60, 4_000);
+        assert!(
+            fell_behind.contains("12.5 FPS achieved against 25.0 asked, 50 dropped"),
+            "{fell_behind}"
+        );
+        assert!(fell_behind.contains("17 FPS sustainable"), "{fell_behind}");
+    }
+
+    /// A run that drew nothing says so, rather than dividing by the frames it
+    /// does not have.
+    #[test]
+    fn a_run_that_drew_nothing_is_not_a_frame_rate_of_zero_over_zero() {
+        let mut out = Vec::new();
+        played(
+            &mut out,
+            &[],
+            Duration::from_secs(1),
+            Duration::from_millis(40),
+            0,
+        )
+        .expect("report");
+        assert_eq!(
+            String::from_utf8(out).expect("utf-8"),
+            "no frame was drawn.
+"
         );
     }
 }

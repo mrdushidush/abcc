@@ -35,6 +35,9 @@ thiserror = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
+# The paint player is tested against a GIF the test writes, so the encoder is
+# a test dependency here even though the binary only ever decodes.
+image = { workspace = true }
 tempfile = "3"
 
 [lints]

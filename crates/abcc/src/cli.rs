@@ -114,16 +114,32 @@ pub enum Command {
     /// ⚠ It takes a sprite directory rather than knowing one. The corpus lives
     /// outside this repository and a path compiled in here would be a path that
     /// is wrong on every other machine.
-    Paint {
-        sprites: Option<String>,
-        /// Sprite height in pixels. 75-120 is the band David judged reads as
-        /// C&C at arm's length (F143).
-        px: u32,
-        /// Field size in pixels.
-        size: (u32, u32),
-        /// Draw the art instead of the fleet.
-        corpus: bool,
-    },
+    Paint(Paint),
+}
+
+/// Everything `paint` takes. Its own struct for the reason [`Run`] is: six
+/// values that travel together, and a function that took them one by one would
+/// be past the argument count clippy allows and past the one a reader can hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paint {
+    pub sprites: Option<String>,
+    /// Sprite height in pixels. 75-120 is the band David judged reads as
+    /// C&C at arm's length (F143).
+    pub px: u32,
+    /// Field size in pixels.
+    pub size: (u32, u32),
+    /// Draw the art instead of the fleet.
+    pub corpus: bool,
+    /// 🚨 Play the field for this long instead of drawing one frame, and
+    /// report what it achieved. The four pictures the corpus can draw are
+    /// all animations (F642) and a still shows none of it.
+    pub play: Option<Duration>,
+    /// How tall a terminal cell is, in pixels. **Told rather than asked:**
+    /// `crossterm::terminal::window_size` is `Unsupported` on Windows and
+    /// the alternative is a DA-style probe, which this command refuses to
+    /// do for the reason `paint.rs` gives — a probe that waits for an answer
+    /// can hang, and the operator can already see whether a picture arrived.
+    pub cell: u32,
 }
 
 /// Everything `run` takes. Boxed in [`Command`] because it is much the largest
@@ -203,6 +219,16 @@ paint:
   --corpus          draw the art itself, not the fleet -- every distinct image
                     fit to stand on a field. The diagnostic for when the picture
                     looks wrong, or when new art arrives.
+  --play <seconds>  play the field for that long instead of drawing one frame,
+                    then report the frame rate it achieved. All four pictures
+                    the corpus can draw are animations; a still shows none of
+                    it. The roster is read once -- this plays the ART, not the
+                    log.
+  --cell <px>       how tall one terminal cell is (default: 20), which is all
+                    that decides how many rows the picture is given. Windows
+                    reports no pixel size and this command does not probe for
+                    one, so if the picture overwrites the lines under it, say
+                    what your cell height is.
 
   The field is one building per mission and one unit per live task, ranked back
   to front: base, reserve, the line (positioned by slot), and the tasks waiting
@@ -543,11 +569,43 @@ fn paint_args(args: &mut Vec<String>) -> Result<Command, CliError> {
         None => (640, 360),
     };
     let corpus = take_switch(args, "--corpus");
+    let play = match take_flag(args, "--play")? {
+        Some(v) => {
+            let seconds: f64 = v.parse().map_err(|_| {
+                CliError::Usage(format!("--play takes a number of seconds, not {v:?}"))
+            })?;
+            if !(seconds.is_finite() && seconds > 0.0) {
+                return Err(CliError::Usage(format!(
+                    "--play takes a number of seconds greater than zero, not {v:?}"
+                )));
+            }
+            Some(Duration::from_secs_f64(seconds))
+        }
+        None => None,
+    };
+    let cell = match take_flag(args, "--cell")? {
+        Some(v) => v.parse().map_err(|_| {
+            CliError::Usage(format!("--cell takes a cell height in pixels, not {v:?}"))
+        })?,
+        // Windows Terminal at 100% scale with its default font. It is a
+        // *guess*, and the only thing it decides is how many rows the picture
+        // is given — too small and the text below it is overdrawn, too large
+        // and there is a gap. Both are visible, which is why a guess is
+        // allowed to stand here and a probe that could hang is not.
+        None => 20,
+    };
+    if cell == 0 {
+        return Err(CliError::Usage(
+            "--cell takes a cell height in pixels, and a cell is not 0 px tall".to_owned(),
+        ));
+    }
     no_positionals(args, "paint")?;
-    Ok(Command::Paint {
+    Ok(Command::Paint(Paint {
         sprites,
         px,
         size,
         corpus,
-    })
+        play,
+        cell,
+    }))
 }

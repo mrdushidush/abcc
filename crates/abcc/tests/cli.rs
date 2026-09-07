@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use abcc::cli::{self, CliError, Command};
+use abcc::cli::{self, CliError, Command, Paint};
 use abcc_engine::Tier;
 use abcc_tui::Theme;
 
@@ -336,16 +336,20 @@ fn take_and_release_each_name_one_task_and_take_no_flags() {
 /// the machine it runs on.
 #[test]
 fn paint_defaults_to_a_hundred_and_fifty_pixel_sprite_on_a_640_by_360_field() {
-    let Command::Paint {
+    let Command::Paint(Paint {
         sprites,
         px,
         size,
         corpus,
-    } = parse("paint").expect("paint").command
+        play,
+        cell,
+    }) = parse("paint").expect("paint").command
     else {
         panic!("not paint");
     };
     assert_eq!(sprites, None);
+    assert_eq!(play, None, "the default is one frame, not an animation");
+    assert_eq!(cell, 20, "the assumed cell height moved");
     assert!(
         !corpus,
         "the default is the fleet; the art is behind --corpus"
@@ -356,12 +360,13 @@ fn paint_defaults_to_a_hundred_and_fifty_pixel_sprite_on_a_640_by_360_field() {
     );
     assert_eq!(size, (640, 360));
 
-    let Command::Paint {
+    let Command::Paint(Paint {
         sprites,
         px,
         size,
         corpus,
-    } = parse("paint --sprites D:/art --px 75 --size 320x200 --corpus")
+        ..
+    }) = parse("paint --sprites D:/art --px 75 --size 320x200 --corpus")
         .expect("flags")
         .command
     else {
@@ -372,6 +377,35 @@ fn paint_defaults_to_a_hundred_and_fifty_pixel_sprite_on_a_640_by_360_field() {
     assert_eq!(px, 75);
     // 320x200 is VGA mode 13h, which is where the 256-colour palette comes from.
     assert_eq!(size, (320, 200));
+}
+
+/// 🚨 **`--play` takes seconds and refuses everything that is not a length of
+/// time**, because the alternative is a loop whose end nobody can predict.
+///
+/// Fractions are allowed on purpose: a two-second run is the one an operator
+/// uses to check that the picture moves at all, and `0.5` is a legitimate
+/// answer to *did it draw anything*.
+#[test]
+fn play_takes_seconds_and_cell_takes_pixels() {
+    let Command::Paint(Paint { play, cell, .. }) =
+        parse("paint --play 2.5 --cell 24").expect("play").command
+    else {
+        panic!("not paint");
+    };
+    assert_eq!(play, Some(Duration::from_millis(2_500)));
+    assert_eq!(cell, 24);
+
+    for line in [
+        "paint --play",
+        "paint --play soon",
+        "paint --play 0",
+        "paint --play -3",
+        "paint --play nan",
+        "paint --cell 0",
+        "paint --cell tall",
+    ] {
+        assert!(parse(line).is_err(), "{line} was accepted");
+    }
 }
 
 /// A misspelled size says what the shape is, rather than only that it is wrong.

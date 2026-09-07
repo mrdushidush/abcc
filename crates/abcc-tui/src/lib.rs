@@ -49,7 +49,7 @@ pub mod sixel;
 pub mod theme;
 pub mod view;
 
-pub use assets::{AssetError, Corpus, Design, Facing, Pose, Poses};
+pub use assets::{AssetError, Corpus, Design, Facing, Film, Motion, Pose, Poses};
 pub use battlefield::{Battlefield, Grid, Unit};
 pub use feed::{Feed, FeedError, Replay};
 pub use line::{Line, describe};

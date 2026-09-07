@@ -36,7 +36,10 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use image::AnimationDecoder;
+use image::codecs::gif::GifDecoder;
 use image::imageops::FilterType;
 use image::{ImageFormat, RgbaImage};
 
@@ -92,16 +95,26 @@ impl std::error::Error for AssetError {}
 ///
 /// [`AssetError`] if the file cannot be read, decoded, or used.
 pub fn load_scaled(path: &Path, target_px: u32) -> Result<Sprite, AssetError> {
-    let bytes = std::fs::read(path).map_err(|source| AssetError::Unreadable {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let bytes = read(path)?;
     let decoded = image::load_from_memory(&bytes).map_err(|e| AssetError::Undecodable {
         path: path.to_path_buf(),
         detail: e.to_string(),
     })?;
-    let rgba = decoded.to_rgba8();
-    let scaled = scale(&rgba, target_px);
+    sprite_from(&decoded.to_rgba8(), path, target_px)
+}
+
+/// Read a file, saying which one when it will not read.
+fn read(path: &Path) -> Result<Vec<u8>, AssetError> {
+    std::fs::read(path).map_err(|source| AssetError::Unreadable {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Scale one decoded image and wrap it. The step every frame shares, whether it
+/// came out of a still or out of frame 137 of an animation.
+fn sprite_from(rgba: &RgbaImage, path: &Path, target_px: u32) -> Result<Sprite, AssetError> {
+    let scaled = scale(rgba, target_px);
     let (w, h) = (scaled.width(), scaled.height());
     Sprite::from_rgba(w, h, scaled.into_raw()).map_err(|source| AssetError::Malformed {
         path: path.to_path_buf(),
@@ -161,6 +174,250 @@ fn scale(src: &RgbaImage, target_px: u32) -> RgbaImage {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// 🚨 The frames a still loader throws away
+// ---------------------------------------------------------------------------
+
+/// What a frame that declares no delay is held for.
+///
+/// GIF stores the delay in hundredths of a second and **0 means *as fast as the
+/// viewer can manage***, which every browser has read as 100 ms for thirty
+/// years. Taking it literally would give a film a zero-length loop, and the play
+/// head divides by that.
+const NO_DELAY_HOLD: Duration = Duration::from_millis(100);
+
+/// The substitution, in one place: every way a film can be built goes through
+/// it, so a still and a decoded frame cannot end up with different rules about
+/// what *no delay* means.
+const fn hold_or_default(hold: Duration) -> Duration {
+    if hold.is_zero() { NO_DELAY_HOLD } else { hold }
+}
+
+/// Every frame of one file, scaled, and how long each is held.
+///
+/// 🚨 **[`load`] takes the first frame and drops the rest**, which is the right
+/// answer for a still and the wrong one for this corpus: the four pictures fit
+/// to draw (F565) are *all* animations — `coder-{E,W}-attacking.gif` at 97
+/// frames and `building-{E,W}-attacking.gif` at 241 — so a field built out of
+/// [`load`] is four animations standing perfectly still.
+///
+/// # What it holds, and what that costs
+///
+/// **Frames are scaled as they are decoded and the source is never kept.** A
+/// building is 380x568 at source, so 241 frames of it is 208 MB held whole and
+/// far less at the height the field draws — the difference between a type you
+/// can put four of on a battlefield and one you cannot. [`Film::bytes`] answers
+/// what an instance actually costs rather than leaving it to arithmetic.
+///
+/// ⚠ **A film is scaled once, at open, and never rescaled.** `--px` moving is a
+/// reload, the same as it is for a still.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Film {
+    frames: Vec<Sprite>,
+    /// When each frame stops being the one on screen, measured from the start of
+    /// the loop. Cumulative rather than per-frame because the play head asks
+    /// *which frame is up at time t*, and over a 241-frame loop that is one
+    /// binary search instead of a walk.
+    ends: Vec<Duration>,
+}
+
+/// ⚠ **A `Film` prints its shape, not its pixels.** The derived form would put
+/// every frame's RGBA into a panic message.
+impl std::fmt::Debug for Film {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Film {{ {} frame(s), {}x{}, {:.2}s, {} bytes }}",
+            self.frames.len(),
+            self.still().width(),
+            self.still().height(),
+            self.duration().as_secs_f64(),
+            self.bytes()
+        )
+    }
+}
+
+impl Film {
+    /// Decode every frame of `path`, each scaled so its height is `target_px`.
+    ///
+    /// A still image is a film of one frame — the caller does not have to know
+    /// which it opened, and [`Film::is_animated`] answers when it wants to.
+    ///
+    /// 🚨 **The format comes from the bytes, not the extension.** A `.gif` that
+    /// is really a PNG loads as a still here and would be an `Undecodable` if
+    /// this trusted the name; [`Corpus::open`] filters by extension because it
+    /// is deciding what to *try*, which is a different question.
+    ///
+    /// # Errors
+    ///
+    /// [`AssetError`] if the file cannot be read, decoded, or used. A GIF that
+    /// decodes to no frames at all is [`AssetError::Undecodable`]: an empty film
+    /// has no first frame, and every caller of this expects a picture.
+    pub fn open(path: &Path, target_px: u32) -> Result<Film, AssetError> {
+        let bytes = read(path)?;
+        let undecodable = |detail: String| AssetError::Undecodable {
+            path: path.to_path_buf(),
+            detail,
+        };
+        let format = image::guess_format(&bytes).map_err(|e| undecodable(e.to_string()))?;
+        if format != ImageFormat::Gif {
+            let decoded =
+                image::load_from_memory(&bytes).map_err(|e| undecodable(e.to_string()))?;
+            let sprite = sprite_from(&decoded.to_rgba8(), path, target_px)?;
+            return Ok(Film::of(sprite));
+        }
+
+        let decoder = GifDecoder::new(std::io::Cursor::new(&bytes[..]))
+            .map_err(|e| undecodable(e.to_string()))?;
+        let mut frames = Vec::new();
+        for (i, frame) in decoder.into_frames().enumerate() {
+            let frame = frame.map_err(|e| undecodable(format!("frame {i}: {e}")))?;
+            let hold = Duration::from(frame.delay());
+            // `into_frames` hands back a whole canvas per frame, disposal
+            // already applied, so scaling one frame is scaling a picture rather
+            // than a patch of one. Scale here and the source-sized buffer is
+            // dropped at the end of this iteration.
+            frames.push((sprite_from(frame.buffer(), path, target_px)?, hold));
+        }
+        Film::from_frames(frames).ok_or_else(|| undecodable("no frames".to_owned()))
+    }
+
+    /// One picture, held forever: what a still is when everything downstream
+    /// takes a film.
+    #[must_use]
+    pub fn of(sprite: Sprite) -> Film {
+        Film {
+            frames: vec![sprite],
+            ends: vec![hold_or_default(Duration::ZERO)],
+        }
+    }
+
+    /// A film made from frames already in hand, for a caller that decoded them
+    /// itself or a test that would rather not write a GIF to disk.
+    ///
+    /// `None` when there are no frames, because [`Film::still`] promises one.
+    /// A zero hold becomes `NO_DELAY_HOLD`, the same as it does at decode.
+    #[must_use]
+    pub fn from_frames(frames: Vec<(Sprite, Duration)>) -> Option<Film> {
+        if frames.is_empty() {
+            return None;
+        }
+        let mut clock = Duration::ZERO;
+        let mut sprites = Vec::with_capacity(frames.len());
+        let mut ends = Vec::with_capacity(frames.len());
+        for (sprite, hold) in frames {
+            clock += hold_or_default(hold);
+            sprites.push(sprite);
+            ends.push(clock);
+        }
+        Some(Film {
+            frames: sprites,
+            ends,
+        })
+    }
+
+    /// The first frame — what [`load`] would have returned.
+    #[must_use]
+    pub fn still(&self) -> &Sprite {
+        &self.frames[0]
+    }
+
+    /// Every frame, in play order.
+    #[must_use]
+    pub fn frames(&self) -> &[Sprite] {
+        &self.frames
+    }
+
+    /// 🚨 **The frame that is up `elapsed` after the loop started**, wrapping.
+    ///
+    /// The play head takes a duration rather than a frame number so that a
+    /// dropped frame costs the animation nothing: a console that misses its slot
+    /// resumes where the *clock* is, not where the counter is, and the animation
+    /// stays the length the art says it is.
+    #[must_use]
+    pub fn at(&self, elapsed: Duration) -> &Sprite {
+        &self.frames[self.index_at(elapsed)]
+    }
+
+    /// Which frame [`Film::at`] would give — the same answer, for a caller
+    /// measuring rather than drawing.
+    #[must_use]
+    pub fn index_at(&self, elapsed: Duration) -> usize {
+        // A film always holds a frame for something, so this cannot divide by
+        // zero: every hold is at least `NO_DELAY_HOLD`.
+        let into = elapsed.as_nanos() % self.duration().as_nanos();
+        let into = Duration::from_nanos(u64::try_from(into).unwrap_or(u64::MAX));
+        // `partition_point` over the cumulative ends: the first frame whose end
+        // is past the play head is the one on screen.
+        self.ends
+            .partition_point(|end| *end <= into)
+            .min(self.frames.len() - 1)
+    }
+
+    /// How long one loop lasts.
+    #[must_use]
+    pub fn duration(&self) -> Duration {
+        self.ends[self.ends.len() - 1]
+    }
+
+    /// How long the frame at `index` is held. An index past the end is the last
+    /// frame's, so a caller counting frames cannot trip over the boundary.
+    #[must_use]
+    pub fn hold(&self, index: usize) -> Duration {
+        let index = index.min(self.ends.len() - 1);
+        match index.checked_sub(1) {
+            // `ends` is cumulative and every hold is at least `NO_DELAY_HOLD`,
+            // so it is non-decreasing and this never saturates. Spelled
+            // saturating rather than `-` because a `Duration` subtraction that
+            // could go negative panics, and no picture is worth that.
+            Some(prev) => self.ends[index].saturating_sub(self.ends[prev]),
+            None => self.ends[0],
+        }
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Always false — a film is refused at construction rather than allowed to
+    /// exist empty. Here because [`Film::len`] is, and a `len` without an
+    /// `is_empty` is a trap.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Whether there is anything to play. One frame is a picture; two are an
+    /// animation.
+    #[must_use]
+    pub fn is_animated(&self) -> bool {
+        self.frames.len() > 1
+    }
+
+    /// What holding this costs in RGBA, which is what a field of them is
+    /// budgeted in.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.frames.iter().map(|s| s.rgba().len()).sum()
+    }
+
+    /// The shortest time any frame is held.
+    ///
+    /// 🚨 **This is the rate a player has to sample at**, not the average and
+    /// not the first frame's hold: sample any slower and the shortest frame is
+    /// the one that gets skipped. On the shipped corpus every hold is 40 ms
+    /// (F642), so it answers 40 ms — but a corpus with one fast frame in a slow
+    /// loop would answer that fast frame, which is the point.
+    #[must_use]
+    pub fn shortest_hold(&self) -> Duration {
+        (0..self.frames.len())
+            .map(|i| self.hold(i))
+            .min()
+            .unwrap_or(NO_DELAY_HOLD)
+    }
 }
 
 /// A directory of sprite files, answered by reading it rather than by a list
@@ -269,6 +526,24 @@ fn digest(bytes: &[u8]) -> u64 {
 /// poses run from **30 to 94** with no gap to put a line in — `cto-E-selected`
 /// scores 94, above either building, because it really is a mostly-assembled
 /// machine. ▶ **When better art arrives, re-measure before trusting this.**
+///
+/// # 🚨 It is a question about ONE FRAME, and it has to stay one
+///
+/// F565 measured the four survivors at 92/92/99/99 — and those are frame 0.
+/// Asked of every frame at source, 2026-09-07 (F643), the same four files read:
+///
+/// | file | frames | coherence | frames under 90 | frames touching the ceiling |
+/// |---|---|---|---|---|
+/// | `coder-{E,W}-attacking.gif` | 97 | 94–99 | 0 | 8 |
+/// | `building-{E,W}-attacking.gif` | 241 | **71**–100 | **63** | **95** |
+///
+/// **So this filter, applied per frame, rejects the only art the project has.**
+/// It is not measuring wrong: an attack animation throws pieces off the body
+/// (coherence 71 at frame 124) and pushes an effect out through the top of its
+/// own frame for two runs of ~40 frames. Both are what *attacking* looks like.
+/// ▶ **The admission question is asked of frame 0 and stays there**, and
+/// anything that later filters frames has to be a different question with a
+/// different name.
 pub const INTACT: u32 = 90;
 
 /// What a thing standing on the field is a picture of.
@@ -394,10 +669,24 @@ impl std::fmt::Display for Pose {
 /// not decode, or the art is broken.
 #[derive(Debug)]
 pub struct Poses {
-    by_pose: BTreeMap<Pose, Sprite>,
+    by_pose: BTreeMap<Pose, Film>,
     rejected: Vec<PathBuf>,
     unreadable: usize,
     unnamed: usize,
+}
+
+/// Whether a field wants the frames or only the first one.
+///
+/// 🚨 **Measured on the shipped corpus at 150 px: `Playing` costs 2.1 s and
+/// 38.7 MB where `Still` costs neither** (F642). That is the whole reason this
+/// is a choice rather than always the frames — `abcc paint` draws one picture
+/// and would be paying two seconds for 38 MB it never looks at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Motion {
+    /// The first frame of each file, which is what a still is.
+    Still,
+    /// Every frame, ready to play.
+    Playing,
 }
 
 impl Poses {
@@ -415,6 +704,24 @@ impl Poses {
     /// file that will not read is counted, not fatal: one bad file must not cost
     /// the operator the whole field.
     pub fn open(root: &Path, px: u32) -> Result<Poses, AssetError> {
+        Poses::open_with(root, px, Motion::Still)
+    }
+
+    /// The same, playing: every frame of every picture admitted.
+    ///
+    /// # Errors
+    ///
+    /// As [`Poses::open`].
+    pub fn open_playing(root: &Path, px: u32) -> Result<Poses, AssetError> {
+        Poses::open_with(root, px, Motion::Playing)
+    }
+
+    /// Read a corpus, taking one frame per picture or all of them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Poses::open`].
+    pub fn open_with(root: &Path, px: u32, motion: Motion) -> Result<Poses, AssetError> {
         let corpus = Corpus::open(root)?;
         let mut poses = Poses {
             by_pose: BTreeMap::new(),
@@ -438,9 +745,16 @@ impl Poses {
                 poses.rejected.push(path.clone());
                 continue;
             }
-            match load_scaled(path, px) {
-                Ok(sprite) => {
-                    poses.by_pose.insert(pose, sprite);
+            // 🚨 **One recipe for a film**, whichever of the two ways it was
+            // asked for: a still is a film of one frame built by the same
+            // constructor, so there is nowhere for the two to drift apart.
+            let loaded = match motion {
+                Motion::Still => load_scaled(path, px).map(Film::of),
+                Motion::Playing => Film::open(path, px),
+            };
+            match loaded {
+                Ok(film) => {
+                    poses.by_pose.insert(pose, film);
                 }
                 Err(_) => poses.unreadable += 1,
             }
@@ -456,7 +770,48 @@ impl Poses {
     /// that does.
     #[must_use]
     pub fn sprite(&self, pose: Pose) -> Option<&Sprite> {
+        self.by_pose.get(&pose).map(Film::still)
+    }
+
+    /// Every frame for a pose. One frame when the corpus was opened
+    /// [`Motion::Still`], so a caller that draws films works either way — it
+    /// draws a still fleet rather than no fleet.
+    #[must_use]
+    pub fn film(&self, pose: Pose) -> Option<&Film> {
         self.by_pose.get(&pose)
+    }
+
+    /// Whether anything held has a second frame. False for a still corpus, and
+    /// false for a playing one whose art is all stills.
+    #[must_use]
+    pub fn is_animated(&self) -> bool {
+        self.by_pose.values().any(Film::is_animated)
+    }
+
+    /// What every frame held costs in RGBA.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.by_pose.values().map(Film::bytes).sum()
+    }
+
+    /// The longest loop held, which is how long the field takes to repeat
+    /// itself. `None` when nothing is held.
+    #[must_use]
+    pub fn longest_loop(&self) -> Option<Duration> {
+        self.by_pose.values().map(Film::duration).max()
+    }
+
+    /// The rate a player has to sample this field at: the shortest hold any
+    /// film asks for. `None` when nothing is held.
+    #[must_use]
+    pub fn shortest_hold(&self) -> Option<Duration> {
+        self.by_pose.values().map(Film::shortest_hold).min()
+    }
+
+    /// How many frames are held across every pose.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.by_pose.values().map(Film::len).sum()
     }
 
     /// The poses this corpus cannot draw.
@@ -501,8 +856,11 @@ impl Poses {
     /// in. `None` when nothing is held.
     #[must_use]
     pub fn extent(&self) -> Option<(u32, u32)> {
-        let widest = self.by_pose.values().map(Sprite::width).max()?;
-        let tallest = self.by_pose.values().map(Sprite::height).max()?;
+        // Every frame of one film is the same size — a GIF frame is a whole
+        // canvas, disposal already applied — so the first frame measures the
+        // film. `films_are_one_size` pins that rather than trusting it.
+        let widest = self.by_pose.values().map(|f| f.still().width()).max()?;
+        let tallest = self.by_pose.values().map(|f| f.still().height()).max()?;
         Some((widest, tallest))
     }
 }
