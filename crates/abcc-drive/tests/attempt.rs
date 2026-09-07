@@ -529,6 +529,214 @@ fn a_change_with_no_checker_is_uncertain_and_names_what_was_missing() {
     assert!(asked.contains(&kept), "{asked}");
 }
 
+// ---------------------------------------------------------------------------
+// F655 — what the gate is asked *about*
+// ---------------------------------------------------------------------------
+
+/// The change phase F655 is about: the tool wrote, and then the model was cut
+/// off before it could say it was finished. The tree holds work; the ending is
+/// an absence.
+fn cut_off_mid_change() -> Vec<Script> {
+    vec![
+        Script::says("src/lib.rs is the place"),
+        Script::calls(
+            "c1",
+            "write_file",
+            r#"{"path":"src/new.rs","content":"pub fn two() -> u32 { 2 }\n"}"#,
+        ),
+        Script::truncated_at_cap(Head::Builders.budget()),
+    ]
+}
+
+/// The same ending over a tree nobody wrote to.
+fn cut_off_having_written_nothing() -> Vec<Script> {
+    vec![
+        Script::says("src/lib.rs is the place"),
+        Script::calls("c1", "read_file", r#"{"path":"src/lib.rs"}"#),
+        Script::truncated_at_cap(Head::Builders.budget()),
+    ]
+}
+
+/// 🚨🚨 **F655: an ending the model did not choose is still measured, because
+/// the tree does not care why the model stopped talking.**
+///
+/// Before this, the gate was asked only under `PhaseEnded::Answered`. DEBUG-P4
+/// flew five sorties on one subject and found **six of ten attempts changed the
+/// tree while the gate was asked about one** — and two of the five it skipped
+/// passed all 544 tests when rebuilt by hand. The console meanwhile printed
+/// *the attempt produced no artifact*, which was false every time.
+#[test]
+fn an_ending_the_model_did_not_choose_is_measured_when_the_tree_changed() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let landed = driven(
+        &subject,
+        &mut store,
+        task,
+        cut_off_mid_change(),
+        Some(PASSING),
+    );
+
+    // The fixture guard, read off the outcome because `Landed::change` carries
+    // the phase's *report* and not its ending: this test is only about anything
+    // if the change phase really did end in an absence.
+    assert_eq!(
+        landed.outcome,
+        AttemptOutcome::Uncertain {
+            why: Why::TruncatedAtCap {
+                budget: Head::Builders.budget()
+            }
+        },
+        "the fixture stopped being the shape this test is about"
+    );
+    let gate = landed.gate.as_ref().expect("the gate was not asked");
+    assert_eq!(gate.headline, Headline::Green { rungs: 3 });
+    assert_eq!(rungs(&store).len(), 3, "every rung is on the log");
+}
+
+/// 🚨 **And a green ladder underneath it does not make the attempt
+/// `Accomplished`.**
+///
+/// This is the boundary F655 deliberately did not cross. `ending` reads the gate
+/// only under `Answered`, so the measurement lands on the log and changes no
+/// verdict — whether a gate-green tree the model never declared finished may be
+/// called done is a question about who is allowed to stop, and it is nobody's to
+/// answer by widening a `match` arm.
+#[test]
+fn a_green_ladder_under_an_unchosen_ending_is_still_uncertain() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let landed = driven(
+        &subject,
+        &mut store,
+        task,
+        cut_off_mid_change(),
+        Some(PASSING),
+    );
+
+    assert_eq!(
+        landed.gate.as_ref().map(|g| &g.headline),
+        Some(&Headline::Green { rungs: 3 }),
+        "the fixture must be green for this test to be about anything"
+    );
+    assert_eq!(
+        landed.outcome,
+        AttemptOutcome::Uncertain {
+            why: Why::TruncatedAtCap {
+                budget: Head::Builders.budget()
+            }
+        },
+        "a measurement promoted an ending the model never chose"
+    );
+    assert!(
+        !matches!(landed.state, TaskState::Accomplished { .. }),
+        "{:?}",
+        landed.state
+    );
+    assert_ne!(landed.next, Some(NextAction::Stop));
+}
+
+/// ⚠ **And it costs the free rung and nothing else when nothing was written.**
+///
+/// This is the objection the widened arm has to answer, and it is answered by
+/// `Rung::Structural` rather than by a check in the driver: the structural rung
+/// owns the empty diff, a refusal breaks the walk, so the acceptance command
+/// never runs. A driver that re-derived *did anything change* for itself would
+/// be a second copy of that rule.
+#[test]
+fn an_unchanged_tree_stops_at_the_free_rung_however_the_phase_ended() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let landed = driven(
+        &subject,
+        &mut store,
+        task,
+        cut_off_having_written_nothing(),
+        Some(PASSING),
+    );
+
+    let recorded = rungs(&store);
+    assert_eq!(recorded.len(), 1, "the ladder walked past a refusal");
+    assert_eq!(recorded[0].rung(), "structural");
+    assert!(
+        matches!(&recorded[0], Outcome::Measured(m) if m.exit == 1),
+        "{:?}",
+        recorded[0]
+    );
+    // The ending is still the absence it was; the rung did not become one.
+    assert_eq!(
+        landed.outcome,
+        AttemptOutcome::Uncertain {
+            why: Why::TruncatedAtCap {
+                budget: Head::Builders.budget()
+            }
+        }
+    );
+}
+
+/// ⚠ **The Judge was not widened with the gate**, because it is a model call
+/// that decides nothing, and spending one on an attempt that already ran out of
+/// room buys prose at the price of the thing it was short of.
+#[test]
+fn the_judge_is_not_asked_for_an_ending_the_model_did_not_choose() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (landed, seen) = watched(
+        &subject,
+        &mut store,
+        task,
+        cut_off_mid_change(),
+        Some(PASSING),
+    );
+
+    assert!(landed.gate.is_some(), "the gate was not asked");
+    assert!(landed.judge.is_none(), "the Judge ran anyway");
+    assert!(
+        !seen.iter().any(|s| s.head_key == "commandos"),
+        "the review head was used on an attempt the model never finished"
+    );
+
+    // And the absence is on the log rather than left as a gap beside the rungs.
+    let notes: Vec<String> = store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::Note { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("the Judge was not asked") && n.contains("never said")),
+        "{notes:?}"
+    );
+}
+
+/// The operator's stop is still not ours to judge, and after F655 it is the only
+/// way to reach an unasked gate at all.
+#[test]
+fn an_attempt_the_operator_halted_asks_no_rung() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let landed = stopped(&subject, &mut store, task, Control::Halt);
+
+    assert!(landed.kept.is_some(), "Halt threw the work away");
+    assert!(landed.gate.is_none(), "the operator's stop was judged");
+    assert!(rungs(&store).is_empty(), "a rung ran on a halted attempt");
+}
+
 /// The question names the snapshot, so the operator can look at the tree the
 /// sentence is about rather than at whatever the worktree holds now.
 #[test]

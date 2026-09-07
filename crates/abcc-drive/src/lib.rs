@@ -485,11 +485,39 @@ impl<'a> Driver<'a> {
         // there, because that is the tree the checkers run in and the operator's
         // checkout must never be the thing a rung compiles.
         let mut gate = match (kept.as_ref(), last) {
-            (Some(closing), PhaseEnded::Answered { .. }) => {
+            // 🚨🚨 **F655: `Unmeasured` is here because the tree does not care
+            // why the model stopped talking.** This arm used to be `Answered`
+            // alone, and the comment beside it — *an attempt that ended in an
+            // absence has nothing to measure* — folded two different absences
+            // into one word. `SaidNothing` really is nothing to measure;
+            // `BudgetExhausted` and `TruncatedAtCap` are *the model was still
+            // working when the clock ran out*, and DEBUG-P4 measured what that
+            // costs: across five sorties on one subject, **six of ten attempts
+            // changed the tree and the gate was asked about one**, while two of
+            // the five it skipped passed all 544 tests when rebuilt by hand.
+            //
+            // ⚠ **It cannot cost a cold build on an unchanged tree**, which is
+            // the objection this arm has to answer. It does not, and not by a
+            // check written here: [`Gate::measure`] runs [`Rung::Structural`]
+            // first, that rung *owns* the empty diff, and a refusal breaks the
+            // walk — so an attempt that wrote nothing pays 0.024 s and never
+            // reaches the acceptance command. Asking the ladder rather than
+            // re-deriving *did anything change* is deliberate: `rung.rs` is
+            // explicit that a second copy of that rule is a second thing that
+            // can drift from the first.
+            //
+            // 🚨 **This measures; it does not promote.** [`ending`] reads the
+            // gate **only** under `Answered`, so a `BudgetExhausted` attempt
+            // ends `Uncertain` with its rungs on the log exactly as it ended
+            // `Uncertain` without them. Whether a gate-green tree the model
+            // never declared finished may be `Accomplished` is a question about
+            // who is allowed to stop, and it is not this arm's to answer.
+            (Some(closing), PhaseEnded::Answered { .. } | PhaseEnded::Unmeasured { .. }) => {
                 Some(self.gate(attempt, &opened, closing)?)
             }
-            // An attempt that ended in an absence has nothing to measure, and an
-            // attempt the operator stopped is not ours to judge.
+            // An attempt the operator stopped is not ours to judge — and that is
+            // now the *only* way here, because `keep_for` hands `Keep::Nothing`
+            // to a stop and to nothing else.
             _ => None,
         };
 
@@ -500,10 +528,25 @@ impl<'a> Driver<'a> {
         // already fixed by the time this is called. `Report::note` adds a
         // `Claim` and a `Claim` is not an `Outcome`, so this call cannot move
         // the attempt however it goes.
-        let judged = match (gate.as_mut(), kept.as_ref()) {
-            (Some(measured), Some(closing)) => {
+        //
+        // ⚠ **F655 widened the gate and deliberately did not widen this.** The
+        // Judge is a model call — a minute and a few thousand tokens — and it
+        // decides nothing by construction, so running it on every attempt that
+        // ran out of rounds would buy prose at the price of the thing the round
+        // budget was already short of. The measurement is what was missing; the
+        // review was not.
+        let judged = match (gate.as_mut(), kept.as_ref(), last) {
+            (Some(measured), Some(closing), PhaseEnded::Answered { .. }) => {
                 self.judge(row, attempt, &opened, closing, measured, control)?
             }
+            // ⚠ Stated rather than omitted, like every other absence here — a
+            // gate with rungs on it and no review beside them should say which
+            // of the two was skipped and why, rather than leave an operator to
+            // infer it from a gap.
+            (Some(_), Some(_), _) => self.not_asked(
+                "the model never said the change was finished, so there is a measurement to \
+                 read but no completed change to review",
+            )?,
             _ => None,
         };
 

@@ -285,9 +285,19 @@ fn gate(measured: Option<&Measured>, out: &mut impl Write) -> Result<(), AppErro
         // Stated rather than omitted, for the same reason a phase that did not
         // run is stated: *not asked* and *asked and found nothing* are two
         // different things and this is the first one.
+        //
+        // 🚨🚨 **F655: this line used to read *the attempt produced no
+        // artifact*, and it was false five times in one session.** It described
+        // the branch it was printed from rather than the tree — the driver only
+        // gated an `Answered` ending, so an attempt that ran out of rounds was
+        // told it had produced nothing while its change sat in the checkpoint.
+        // ⚠ **A sentence that asserts an absence nothing measured is worse than
+        // no sentence**: DEBUG-P4's F656 traces four sessions of write-ups
+        // inheriting this one as a fact. Now that `Unmeasured` is gated too,
+        // the operator's stop is the only way to reach here, and this says so.
         writeln!(
             out,
-            "gate      not asked — the attempt produced no artifact"
+            "gate      not asked — the operator stopped this attempt"
         )?;
         return Ok(());
     };
@@ -372,4 +382,33 @@ fn phase(out: &mut impl Write, name: &str, report: &PhaseReport) -> Result<(), A
         report.elapsed_ms
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gate;
+
+    /// 🚨 **F655: the unasked-gate sentence, asserted where the operator reads
+    /// it.**
+    ///
+    /// It used to say *the attempt produced no artifact* and that was false five
+    /// times in one session — the driver gated only an `Answered` ending, so an
+    /// attempt cut off mid-change was told it had produced nothing while its
+    /// work sat in the checkpoint. DEBUG-P4's F656 traces four sessions of
+    /// write-ups inheriting the sentence as a fact, so the string is worth a
+    /// test of its own: the driver arm and the sentence that reports it are two
+    /// places, and only one of them is what anybody reads.
+    #[test]
+    fn an_unasked_gate_names_the_operator_and_never_asserts_an_absent_artifact() {
+        let mut out = Vec::new();
+        gate(None, &mut out).expect("write");
+        let said = String::from_utf8(out).expect("utf-8");
+
+        assert!(said.contains("not asked"), "{said}");
+        assert!(said.contains("operator"), "{said}");
+        assert!(
+            !said.contains("no artifact"),
+            "the sentence asserts an absence nothing measured: {said}"
+        );
+    }
 }
