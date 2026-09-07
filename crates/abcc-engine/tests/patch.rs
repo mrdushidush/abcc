@@ -284,6 +284,73 @@ fn a_diff_argument_carrying_tool_call_markup_is_refused_as_a_transcript() {
     assert_eq!(read(dir.path(), "first.txt"), "alpha\nbeta\n");
 }
 
+/// 🚨🚨 **F649: the refusal names `write_file`, and it names it in the
+/// string the model actually reads.**
+///
+/// F648 flew the refusal as shipped and it was correct, well-aimed and useless:
+/// five of five `apply_patch` calls refused with this sentence, two attempts
+/// ended on the round budget, no artifact. F641 is why — the fold happens in the
+/// **server's** parser, so a message asking the model to send one clean call
+/// asks it to stop doing something it may not be doing. The sentence now offers
+/// the door the log says works: the single `Accomplished` on this project's log
+/// got there by falling back to `write_file`, refused 1 of 17 against
+/// `apply_patch`'s 51 of 66.
+///
+/// 🚨 **This asserts `result.text`, and that is the point.** The older test
+/// beside it reads `unmeasured.detail`, which is what the *log* keeps;
+/// `Message::tool_result` is built from `text`. A message that reached the
+/// record and not the transcript would pass that test and change nothing about
+/// the run — F647's rule, one layer down: assert the wire, not the fold.
+#[test]
+fn the_refusal_the_model_reads_offers_write_file_as_the_way_out() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "first.txt", "alpha\nbeta\n");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let diff = "--- a/first.txt\n+++ b/first.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA\n\
+                <tool_call>\n<function=apply_patch>\n";
+    // ⚠ Not a tautology: the payload names neither tool, so every assertion
+    // below is about the sentence and not about the fixture (F632).
+    assert!(
+        !diff.contains("write_file"),
+        "the fixture must not supply it"
+    );
+    assert!(
+        !diff.contains("content"),
+        "nor the argument being recommended"
+    );
+
+    let result = apply(&workspace, diff);
+
+    assert!(
+        result.text.contains("write_file"),
+        "the model is told to keep patching and nothing else: {}",
+        result.text
+    );
+    assert!(
+        result.text.contains("content"),
+        "naming the tool without naming its argument spends a round: {}",
+        result.text
+    );
+    // The offer is conditional on a second refusal, which is the shape the one
+    // success had. A message that abandoned the tool on sight would be a
+    // different arm, and this is the one that flew.
+    assert!(
+        result.text.contains("the next `apply_patch`"),
+        "the offer must be the second refusal's, not the first's: {}",
+        result.text
+    );
+    // 🚨 One string, two destinations. `refused` clones it deliberately so a
+    // transcript and a record cannot disagree about why a tool did nothing.
+    match &result.unmeasured {
+        Some(Why::FailedBeforeRunning { detail }) => {
+            assert_eq!(detail, &result.text, "the log and the transcript diverged");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(read(dir.path(), "first.txt"), "alpha\nbeta\n");
+}
+
 /// ⚠ **A diff that *adds* a line containing tool-call markup is not a
 /// transcript.** The check reads bare lines only — inside a hunk every line
 /// carries a `' '`, `'+'` or `'-'` prefix — because this repository's own

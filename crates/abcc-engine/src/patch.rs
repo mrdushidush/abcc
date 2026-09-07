@@ -484,10 +484,40 @@ pub enum PatchError {
     /// [`PatchError::NoMatch`] — a sentence about line numbers, for a payload
     /// whose problem is that it is not one diff. The round is spent either way;
     /// this at least spends it on a sentence the model can act on.
+    ///
+    /// 🚨🚨 **F649: the sentence now names `write_file`, because a refusal its
+    /// reader cannot act on is a loop with a receipt.** F641 put the fold in the
+    /// **server's** tool-call parser, before abcc sees anything, so this message
+    /// asks the model to stop doing something it may not be doing — and F648
+    /// measured what that costs: `apply_patch` refused **5 of 5** across two
+    /// attempts on one subject, both ending `BudgetExhausted { 24 rounds }` with
+    /// **no artifact at all**, for 48 rounds and 1,280,734 input tokens.
+    ///
+    /// So the sentence offers the other door, and which door is evidence rather
+    /// than a guess: **the one `Accomplished` in this project's entire log
+    /// reached it by falling back to `write_file` after `apply_patch` failed
+    /// twice**, and `write_file` is refused **1 of 17** against `apply_patch`'s
+    /// 51 of 66. Both are [`Reach::Edits`](crate::tools::Reach::Edits), so any
+    /// ceiling that admitted the refused call admits the one being offered —
+    /// `tests/policy.rs` holds that, because a refusal naming a tool the role
+    /// cannot have would be worse than the one it replaces.
+    ///
+    /// ⚠ **It is offered on the second refusal, not the first**, which is the
+    /// shape the one success actually had. A first refusal can be an honest
+    /// mistake — a transcript pasted into a real diff — and a message that
+    /// abandoned the tool on sight would spend rounds steering the model off the
+    /// tool that works whenever it arrives intact.
+    ///
+    /// ⚠ **This is a prompt, so it binds only as far as the model complies**
+    /// (`tools` module docs: 39 of 50 for the shipped wrapper, 0 of 50 for the
+    /// best re-aimed one). It is a string flown as an arm, not a fix — the fold
+    /// it routes around is still there and still the server's.
     #[error(
         "the diff argument contains tool-call markup ({marker:?} at line {line}), so it is a \
          transcript and not a diff. Send one call, whose `diff` is only the unified diff text: \
-         no `<tool_call>` wrappers, no commentary, and nothing after the last hunk."
+         no `<tool_call>` wrappers, no commentary, and nothing after the last hunk. \
+         If the next `apply_patch` is refused this way too, stop patching and use \
+         `write_file` instead: one call, `path`, and the file's whole new text in `content`."
     )]
     NotADiff { marker: String, line: usize },
     #[error("the diff is malformed: {detail}")]

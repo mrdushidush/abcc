@@ -16,6 +16,7 @@ use abcc_core::seq::{AttemptId, Seq};
 use abcc_engine::provider::{Delta, Message, ProviderError, Role, TraceSignal};
 use abcc_engine::scripted::{Script, Scripted};
 use abcc_engine::tools::ToolSpec;
+use abcc_engine::workspace::Workspace;
 use abcc_engine::{
     Body, ControlPoint, Head, Keep, Limits, NoTools, PhaseEnded, Schema, ToolCall, ToolResult,
     Tools, TurnLoop,
@@ -349,6 +350,82 @@ fn a_denied_tool_is_refused_on_the_log_and_in_the_transcript() {
         .expect("the refusal reached the transcript");
     assert!(told.content.contains("Recon"), "{}", told.content);
     assert!(told.content.contains("bash"), "{}", told.content);
+}
+
+/// 🚨🚨 **F649, and this is the wire: the refusal has to reach the body the
+/// NEXT round is sent, through the real tool layer.**
+///
+/// Everything between the fold and the model is covered elsewhere one hop at a
+/// time — `Patch::parse` returns it, `Workspace::apply_patch` prefixes it,
+/// `refused` puts it in `text`. None of those is the claim. The claim is that a
+/// model whose `apply_patch` was folded by the server reads, in its own
+/// transcript, the name of a tool that works; and the only way to assert that is
+/// to run the loop over a real `Workspace` and look in the body.
+///
+/// ⚠ The `Recorder` used by every other test in this file cannot make this
+/// claim: it answers with a fixed string and never reaches `patch.rs` at all.
+///
+/// ⚠ **Measured rather than assumed, because the first version of this comment
+/// was wrong.** Blanking the tool result at `turn.rs` and running the *whole*
+/// suite fails two tests: this one, and `http.rs`'s
+/// `the_second_request_carries_the_assistant_turn_that_asked_for_the_tool`. So
+/// the last hop was not uncovered — what was uncovered is the *join*: that hop
+/// carries a stub's fixed string across the HTTP seam and never enters
+/// `patch.rs`, and `patch.rs`'s own tests stop at the `ToolResult`. Nothing ran
+/// a folded payload through the real tool layer and looked in the body, which is
+/// the only place the sentence has to arrive to be worth writing.
+#[test]
+fn a_folded_apply_patch_puts_write_file_in_the_model_s_own_transcript() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("first.txt"), "alpha\nbeta\n").expect("write");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    // The payload as the server hands it over (F641): one call's diff, then the
+    // opening of a second call, in one `diff` argument.
+    let folded = "--- a/first.txt\n+++ b/first.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA\n\
+                  <tool_call>\n<function=apply_patch>\n";
+    let provider = Scripted::new(vec![
+        Script::calls(
+            "c1",
+            "apply_patch",
+            &serde_json::json!({ "diff": folded }).to_string(),
+        ),
+        Script::says("understood"),
+    ]);
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("make the test pass");
+    let mut log: Vec<Event> = Vec::new();
+
+    // Builders, because that is the head that gets `apply_patch` at all.
+    TurnLoop::new(&provider, &workspace, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let told = body
+        .messages()
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("the refusal reached the transcript");
+    assert!(
+        told.content.contains("tool-call markup"),
+        "{}",
+        told.content
+    );
+    assert!(
+        told.content.contains("write_file"),
+        "the model reads the refusal and is offered no way out: {}",
+        told.content
+    );
+    // And it really was refused rather than applied: the file is untouched.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("first.txt")).expect("read"),
+        "alpha\nbeta\n"
+    );
 }
 
 /// ⚠ And a `ToolCallStarted` is not written for a call that never started. The

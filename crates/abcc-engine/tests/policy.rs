@@ -6,6 +6,7 @@
 //! file. It is not a unit test of a matcher — every assertion below goes through
 //! [`Policy::admits`], the same call the turn loop makes.
 
+use abcc_engine::patch::PatchError;
 use abcc_engine::tools::{Destructive, Reach, TOOLS, ToolSpec, destructive_git, lookup};
 use abcc_engine::{Head, Policy, Posting, Tier};
 
@@ -87,6 +88,49 @@ fn write_file_and_run_tests_cannot_both_be_had_below_exec() {
     assert!(
         denied.to_string().contains("capped at write"),
         "the refusal must name the ceiling: {denied}"
+    );
+}
+
+/// 🚨🚨 **F649: `apply_patch`'s refusal names `write_file`, so no ceiling may
+/// admit the first and deny the second.**
+///
+/// A refusal that recommends a tool the role cannot have is worse than the one
+/// it replaces: the model spends a round being denied, and the denial is the
+/// engine's fault rather than its own. Nothing in the message can know the
+/// ceiling it will be read under, so the registry has to make the recommendation
+/// true everywhere — which it does, structurally, because both entries are
+/// [`Reach::Edits`] and a tier comparison cannot separate them.
+///
+/// ⚠ The two halves are asserted together on purpose. Either alone is a
+/// statement about something nobody is relying on; together they are the
+/// message's precondition.
+#[test]
+fn every_ceiling_that_admits_apply_patch_admits_the_tool_its_refusal_names() {
+    let refusal = PatchError::NotADiff {
+        marker: "<tool_call>".to_owned(),
+        line: 141,
+    }
+    .to_string();
+    assert!(
+        refusal.contains("write_file"),
+        "this test guards a recommendation the message no longer makes: {refusal}"
+    );
+
+    let mut admitted_anywhere = false;
+    for ceiling in CEILINGS {
+        let policy = Policy::new("test-role", ceiling);
+        if policy.admits("apply_patch").is_err() {
+            continue;
+        }
+        admitted_anywhere = true;
+        assert!(
+            policy.admits("write_file").is_ok(),
+            "at ceiling {ceiling} the refusal recommends a tool the role cannot call"
+        );
+    }
+    assert!(
+        admitted_anywhere,
+        "no ceiling admits apply_patch, so the loop above asserted nothing"
     );
 }
 
