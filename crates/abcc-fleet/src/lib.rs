@@ -134,13 +134,7 @@ pub enum Admission {
     /// what with. `Queued` is scanned first, because `Queued` is the state whose
     /// contract *is* eligible for admission and a held task re-enters behind the
     /// board rather than in front of it.
-    Resume {
-        task: TaskId,
-        cause: Cause,
-        /// The prompt a `redirect` named. `None` is a plain `resume`: the same
-        /// question again, from the checkpoint the hold was taken at.
-        redirect: Option<String>,
-    },
+    Resume { task: TaskId, cause: Cause },
     /// Nothing is `Queued`, and nothing held has been asked for. The board is
     /// quiet.
     Quiet,
@@ -179,7 +173,12 @@ enum Held {
     /// The hold came from `redirect <task> <prompt>` — the operator saying what
     /// to do *instead*, which is an answer rather than a stop, so it needs no
     /// second verb to pick it back up.
-    Redirected { prompt: String },
+    ///
+    /// ⚠ It carries no prompt. F647: **the words belong to the line of enquiry
+    /// and not to the admission that noticed them**, so they are folded out
+    /// separately by [`Fleet::redirect_in_force`] — which every admission asks,
+    /// including the `Queued` one this variant is not.
+    Redirected,
 }
 
 /// The operator's stand-down: **fly out what is in flight, then admit nothing
@@ -372,39 +371,32 @@ impl<'a> Fleet<'a> {
             if !matches!(row.state, TaskState::Holding { .. }) {
                 continue;
             }
-            let (cause, redirect) = match self.held(row.id, row.since)? {
+            let cause = match self.held(row.id, row.since)? {
                 Held::Stays => continue,
                 // The same question, from the checkpoint — so it spends a retry,
                 // which is exactly what the budget is for. ⚠ That makes `pause`
                 // cost something, and it should: the fleet is being asked for a
                 // second run at one question.
-                Held::Asked => (
-                    match self.last_attempt(row.id)? {
-                        Some(of) => Cause::Retry { of },
-                        None => Cause::Fresh,
-                    },
-                    None,
-                ),
+                Held::Asked => match self.last_attempt(row.id)? {
+                    Some(of) => Cause::Retry { of },
+                    None => Cause::Fresh,
+                },
                 // 🚨 A different question, so `Cause::Edit` — which resets the
                 // chain (`budget::spent`) rather than spending from it. The
                 // operator changed what is being asked, and ADR-0010's budget is
                 // spent on *one question asked repeatedly*.
-                Held::Redirected { prompt } => match self.last_attempt(row.id)? {
-                    Some(of) => (Cause::Edit { of }, Some(prompt)),
+                Held::Redirected => match self.last_attempt(row.id)? {
+                    Some(of) => Cause::Edit { of },
                     // Unreachable — a task cannot be `Holding` without an attempt
                     // having been stopped — and stated rather than asserted,
                     // because a redirect with nothing to fork from is a fresh
                     // start on the new prompt and not a panic.
-                    None => (Cause::Fresh, Some(prompt)),
+                    None => Cause::Fresh,
                 },
             };
             return self.affordable(
                 row.id,
-                |task, cause| Admission::Resume {
-                    task,
-                    cause,
-                    redirect,
-                },
+                |task, cause| Admission::Resume { task, cause },
                 cause,
             );
         }
@@ -459,16 +451,14 @@ impl<'a> Fleet<'a> {
                 });
             }
 
-            let (task, cause, redirect) = match self.admit()? {
-                Admission::Run { task, cause } => (task, cause, None),
-                // 🚨 F646. The only difference at this level is the prompt: the
-                // driver picks `Resume` over `Deploy` from the task's own state,
-                // so there is one dispatch path and not two.
-                Admission::Resume {
-                    task,
-                    cause,
-                    redirect,
-                } => (task, cause, redirect),
+            let (task, cause) = match self.admit()? {
+                // 🚨 F646: one arm, and that is the finding rather than a tidy-up.
+                // The driver picks `Resume` over `Deploy` from the task's own
+                // state and `redirect_in_force` is asked of every admitted task,
+                // so a resumed attempt and a fresh one are dispatched by exactly
+                // the same code. What the two variants carry is *why* the task is
+                // flying — which the log wants and the dispatch does not.
+                Admission::Run { task, cause } | Admission::Resume { task, cause } => (task, cause),
                 Admission::Quiet => {
                     return Ok(Sortie {
                         flown,
@@ -495,6 +485,10 @@ impl<'a> Fleet<'a> {
             // driver is told about the budget. `spent_with` holds the
             // off-by-one: the attempt about to be dispatched is not on the log
             // yet.
+            // 🚨 F647: asked of every admitted task and not only a resumed one.
+            // A redirect is an instruction to the task, so it outlives the one
+            // attempt the fold that found it admitted.
+            let redirect = self.redirect_in_force(task)?;
             let causes = self.causes(task)?;
             // 🚨 F646: asked **beside the cause**. A redirect's `Cause::Edit`
             // resets the line of enquiry, so a cause-blind answer — which
@@ -596,13 +590,52 @@ impl<'a> Fleet<'a> {
             _ => None,
         });
         Ok(match caused_by {
-            Some(Control::Redirect { prompt }) => Held::Redirected {
-                prompt: prompt.clone(),
-            },
+            Some(Control::Redirect { .. }) => Held::Redirected,
             // `pause`, `halt`, or a hold with no verb behind it at all. All three
             // are the operator having stopped this task, and they wait.
             _ => Held::Stays,
         })
+    }
+
+    /// 🚨 **F647: the redirect this task is working under, if any — and it
+    /// outlives the attempt that was admitted for it.**
+    ///
+    /// Public for the same reason [`Fleet::admit`] is: it is a projection over the
+    /// log, computed fresh and held nowhere, and a console that wants to show
+    /// what a task is working under reads the same fold the driver is handed.
+    ///
+    /// The first version of this carried the prompt on `Admission::Resume`, which
+    /// is where the fold that found it happened to be standing. That is one
+    /// attempt long. A redirected attempt that ends in an absence lands `Queued`,
+    /// is re-admitted through the `Queued` pass — which has no redirect field and
+    /// could not have one without saying that a re-route is a property of an
+    /// admission — and the retry runs on the **original** prompt. The operator's
+    /// instruction would survive exactly one attempt, and the log would show two
+    /// attempts under `Cause::Edit`'s line of enquiry that were asked different
+    /// questions.
+    ///
+    /// So the words belong to the *task*, folded out of the log beside whatever
+    /// admitted it. **The most recent `ControlApplied { Redirect }` is the
+    /// instruction in force**, and nothing supersedes it but another redirect: a
+    /// pause does not withdraw it, a retry does not exhaust it, and `abcc
+    /// release` handing a commandeered task back does not either. What ends it is
+    /// the task ending.
+    /// # Errors
+    ///
+    /// [`FleetError::Store`] if the log will not read.
+    pub fn redirect_in_force(&self, task: TaskId) -> Result<Option<String>> {
+        Ok(self
+            .store
+            .task_history(task)?
+            .iter()
+            .rev()
+            .find_map(|logged| match &logged.event {
+                Event::ControlApplied {
+                    control: Control::Redirect { prompt },
+                    ..
+                } => Some(prompt.clone()),
+                _ => None,
+            }))
     }
 
     /// The last attempt this task had, which is the one a retry follows.

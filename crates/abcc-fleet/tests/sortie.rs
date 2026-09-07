@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
 use abcc_core::event::{Control, Event};
 use abcc_core::seq::{AttemptId, CheckpointId, MissionId, Seq, TaskId, UnitId};
-use abcc_core::task::{Command, TaskState};
+use abcc_core::task::{Command, RequeueReason, TaskState};
 use abcc_engine::control::{Delivery, InFlight};
 use abcc_engine::provider::{
     ApiRequest, Provider, ProviderClass, ProviderError, ProviderId, TurnStream,
@@ -281,8 +281,7 @@ fn a_resume_typed_after_the_hold_puts_the_task_back_in_the_pool() {
         fleet.admit().expect("admit"),
         Admission::Resume {
             task,
-            cause: Cause::Retry { of: attempt },
-            redirect: None,
+            cause: Cause::Retry { of: attempt }
         }
     );
 }
@@ -387,8 +386,7 @@ fn a_hold_caused_by_a_redirect_is_admitted_with_the_prompt() {
         fleet.admit().expect("admit"),
         Admission::Resume {
             task,
-            cause: Cause::Edit { of: attempt },
-            redirect: Some("look in src/lib.rs instead".to_owned()),
+            cause: Cause::Edit { of: attempt }
         }
     );
 }
@@ -493,8 +491,7 @@ fn a_redirect_resets_the_spent_budget_and_a_resume_does_not() {
                 admission,
                 Admission::Resume {
                     task,
-                    cause: Cause::Edit { of: held },
-                    redirect: Some("a different question".to_owned()),
+                    cause: Cause::Edit { of: held }
                 },
                 "a redirect is a new question, so the budget resets"
             );
@@ -509,6 +506,260 @@ fn a_redirect_resets_the_spent_budget_and_a_resume_does_not() {
             );
         }
     }
+}
+
+/// 🚨🚨 **F647: a redirect outlives the attempt that was admitted for it, and
+/// the first version of this shipped a prompt that survived exactly one.**
+///
+/// The words were carried on `Admission::Resume`, which is where the fold that
+/// found them happened to be standing. But a redirected attempt that ends in an
+/// absence lands `Queued`, and the `Queued` pass has no redirect field — so the
+/// retry ran on the **original** prompt, and the log would have shown two
+/// attempts inside one `Cause::Edit` line of enquiry that were asked different
+/// questions.
+///
+/// ⚠ The task here is `Queued`, not `Holding`. That is the whole point: nothing
+/// about this admission mentions a redirect, and the instruction still applies.
+#[test]
+fn a_redirect_still_applies_to_the_retry_after_the_attempt_it_redirected() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+
+    // Redirected, admitted, flown — and the attempt ended in an absence, which
+    // is the landing that puts a task back on the board.
+    held_at(
+        &mut store,
+        task,
+        Cause::Fresh,
+        Some(Control::Redirect {
+            prompt: "look in src/other.rs instead".to_owned(),
+        }),
+    );
+    let edited = store
+        .append(Event::AttemptStarted {
+            task,
+            unit: UnitId(1),
+            cause: Cause::Edit {
+                of: AttemptId::at(Seq::new(1)),
+            },
+            checkpoint_from: None,
+        })
+        .expect("edited");
+    store
+        .apply(task, Command::Resume { unit: UnitId(1) })
+        .expect("resume");
+    store
+        .apply(
+            task,
+            Command::Engage {
+                attempt: AttemptId::at(edited.seq),
+            },
+        )
+        .expect("engage");
+    store
+        .apply(
+            task,
+            Command::Requeue {
+                why: RequeueReason::AttemptRetryable {
+                    of: AttemptId::at(edited.seq),
+                },
+            },
+        )
+        .expect("requeue");
+
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+
+    // The ordinary `Queued` admission — nothing here knows about a redirect.
+    assert_eq!(
+        fleet.admit().expect("admit"),
+        Admission::Run {
+            task,
+            cause: Cause::Retry {
+                of: AttemptId::at(edited.seq)
+            }
+        }
+    );
+    // And the instruction is still in force, which is what the driver is handed.
+    assert_eq!(
+        fleet.redirect_in_force(task).expect("in force"),
+        Some("look in src/other.rs instead".to_owned()),
+        "the retry would have run on the original prompt"
+    );
+}
+
+/// ⚠ **And nothing supersedes a redirect but another redirect.** A `pause` after
+/// one does not withdraw it: the operator said what to do instead and then
+/// stopped the work, which are two statements and not a contradiction.
+#[test]
+fn a_pause_after_a_redirect_does_not_withdraw_it() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+    held_at(
+        &mut store,
+        task,
+        Cause::Fresh,
+        Some(Control::Redirect {
+            prompt: "the new question".to_owned(),
+        }),
+    );
+    store
+        .append(Event::ControlApplied {
+            task,
+            control: Control::Pause,
+        })
+        .expect("paused");
+
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+    assert_eq!(
+        fleet.redirect_in_force(task).expect("in force"),
+        Some("the new question".to_owned())
+    );
+    // 🚨 But the *hold* is now a pause's, so it waits for a `resume` rather than
+    // picking itself up. The two folds answer different questions on purpose.
+    assert_eq!(fleet.admit().expect("admit"), Admission::Quiet);
+}
+
+/// A task nobody has ever redirected is working under no instruction, and the
+/// fold says so rather than returning the last thing it saw.
+#[test]
+fn a_task_that_was_never_redirected_is_under_no_instruction() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+    held_at(&mut store, task, Cause::Fresh, Some(Control::Halt));
+
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+    assert_eq!(fleet.redirect_in_force(task).expect("in force"), None);
+}
+
+/// ⚠ **The most recent redirect is the one in force.** An operator who redirects
+/// twice means the second thing; a fold that took the first would pin the task
+/// to an instruction that has been superseded, and it would look right for as
+/// long as nobody redirected twice.
+#[test]
+fn the_most_recent_redirect_is_the_one_in_force() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+    for prompt in ["the first thought", "no, this one"] {
+        held_at(
+            &mut store,
+            task,
+            Cause::Fresh,
+            Some(Control::Redirect {
+                prompt: prompt.to_owned(),
+            }),
+        );
+        store
+            .apply(task, Command::Resume { unit: UnitId(1) })
+            .expect("resume");
+        store
+            .apply(
+                task,
+                Command::Requeue {
+                    why: RequeueReason::OrphanedByRestart,
+                },
+            )
+            .expect("requeue");
+    }
+
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(vec![]);
+    let fleet = Fleet::new(
+        &mut store,
+        &repo,
+        &provider,
+        MODEL,
+        subject.worktrees.clone(),
+    );
+    assert_eq!(
+        fleet.redirect_in_force(task).expect("in force"),
+        Some("no, this one".to_owned()),
+        "a superseded instruction is still in force"
+    );
+}
+
+/// 🚨🚨 **The wire between the fold and the attempt, asserted at the fleet level
+/// — because F646 is a whole finding about a fold nothing consumed.**
+///
+/// `abcc-drive`'s own tests prove the driver puts a redirect it is *given* into
+/// both briefs. Nothing proved the sortie gives it one. That is the same
+/// one-sided wiring this session exists to fix, one layer up, and a mutation that
+/// replaced `.redirect(redirect)` with `.redirect(None)` passed every other test
+/// in this file.
+#[test]
+fn a_sortie_hands_the_redirect_in_force_to_the_attempt_it_flies() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store, "one returns two");
+    held_at(
+        &mut store,
+        task,
+        Cause::Fresh,
+        Some(Control::Redirect {
+            prompt: "look in src/other.rs instead".to_owned(),
+        }),
+    );
+    let repo = Repo::open(&subject.root).expect("open");
+    let provider = Scripted::new(absences(1));
+
+    let sortie = {
+        let mut fleet = Fleet::new(
+            &mut store,
+            &repo,
+            &provider,
+            MODEL,
+            subject.worktrees.clone(),
+        );
+        fleet.sortie().expect("sortie")
+    };
+    assert!(
+        !sortie.flown.is_empty(),
+        "the held task was never admitted, so nothing was shown a brief"
+    );
+
+    let seen = provider.seen();
+    let opening = &seen
+        .first()
+        .expect("the attempt made at least one model call")
+        .messages
+        .first()
+        .expect("an opening message")
+        .content;
+    assert!(
+        opening.contains("look in src/other.rs instead"),
+        "the sortie flew the attempt without the instruction that admitted it: {opening}"
+    );
+    assert!(
+        opening.contains(PROMPT),
+        "the task's own prompt was replaced rather than added to: {opening}"
+    );
 }
 
 // ---------------------------------------------------------------------------
