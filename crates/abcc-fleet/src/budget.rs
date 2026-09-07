@@ -65,12 +65,6 @@ pub fn spent(causes: &[Cause]) -> u32 {
     chain
 }
 
-/// Whether the fleet may dispatch another attempt on this line of enquiry.
-#[must_use]
-pub fn available(causes: &[Cause]) -> bool {
-    spent(causes) < ATTEMPTS
-}
-
 /// How long the line of enquiry would be **with this attempt on it** — the causes
 /// the log already holds, plus the one about to be dispatched.
 ///
@@ -91,31 +85,30 @@ pub fn spent_with(causes: &[Cause], next: &Cause) -> u32 {
 
 /// Whether the fleet may dispatch **this** attempt on this line of enquiry.
 ///
-/// The counterpart of [`available`] for a caller that already knows the cause.
+/// 🚨 **There is deliberately no cause-blind version of this.** There was one —
+/// `available(&causes)`, asked before the dispatch was known — and F646 is the
+/// session where it silently became wrong: two of the three causes a sortie can
+/// now dispatch reset the chain rather than extending it, so the cause-blind
+/// answer refuses the very attempt a redirect just bought. Two ways to ask one
+/// budget, one of them wrong for two thirds of its callers, is F392's donor
+/// defect in miniature — so the old pair was removed rather than kept beside
+/// these.
 #[must_use]
 pub fn admits(causes: &[Cause], next: &Cause) -> bool {
     spent_with(causes, next) <= ATTEMPTS
 }
 
-/// Whether dispatching **this** attempt would still leave one in hand.
+/// Whether dispatching **this** attempt would still leave one in hand — which is
+/// what [`Driver::retry_available`](abcc_drive::Driver::retry_available) is
+/// asking, and it is asked *before* the attempt starts.
 ///
-/// The counterpart of [`in_hand_after`], and the one a caller with a cause in
-/// hand should use: `in_hand_after` carries the off-by-one for a retry and this
-/// one carries it for whatever the cause turns out to be.
+/// 🚨 The off-by-one is here, once, deliberately, and it is carried by
+/// [`spent_with`] rather than by a `+ 1`: `spent` counts what the log already
+/// holds, and adding one to it is only the right answer when the dispatch
+/// extends the chain.
 #[must_use]
 pub fn in_hand_beside(causes: &[Cause], next: &Cause) -> bool {
     spent_with(causes, next) < ATTEMPTS
-}
-
-/// Whether an attempt dispatched **now** would still leave one in hand — which is
-/// what [`Driver::retry_available`](abcc_drive::Driver::retry_available) is asking,
-/// and it is asked *before* the attempt starts.
-///
-/// 🚨 The off-by-one is here, once, deliberately: `spent` counts what the log
-/// already holds, and the attempt about to be dispatched is not on it yet.
-#[must_use]
-pub fn in_hand_after(causes: &[Cause]) -> bool {
-    spent(causes).saturating_add(1) < ATTEMPTS
 }
 
 #[cfg(test)]
@@ -130,9 +123,9 @@ mod tests {
     #[test]
     fn a_task_that_never_ran_has_spent_nothing_and_has_one_in_hand() {
         assert_eq!(spent(&[]), 0);
-        assert!(available(&[]));
+        assert!(admits(&[], &Cause::Fresh));
         assert!(
-            in_hand_after(&[]),
+            in_hand_beside(&[], &Cause::Fresh),
             "a fresh dispatch has no retry behind it"
         );
     }
@@ -142,15 +135,19 @@ mod tests {
     fn the_budget_is_two_attempts_and_the_retry_is_the_second() {
         let fresh = vec![Cause::Fresh];
         assert_eq!(spent(&fresh), 1);
-        assert!(available(&fresh), "the retry was refused");
+        let retry = Cause::Retry { of: id(1) };
+        assert!(admits(&fresh, &retry), "the retry was refused");
         assert!(
-            !in_hand_after(&fresh),
+            !in_hand_beside(&fresh, &retry),
             "the retry about to be dispatched thinks it has another behind it"
         );
 
-        let retried = vec![Cause::Fresh, Cause::Retry { of: id(1) }];
+        let retried = vec![Cause::Fresh, retry];
         assert_eq!(spent(&retried), 2);
-        assert!(!available(&retried), "a third attempt was allowed");
+        assert!(
+            !admits(&retried, &Cause::Retry { of: id(2) }),
+            "a third attempt was allowed"
+        );
     }
 
     /// The operator changing the question starts a new line of enquiry, which is
@@ -158,12 +155,15 @@ mod tests {
     #[test]
     fn an_edit_or_a_rescope_resets_the_chain() {
         for changed in [Cause::Edit { of: id(1) }, Cause::Rescope { of: id(1) }] {
-            let causes = vec![Cause::Fresh, Cause::Retry { of: id(1) }, changed];
-            assert_eq!(spent(&causes), 1);
+            // 🚨 F646: asked **beside** the new question, which is the only way
+            // to see the reset — asked before it, this is an exhausted chain.
+            let spent_chain = vec![Cause::Fresh, Cause::Retry { of: id(1) }];
             assert!(
-                available(&causes),
+                admits(&spent_chain, &changed),
                 "the operator's new question was refused"
             );
+            let causes = vec![Cause::Fresh, Cause::Retry { of: id(1) }, changed];
+            assert_eq!(spent(&causes), 1);
         }
     }
 
@@ -172,7 +172,7 @@ mod tests {
     fn a_replay_spends_nothing() {
         let causes = vec![Cause::Fresh, Cause::Replay { of: id(1) }];
         assert_eq!(spent(&causes), 1);
-        assert!(available(&causes));
+        assert!(admits(&causes, &Cause::Retry { of: id(1) }));
     }
 
     /// The chain counts consecutive retries, so a long tail cannot wrap or drift
@@ -184,6 +184,6 @@ mod tests {
             causes.push(Cause::Retry { of: id(n) });
         }
         assert_eq!(spent(&causes), 10);
-        assert!(!available(&causes));
+        assert!(!admits(&causes, &Cause::Retry { of: id(10) }));
     }
 }

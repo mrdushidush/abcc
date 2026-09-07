@@ -492,14 +492,14 @@ impl<'a> Fleet<'a> {
             };
 
             // 🚨 Asked before the attempt runs, and it is the only thing the
-            // driver is told about the budget. `in_hand_after` holds the
+            // driver is told about the budget. `spent_with` holds the
             // off-by-one: the attempt about to be dispatched is not on the log
             // yet.
             let causes = self.causes(task)?;
             // 🚨 F646: asked **beside the cause**. A redirect's `Cause::Edit`
-            // resets the line of enquiry, so `in_hand_after` — which assumes the
-            // dispatch extends it — would tell the driver no retry was left on
-            // the very attempt the operator had just bought.
+            // resets the line of enquiry, so a cause-blind answer — which
+            // assumes the dispatch extends it — would tell the driver no retry
+            // was left on the very attempt the operator had just bought.
             let retry_available = budget::in_hand_beside(&causes, &cause);
 
             let mut driver = Driver::new(
