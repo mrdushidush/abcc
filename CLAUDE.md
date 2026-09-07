@@ -32,24 +32,32 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test endings --test lifecycle --test properties --test durability --test control --test heads --test http --test patch --test policy --test turn_loop --test workspace --test journal --test keys --test lines --test screen --test theme --test view --test cli --test confirm --test desk --test feed --test home --test reading --test judge`
-is **2.1 s** for 251 tests and covers everything that does not start a process.
+`cargo test --workspace --test assets --test battlefield --test breaker --test cli --test confirm --test control --test corpus_review --test desk --test durability --test endings --test feed --test films --test frame_cost --test fun --test heads --test home --test http --test journal --test judge --test keys --test lifecycle --test lines --test patch --test policy --test properties --test pulse --test reading --test roster --test screen --test sixel --test theme --test turn_loop --test view --test workspace`
+is **2.5 s** for 383 tests and covers everything that does not start a process.
 
 🚨 **That list is derived, not remembered — check it against `crates/*/tests/`
-whenever a test file is added.** An earlier one claimed the same coverage and
-omitted five process-free targets and 57 tests (`abcc-core`'s `endings`,
-`lifecycle` and `properties`, `abcc-store`'s `durability`, and `abcc-tui`'s
-`lines`), so the cheap rung was quietly cheaper than it looked. **A list of
-names does not fail when the workspace grows; it just stops covering things.**
-The process bucket is exactly `child`, `exec`, `attempt`, `operator`,
-`isolation`, `ladder`, `cycle_cost`, `durability_rate` and `live` — nine of the
-thirty-three targets, so the subset is the other twenty-four.
+whenever a test file is added.** It has now drifted twice. The first time it
+omitted five process-free targets and 57 tests; **re-derived 2026-09-07 it was
+24 names against 47 targets and omitted ten of them and 92 tests** — `assets`,
+`battlefield`, `breaker`, `corpus_review`, `films`, `frame_cost`, `fun`,
+`pulse`, `roster` and `sixel`. **A list of names does not fail when the
+workspace grows; it just stops covering things**, and the number beside it
+(251, then 291 when the same list was re-run) goes on looking like a
+measurement.
 
-The full suite costs 16.8 s because `tests/child.rs` and `tests/exec.rs` spawn real
-children, `abcc-vcs`, `abcc-drive` and `abcc`'s `tests/operator.rs` drive real git, and
-`abcc-gate`'s `tests/ladder.rs` (3.4 s, the most expensive single target) does both —
-that time is processes, not compilation, and it is the price of testing claims about an
-OS against the OS.
+The process bucket is exactly `attempt`, `child`, `corpus`, `cycle_cost`,
+`durability_rate`, `exec`, `isolation`, `ladder`, `live`, `operator`, `paint`,
+`replay` and `sortie` — thirteen of the forty-seven named targets, so the
+subset is the other thirty-four. ⚠ **`replay` is in the bucket for a reason
+that is not about processes**: two crates have a target of that name
+(`abcc-core` and `abcc`, and the same is true of `fun`), and `--test replay`
+runs both, so the pair is as cheap as its more expensive half.
+
+The full suite costs **28.9 s**, and almost all of that is seven targets:
+`ladder` 3.5 s, `attempt` 2.7 s, `sortie` 2.5 s, `exec` 2.5 s, `child` 2.3 s,
+`operator` 2.0 s and `isolation` 1.3 s — real children, real git, and in
+`ladder`'s case both. That time is processes, not compilation, and it is the
+price of testing claims about an OS against the OS.
 ⚠ `tests/http.rs` is 0.9 s of the process-free subset and nearly all of it is
 deliberate sleeping: it drives a socket that writes when it is told to, because
 the claims it makes are about *when* bytes arrive.
