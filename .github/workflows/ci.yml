@@ -1,0 +1,197 @@
+
+# 🚨 POSTURE rows 5 and 10 (ADR-0014 §§5—6). Before this file there was no CI at
+# all in this repository, against 297 crates in `Cargo.lock` — which W7 called a
+# contradiction for a security-positioned project (F419).
+#
+# ADR-0014 §6 says to copy the donor's dependency gate **verbatim, `needs:` gate
+# and update procedure included**. The update procedure is in `deny.toml`. The
+# `needs:` gate is the `gate` job at the bottom: the donor's sits in front of
+# `cargo publish`, and this workspace publishes nothing, so the same shape
+# guards the branch instead. **Point branch protection at `gate` and at nothing
+# else** — a required-checks list enumerated in the GitHub UI is a second copy
+# of this file that nobody re-derives when a job is added.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default-deny, and jobs that need more opt in explicitly. It keeps a
+# compromised third-party action from minting a token with write scope on this
+# repository — which is ADR-0014's own rule, deny the class, applied to CI.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Third-party actions are SHA-pinned with a `# vX.Y.Z` comment so an update
+# moves both together. ⚠ `dtolnay/rust-toolchain` is deliberately NOT pinned to
+# a SHA: it is a rolling alias, and pinning it defeats its function.
+#
+# 🚨 The toolchain is pinned in `rust-toolchain.toml` (1.95.0) and rustup honours
+# that file over anything an action asks for. That pin is why CLAUDE.md may
+# promise `cargo fmt --check` agrees with CI (W13 F430: the donors' CI is
+# unpinned, so a toolchain release can turn a green repository red with no
+# commit). The `msrv` job below is the one place that deliberately overrides it.
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16  # v2.9.1
+      # `--all-targets` because every test in this workspace is an integration
+      # test under `tests/`, so a lint run without it leaves 50 targets unlinted
+      # — and that is not hypothetical: `-D warnings` aborting the library is
+      # what hid a second `clippy::match_same_arms` in a test target for two
+      # sessions (F673's neighbour).
+      - run: cargo clippy --all-targets -- -D warnings
+
+  audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16  # v2.9.1
+        with:
+          key: cargo-audit
+      # The CLI rather than `rustsec/audit-check`: the action is Node-based and
+      # wants `checks:write` to post annotations, and this job's whole point is
+      # that it needs nothing but `contents:read`.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit
+
+  deny:
+    name: cargo deny (supply chain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16  # v2.9.1
+        with:
+          key: cargo-deny
+      # Same rationale as the audit job. `cargo deny check` enforces
+      # `deny.toml`: the license allow-list, the duplicate-version ban, the
+      # source allow-list, and a second pass over the RustSec database.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Run cargo deny
+        run: cargo deny check
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16  # v2.9.1
+      # Git identity: `abcc-vcs` makes real commits in real repositories, and a
+      # runner has no `user.name` configured.
+      - name: Identify to git
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "abcc ci"
+      # 🚨 `--no-fail-fast`, and it is not decoration: `cargo test --workspace`
+      # STOPS AT THE FIRST FAILING TEST BINARY, so a run without it reports one
+      # red target and says nothing about the other 49.
+      #
+      # 🚨 This is the job ADR-0014 §5 asks for by name — "adopt BCF's
+      # `env_clear()` + allowlist, as data in one const **with a CI test**". The
+      # test is `abcc-engine/tests/child.rs`; it has existed since Skeleton and
+      # until now nothing ran it anywhere but a developer's box.
+      #
+      # ⚠ `tests/live.rs` is `#[ignore]`d and stays that way here: it points the
+      # gate at real checkpoint pairs, which is a cold cargo build and a 2.3 GB
+      # `target/` per tree. Do not add `--ignored`.
+      - run: cargo test --workspace --no-fail-fast
+
+  build:
+    name: release build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16  # v2.9.1
+      # `--locked` so a build that needed a lockfile change fails here rather
+      # than silently resolving to something nobody audited — which is the same
+      # sentence `deny.toml`'s `yanked = "deny"` makes about the other direction.
+      - run: cargo build --release --locked
+
+  msrv:
+    # ⚠ Keep in step with `rust-version` in the workspace `Cargo.toml`.
+    # Hardcoded in `name:` because the `env` context is not available there and
+    # a workflow that references it fails validation.
+    name: MSRV (Rust 1.95)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # 🚨 The one job that overrides `rust-toolchain.toml`, which is what makes
+      # it mean anything: `rust-version` in `Cargo.toml` is a claim about what
+      # compiles this workspace, and an unverified claim drifts the moment a
+      # dependency raises its own floor. Build-only — the claim is "this version
+      # compiles abcc", not "this version runs the suite".
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16  # v2.9.1
+        with:
+          key: msrv
+      - run: cargo build --locked
+
+  # 🚨 THE `needs:` GATE (ADR-0014 §6). One required status check, and it is
+  # derived: adding a job above and forgetting it here is visible in this file,
+  # whereas forgetting it in a branch-protection checkbox list is not.
+  #
+  # ⚠ `if: always()` with an explicit result test, because a `needs:` job whose
+  # dependency was *skipped* succeeds by default — the gate has to refuse
+  # anything that is not a pass, and "not failed" is not the same predicate.
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy, audit, deny, test, build, msrv]
+    if: always()
+    steps:
+      - name: Every required job passed
+        run: |
+          echo "results: ${{ join(needs.*.result, ' ') }}"
+          for result in ${{ join(needs.*.result, ' ') }}; do
+            if [ "$result" != "success" ]; then
+              echo "::error::a required job did not pass: $result"
+              exit 1
+            fi
+          done

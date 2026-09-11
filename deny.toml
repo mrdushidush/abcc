@@ -1,0 +1,91 @@
+# Supply-chain policy, enforced by `cargo deny check` in CI.
+#
+# 🚨 ADR-0014 §6 and W7's F419: **copy the donor's gate verbatim, `needs:` gate
+# and update procedure included** — the procedure is the part that matters,
+# because it is what stops the policy rotting into a pile of `ignore` entries.
+# This is that file, with the allow-list and the skip-list re-derived against
+# this tree's 297 crates rather than inherited. It runs alongside a standalone
+# `cargo audit` job: deny re-checks the RustSec advisory database and adds the
+# license, duplicate-version and source gates on top.
+#
+# 🚨 **UPDATE PROCEDURE.** If a new dependency trips this, prefer fixing the
+# tree — swap the dependency, or drop it — over loosening the policy. When a
+# loosen is genuinely warranted, add a *narrow, commented* exception below
+# saying what it is and when it can go. An `ignore` with no sentence beside it
+# is the failure mode this file exists to prevent.
+
+[advisories]
+version = 2
+# A yanked crate in the lockfile means a `--locked` build pulls a version the
+# author retracted — as hard a failure as a CVE.
+yanked = "deny"
+# ignore = [
+#   # "RUSTSEC-0000-0000", # why it is tolerated + a tracking link
+# ]
+
+[licenses]
+version = 2
+# Permissive only, and every entry is OSI-approved and compatible with this
+# workspace's own `MIT OR Apache-2.0`. The set is the minimum that satisfies the
+# current tree: OR-expressions are covered by MIT/Apache, while
+# `(MIT OR Apache-2.0) AND Unicode-3.0` forces Unicode-3.0 to be listed on its
+# own.
+#
+# 🚨 **Re-derived against this tree, not inherited.** The donor's list carries
+# five licenses this workspace does not use, and `cargo deny` reports each as an
+# *unmatched license allowance*. They are removed rather than kept "just in
+# case": an allowance nothing matches is a permission granted in advance, and
+# the one that mattered is **MPL-2.0** — weak copyleft, allowed by the donor,
+# and not earned by anything in these 297 crates.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+]
+confidence-threshold = 0.9
+# exceptions = [
+#   # { allow = ["..."], crate = "some-crate" },
+# ]
+
+[bans]
+# Duplicate versions of one crate bloat the binary and widen the audit surface.
+# `deny` here so a *new* duplicate this workspace introduces fails the gate,
+# while the four known upstream-driven splits below do not block a merge.
+#
+# 🚨 **Re-audit the skip list whenever dependencies are bumped.** `cargo tree -d`
+# prints the current set and `cargo deny check bans` flags a skip that is no
+# longer needed — a skip nobody removes is how this section stops meaning
+# anything.
+multiple-versions = "deny"
+wildcards = "deny"
+# 🚨 **The one place this file is NOT the donor's verbatim, and the reason is
+# structural.** The donor is a single crate; this is a nine-crate workspace, and
+# a `{ path = "crates/..." }` dependency has no version requirement, so `deny`
+# alone reports all nine of the workspace's own members as wildcards. This
+# exempts **path dependencies only** — a wildcard on anything from a registry
+# still fails the gate, which is the case the rule is actually for.
+allow-wildcard-paths = true
+# Measured with `cargo tree -d`, 2026-09-11, at 297 crates. Every one of these
+# is two upstreams disagreeing, not a choice this workspace made.
+skip = [
+    # 0.16 through rusqlite (hashlink) and kasuari; 0.17 through ratatui's own
+    # lru and widgets. Two halves of the console and the store, and neither is
+    # ours to converge.
+    { crate = "hashbrown" },
+    # 0.8 through png, 0.9 through the flate2 png itself depends on — one
+    # crate's tree carrying two versions of one decoder.
+    { crate = "miniz_oxide" },
+    # The long-running proc-macro 2.x/3.x split.
+    { crate = "syn" },
+    # The 0.60/0.61 split that drags two copies of the windows-targets family.
+    { crate = "windows-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

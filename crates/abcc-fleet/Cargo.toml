@@ -2,6 +2,7 @@
 name = "abcc-fleet"
 description = "Admission, one slot, and the retry budget: the receiver for what the driver recommends."
 version.workspace = true
+publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

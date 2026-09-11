@@ -2,6 +2,7 @@
 name = "abcc-store"
 description = "The durable event log: one writer, and a status table that is its projection."
 version.workspace = true
+publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

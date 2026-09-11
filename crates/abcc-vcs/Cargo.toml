@@ -2,6 +2,7 @@
 name = "abcc-vcs"
 description = "Isolation and checkpoints: a git worktree at a temp-index snapshot sha."
 version.workspace = true
+publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

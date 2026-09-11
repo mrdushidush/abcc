@@ -2,6 +2,7 @@
 name = "abcc-tui"
 description = "The plain-text reader over the event log. Console extends it; the battlefield lands there."
 version.workspace = true
+publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

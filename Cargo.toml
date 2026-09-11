@@ -14,6 +14,14 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
+# 🚨 Nothing here goes to crates.io, and saying so is what makes the copied
+# dependency gate pass honestly (ADR-0014 §6). `cargo deny`'s `wildcards =
+# "deny"` counts a `{ path = ... }` dependency as a wildcard — correctly, it has
+# no version requirement — and exempts them only for crates declared private.
+# The donor is one published crate and never met this; this is nine unpublished
+# ones. ⚠ Deciding to publish is then a visible edit here rather than a flag
+# somebody already loosened.
+publish = false
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
