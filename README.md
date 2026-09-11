@@ -28,8 +28,10 @@ out of measurement rather than taste:
   "the tests all failed" and "there were no tests" are three different records,
   which is two more than the predecessor could tell apart.
 - **The security posture is blast radius, not a sandbox**, and it is written in
-  those words because Windows does not offer the other thing. See
-  [`SECURITY.md`](SECURITY.md) when it lands with the Posture milestone.
+  those words because Windows does not offer the other thing. Model-written code
+  runs with your privileges. [`SECURITY.md`](SECURITY.md) is the whole of it —
+  eleven rows, seven with a shipped control and **four carrying a dated
+  admission**, one of which is only half closed.
 
 ## Using it, as far as it goes
 
@@ -41,6 +43,7 @@ abcc watch                       the reader, over the event log alone
 abcc accept t3 / abcc reject t3  the operator's two endings
 abcc take t3 / abcc release t3   take the keyboard, and hand it back
 abcc review <sha> <minutes>      the measurement W13's ladder is defined in
+abcc weights [--verify]          which bytes are behind the model you asked for
 ```
 
 `abcc take t3` is *take over manually*, and it hands over a directory as well as

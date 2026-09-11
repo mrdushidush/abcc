@@ -351,9 +351,14 @@ tier should refuse it. There is no honour-system list of forbidden commands in
 this file, because a sentence binds only as far as the model complies — measured
 at 39 of 50 for the best-written wrapper in the family.
 
-⚠ **`max_tier` does not exist yet.** It arrives with the Posture milestone, so
-until then this section describes the intended enforcement and not the shipped
-one. Say so rather than relying on it.
+✅ **`max_tier` is shipped** (`abcc-engine/src/head.rs`), and so is the rest of
+what this section used to describe as intended: the effective ceiling is the
+narrower of the role's own and the slot's, and the exec class is *derived* from
+`ToolSpec::reach` so it cannot drift from a second list. `SECURITY.md` is the
+whole posture, row by row, including the four rows that are **admissions rather
+than controls** — the OS beneath it, the model's context, a displaced task, and
+the half of egress that `bash` leaves open. ⚠ Read those before describing this
+project as sandboxed to anyone, including in a commit message.
 
 If you believe you need a capability you do not have, say so and stop. Do not
 route around it with a different tool.
