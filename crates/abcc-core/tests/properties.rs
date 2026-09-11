@@ -3,6 +3,8 @@
 
 use abcc_core::event::Event;
 use abcc_core::outcome::{Claim, Counts, Headline, Measurement, Outcome, Report, Why};
+use abcc_core::redact::Secrets;
+use abcc_core::seq::{AttemptId, Seq};
 
 const SHA: &str = "0000000000000000000000000000000000000000";
 
@@ -275,5 +277,68 @@ fn an_event_written_before_a_field_existed_still_replays() {
     assert!(
         !back.contains("composition"),
         "an absent measurement was written back as if it had been taken: {back}"
+    );
+}
+
+/// 🚨 **F708's whole value is that the brief can be READ BACK, so the shape it
+/// is read back through is pinned here.**
+///
+/// The log is SQLite: `kind` is an indexed column and the event is JSON in
+/// `body`, so *what was this attempt shown* is one query —
+/// `json_extract(body, '$.text')` over `kind = 'brief_recorded'`, joined on the
+/// `attempt` column. That works only while the text is a plain string at the top
+/// level of the object. [`abcc_core::redact::Scrubbed`] is `serde(transparent)`
+/// so that it is, and this test is what stops that being quietly undone: wrap it
+/// in a struct and every arm's readback starts answering `null` with nothing
+/// anywhere failing — which is the instrument-that-reports-its-own-failure shape
+/// the test above exists for.
+#[test]
+fn a_recorded_brief_is_a_plain_string_the_log_can_be_queried_for() {
+    const BRIEF: &str = "## The task\n\nmake one() return two\n";
+
+    let event = Event::BriefRecorded {
+        attempt: AttemptId::at(Seq::new(645)),
+        text: Secrets::default().scrub(BRIEF).text,
+    };
+    let written = serde_json::to_string(&event).expect("serialize");
+    let json: serde_json::Value = serde_json::from_str(&written).expect("parse");
+
+    assert_eq!(json["kind"], "brief_recorded");
+    assert_eq!(json["attempt"], 645);
+    assert_eq!(
+        json["text"], BRIEF,
+        "the brief is no longer one string at $.text, so every readback query \
+         over it now answers null: {written}"
+    );
+}
+
+/// ⚠ **And every log this project has already flown still replays**, which is
+/// the half a new field on an old event has to answer. `head_digest` reads back
+/// as the empty string there — *not recorded*, which is a different fact from
+/// *no head*, and the same shape `ceiling` took when it was added.
+#[test]
+fn a_model_call_written_before_the_head_was_digested_still_replays() {
+    // A `model_call_started` exactly as the LINEAGE arms' log holds it.
+    let old = r#"{
+        "kind": "model_call_started",
+        "attempt": 645,
+        "provider": "local",
+        "model": "qwen3.6-35b-a3b-mtp@iq3_s",
+        "head": "builders",
+        "ceiling": "exec",
+        "budget": 16384
+    }"#;
+
+    let event: Event = serde_json::from_str(old).expect("an old event must still replay");
+    let Event::ModelCallStarted {
+        head, head_digest, ..
+    } = &event
+    else {
+        panic!("wrong variant: {event:?}");
+    };
+    assert_eq!(head, "builders");
+    assert!(
+        head_digest.is_empty(),
+        "a head nobody digested came back claiming one: {head_digest}"
     );
 }

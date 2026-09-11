@@ -360,11 +360,6 @@ impl<'a> Driver<'a> {
         // was refused, and `Opened::continues` is the one place that says whether
         // it is.
         let refused = self.refusal_under(&opened)?;
-        let mut recon = Body::opening(brief::localize(
-            &row,
-            self.redirect.as_deref(),
-            refused.as_ref(),
-        ));
         let localize = self.phase(
             Call {
                 attempt,
@@ -373,30 +368,22 @@ impl<'a> Driver<'a> {
                 tools: &opened.workspace,
                 schema: None,
             },
-            &mut recon,
+            brief::localize(&row, self.redirect.as_deref(), refused.as_ref()),
             control,
         )?;
 
         let change = match &localize {
-            PhaseEnded::Answered { text, .. } => {
-                let mut builders = Body::opening(brief::change(
-                    &row,
-                    text,
-                    self.redirect.as_deref(),
-                    refused.as_ref(),
-                ));
-                Some(self.phase(
-                    Call {
-                        attempt,
-                        phase: AttemptPhase::Change,
-                        head: Head::Builders,
-                        tools: &opened.workspace,
-                        schema: None,
-                    },
-                    &mut builders,
-                    control,
-                )?)
-            }
+            PhaseEnded::Answered { text, .. } => Some(self.phase(
+                Call {
+                    attempt,
+                    phase: AttemptPhase::Change,
+                    head: Head::Builders,
+                    tools: &opened.workspace,
+                    schema: None,
+                },
+                brief::change(&row, text, self.redirect.as_deref(), refused.as_ref()),
+                control,
+            )?),
             // No artifact to hand over. Running Builders on an absence would
             // spend a second model call to produce a second absence.
             PhaseEnded::Stopped { .. } | PhaseEnded::Unmeasured { .. } => None,
@@ -674,12 +661,28 @@ impl<'a> Driver<'a> {
         })
     }
 
-    /// One phase: enter it on the log, run the turn loop, and insist that every
+    /// One phase: enter it on the log, **put the brief the model is about to be
+    /// shown on the log beside it**, run the turn loop, and insist that every
     /// event the loop produced actually landed.
+    ///
+    /// 🚨 **F708: the brief arrives as text and the [`Body`] is built
+    /// here, and that is what makes the record honest.** Every phase in this
+    /// workspace opens with exactly one user message — but nothing inside this
+    /// function could tell an opening body from a used one, so a record of
+    /// *whatever body it was handed* would have been true of the argument rather
+    /// than of the prompt. Built here, the text logged and the text sent are one
+    /// expression, and there is no way around it: this is the only caller of
+    /// [`TurnLoop::run`] in the workspace.
+    ///
+    /// 🚨 **Scrubbed once, for both sinks** (ADR-0014 §5). The boundary
+    /// is one place and this is the second thing to reach it, the first being
+    /// every tool result the loop collects. A record of a prompt that is not the
+    /// prompt is exactly the failure [`Event::BriefRecorded`] exists to end, so
+    /// the scrub happens before either sink and both take its output.
     fn phase(
         &mut self,
         call: Call<'_>,
-        body: &mut Body,
+        brief: String,
         control: &mut ControlPoint,
     ) -> Result<PhaseEnded> {
         let Call {
@@ -691,6 +694,20 @@ impl<'a> Driver<'a> {
         } = call;
         self.store
             .append(Event::AttemptPhaseEntered { attempt, phase })?;
+
+        let brief = self.secrets.scrub(brief);
+        // The class and the count and never the value, which is `turn.rs`'s rule
+        // at the same boundary one sink over: a note quoting what it removed
+        // would put the secret back on the log one field to the left.
+        let note = brief.note();
+        let mut body = Body::opening(brief.text.as_str());
+        self.store.append(Event::BriefRecorded {
+            attempt,
+            text: brief.text,
+        })?;
+        if let Some(text) = note {
+            self.store.append(Event::Note { text })?;
+        }
 
         let provider = self.provider;
         let model = self.model.clone();
@@ -710,7 +727,7 @@ impl<'a> Driver<'a> {
             .limits(limits)
             .ceiling(ceiling)
             .secrets(secrets)
-            .run(head, attempt, schema, body, control, &mut journal);
+            .run(head, attempt, schema, &mut body, control, &mut journal);
         journal.into_result()?;
         Ok(ended)
     }
@@ -1039,12 +1056,6 @@ impl<'a> Driver<'a> {
         // and nothing either model wrote in prose. Same model, fresh call:
         // 11/12 reading the diff against 4/12 continuing the author's own
         // conversation, with five empty payloads (F282).
-        let mut body = Body::opening(judge::brief(&judge::Dossier {
-            title: &row.title,
-            prompt: &row.prompt,
-            patch: &patch,
-            measured,
-        }));
         let ended = self.phase(
             Call {
                 attempt,
@@ -1053,7 +1064,12 @@ impl<'a> Driver<'a> {
                 tools: &NoTools::for_head(Head::Commandos),
                 schema: Some(judge::REVIEW),
             },
-            &mut body,
+            judge::brief(&judge::Dossier {
+                title: &row.title,
+                prompt: &row.prompt,
+                patch: &patch,
+                measured,
+            }),
             control,
         )?;
 

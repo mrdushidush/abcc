@@ -360,6 +360,7 @@ fn a_hang_after_the_last_event_produces_no_gap() {
             provider: "local".to_owned(),
             model: "m".to_owned(),
             head: "Builders".to_owned(),
+            head_digest: String::new(),
             ceiling: String::new(),
             budget: 8192,
         },

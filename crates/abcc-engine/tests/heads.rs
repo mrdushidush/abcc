@@ -12,6 +12,7 @@ use abcc_core::run::{AttemptPhase, MissionPhase};
 use abcc_engine::head::Serves;
 use abcc_engine::tools::TOOLS;
 use abcc_engine::{Head, Posting, Tier};
+use sha2::{Digest, Sha256};
 
 /// One cold prefill and 473 MiB of warm state per head, so the size of this
 /// number is the size of the bill. Four heads at 8 KiB of prefix each is the
@@ -244,5 +245,43 @@ fn every_head_carries_the_same_output_budget() {
     // F392's shape.
     for posting in Posting::ALL {
         assert_eq!(posting.budget(), 16384, "{posting}");
+    }
+}
+
+/// 🚨 **F708's other half: the digest is OF THE PREFIX, and that is the whole
+/// claim.**
+///
+/// `ModelCallStarted` has always carried the head's key and its ceiling, which
+/// name one of nine compile-time constants *within a build*. Edit a charter, or
+/// a tool's one-line `summary` — which is what ruling 2 is — and every field on
+/// that event reads exactly as it did before, so *were these two arms shown the
+/// same head* is a question the record cannot answer.
+///
+/// ⚠ **A digest computed from the key instead of the prefix would pass every
+/// obvious test and answer nothing**: nine distinct values, stable across calls,
+/// and identical across a build that rewrote every charter. So this recomputes
+/// it from the prefix rather than asserting a property of it.
+#[test]
+fn a_postings_digest_is_taken_of_the_prefix_it_was_shown() {
+    for posting in Posting::ALL {
+        let expected = format!("{:x}", Sha256::digest(posting.prefix().as_bytes()));
+        assert_eq!(
+            posting.digest(),
+            &expected[..posting.digest().len()],
+            "{posting}'s digest is not a digest of what it sends"
+        );
+    }
+}
+
+/// ⚠ Distinct, and the same on a second reading — the two properties that make
+/// it usable as a key in a query over an arm's log.
+#[test]
+fn the_digests_are_distinct_and_stable() {
+    for (i, a) in Posting::ALL.iter().enumerate() {
+        assert_eq!(a.digest(), a.digest(), "{a}'s digest is not stable");
+        assert_eq!(a.digest().len(), 16, "{a}'s digest changed width");
+        for b in &Posting::ALL[i + 1..] {
+            assert_ne!(a.digest(), b.digest(), "{a} and {b} share a digest");
+        }
     }
 }

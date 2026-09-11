@@ -141,3 +141,27 @@ fn the_two_new_endings_read_as_sentences() {
         "the window is the one number that makes this actionable: {overflow}"
     );
 }
+
+/// 🚨 **F708 put the largest free text this log holds on it, and it is a
+/// document.**
+///
+/// A phase's opening brief carries the task, the operator's redirect, the
+/// paragraph naming what refused the tree it inherited, and — for the Judge — a
+/// whole diff, up to `abcc_gate::judge::MAX_PATCH_CHARS` of it. Interpolating
+/// that into the feed is F501 again with a thousand lines in place of ten. So the
+/// arm renders the size and nothing else: the `attempt_phase_entered` directly
+/// above it already says what was being asked, and the text is on the log for a
+/// reader who wants it.
+#[test]
+fn a_recorded_brief_is_a_document_and_it_still_takes_one_line() {
+    let brief = REAL_500.repeat(400);
+    let text = line_for(Event::BriefRecorded {
+        attempt: AttemptId::at(Seq::new(8)),
+        text: Secrets::default().scrub(brief.clone()).text,
+    });
+    assert_one_line(&text);
+    assert!(
+        text.contains("brief") && text.contains(&brief.len().to_string()),
+        "the feed does not say a brief was recorded or how big it was: {text}"
+    );
+}

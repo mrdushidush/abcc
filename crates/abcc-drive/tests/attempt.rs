@@ -18,6 +18,7 @@ use std::process::Command as OsCommand;
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
 use abcc_core::event::{Control, Event, Finish};
 use abcc_core::outcome::{Headline, Outcome, Reading, Why};
+use abcc_core::redact::{MARKER, Secrets};
 use abcc_core::seq::{MissionId, Seq, TaskId, UnitId};
 use abcc_core::task::{AbortReason, TaskState};
 use abcc_drive::{Driver, Landed};
@@ -334,6 +335,11 @@ fn one_attempt_runs_localize_then_change_and_the_log_says_so() {
             "attempt_started",
             "task_transitioned", // Engage
             "attempt_phase_entered",
+            // 🚨 **F708: the brief the model was shown, before the call that
+            // showed it.** It sits under its phase and never carries one: the
+            // phase is the `attempt_phase_entered` above, and a second copy is a
+            // second thing that can disagree.
+            "brief_recorded",
             "model_call_started",
             "model_call_ended",
             "claim_recorded",
@@ -341,6 +347,7 @@ fn one_attempt_runs_localize_then_change_and_the_log_says_so() {
             // It follows the claim because the claim is what ended the phase.
             "phase_ended",
             "attempt_phase_entered",
+            "brief_recorded",
             "model_call_started",
             "model_call_ended",
             "claim_recorded",
@@ -2387,4 +2394,202 @@ fn a_takeover_that_changed_nothing_still_lets_the_refusal_reach_the_next_attempt
              while the tree did not: {brief}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// F708 - the log says what the model was shown
+// ---------------------------------------------------------------------------
+
+/// Every brief the log says a phase opened with, in order.
+fn briefs_on_the_log(store: &Store) -> Vec<String> {
+    store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::BriefRecorded { text, .. } => Some(text.into_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The opening message of every phase the provider was really asked - **one per
+/// phase and not one per call**, because every round of a phase re-sends the
+/// same opening with the turns appended after it.
+fn briefs_the_provider_got(seen: &[Seen]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for call in seen {
+        let opening = call
+            .messages
+            .first()
+            .expect("a call with no opening message")
+            .content
+            .clone();
+        if out.last() != Some(&opening) {
+            out.push(opening);
+        }
+    }
+    out
+}
+
+/// 🚨 **F708: until this test the log could not say what the model was
+/// shown, and never could.**
+///
+/// Thirty event kinds and not one carried a prompt body. `ModelCallStarted`
+/// records the provider, the model, the head's key, the ceiling and the budget -
+/// every fact about the call except the one the call was made of. So *was the
+/// model told* was answered by reading a code path and a precondition, for every
+/// prompt-surface arm this project has flown: F649's `write_file` sentence,
+/// F655's rescue prose, F531's rung view, F700's refusal paragraph. Each of
+/// those is a change to what a model is shown whose only witness is a test like
+/// the ones above - true of the build the test ran in, and unreadable from the
+/// log of the sortie that was actually flown.
+///
+/// ⚠ **The comparison is against the provider and never against
+/// `brief::localize`.** Re-deriving the expected text from the same function the
+/// driver calls would be an oracle comparing a thing with itself: it would agree
+/// however wrong both were, and what it has to catch is the log describing a
+/// prompt other than the one that was sent.
+#[test]
+fn the_log_carries_the_brief_every_phase_was_shown_byte_for_byte() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let mut scripts = changing();
+    scripts.push(Script::says(REVIEWED));
+    let (landed, seen) = watched(&subject, &mut store, task, scripts, Some(PASSING));
+    assert!(
+        landed.judge.is_some(),
+        "the fixture must reach all three phases for this test to be about all three"
+    );
+
+    let logged = briefs_on_the_log(&store);
+    let sent = briefs_the_provider_got(&seen);
+    assert_eq!(
+        logged.len(),
+        3,
+        "one brief per phase, and Localize, Change and Judge all ran: {logged:?}"
+    );
+    assert_eq!(
+        logged, sent,
+        "the log's record of what the model was shown is not what the model was shown"
+    );
+}
+
+/// 🚨 **The F700 arm, asked of the log instead of the code.**
+///
+/// [`a_retry_is_told_which_rung_refused_the_tree_it_inherited`] reads the
+/// provider, so it can only ever say *this build would tell it*. This reads the
+/// durable log and nothing else, which is what a sortie flown three weeks ago
+/// leaves behind - and it is the difference between an arm that observed its own
+/// prompt surface and one that asserted it.
+#[test]
+fn what_a_retry_was_told_about_the_refusal_is_readable_from_the_log_alone() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (first, rung, detail) = refused_then_back_on_the_board(&subject, &mut store, task);
+    let before = briefs_on_the_log(&store).len();
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![
+        Script::says("src/new.rs is the place"),
+        Script::says("fixed it"),
+    ]);
+    let repo = Repo::open(&subject.root).expect("open");
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Retry { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    let retry = briefs_on_the_log(&store).split_off(before);
+    assert_eq!(retry.len(), 2, "both phases should have run: {retry:?}");
+    for brief in &retry {
+        assert!(
+            brief.contains(&rung) && brief.contains(detail.trim()),
+            "the log cannot say the retry was told what refused its tree: {brief}"
+        );
+    }
+
+    // ⚠ And the first attempt's own briefs are on the same log saying the
+    // opposite, which is what makes the record worth reading: the difference
+    // between the two is in it rather than inferred from a commit.
+    for brief in &briefs_on_the_log(&store)[..before] {
+        assert!(
+            !brief.contains("already refused"),
+            "the attempt that had nothing under it was told there was: {brief}"
+        );
+    }
+}
+
+/// 🚨 **A brief is text with a sink, so it goes through the boundary**
+/// (ADR-0014 §5) - and it is scrubbed **once, before the send**, so the log
+/// holds the bytes the model got rather than a cleaned-up account of them.
+///
+/// ⚠ The paragraph F700 adds is the output of a check that ran over a tree
+/// the model itself wrote, which is exactly the class the boundary exists for.
+/// An exemption for the strings we wrote is the first of the exemptions.
+#[test]
+fn a_secret_in_the_task_reaches_neither_the_model_nor_the_log() {
+    const KEY: &str = "sk-live-8a41c0de9f2b47";
+
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let m = store
+        .append(Event::MissionCreated {
+            title: "skeleton".into(),
+        })
+        .expect("mission");
+    let t = store
+        .append(Event::TaskCreated {
+            mission: MissionId::at(m.seq),
+            title: "one returns two".into(),
+            prompt: format!("make one() return two, using {KEY}"),
+        })
+        .expect("task");
+    let task = TaskId::at(t.seq);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("src/lib.rs is the place")]);
+    let repo = Repo::open(&subject.root).expect("open");
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .secrets(Secrets::default().with_literal(KEY))
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+
+    for brief in briefs_the_provider_got(&provider.seen()) {
+        assert!(
+            !brief.contains(KEY) && brief.contains(MARKER),
+            "the model was handed the key: {brief}"
+        );
+    }
+    for brief in briefs_on_the_log(&store) {
+        assert!(
+            !brief.contains(KEY) && brief.contains(MARKER),
+            "the log holds the key: {brief}"
+        );
+    }
+    // The class and the count and never the value: a note quoting what it removed
+    // would put the key back on the log one field to the left.
+    let notes: Vec<String> = store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::Note { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.starts_with("redacted:") && !n.contains(KEY)),
+        "nothing on the log says a class was removed: {notes:?}"
+    );
 }

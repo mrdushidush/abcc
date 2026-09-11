@@ -102,6 +102,13 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
         Event::AttemptPhaseEntered { attempt, phase } => {
             format!("{attempt} · {}", theme.attempt_phase(*phase))
         }
+        // ⚠ The size and not the body. F501's rule is that one event is one
+        // line, and this one is a document — the phase above it names what was
+        // being asked, and the text itself is on the log for a reader who wants
+        // it.
+        Event::BriefRecorded { attempt, text } => {
+            format!("{attempt} · brief · {} chars", text.len())
+        }
         Event::ModelCallStarted {
             model,
             head,

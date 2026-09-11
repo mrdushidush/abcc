@@ -262,6 +262,21 @@ do not reformat around it.
   over, and in both cases the easy answer describes a tree the model is not
   looking at. That is the failure F702 *was*; do not re-introduce a second
   source for it.
+- 🚨 **What the model was shown is on the log, and it is the brief and not the
+  whole context** (F708). `Driver::phase` is the only caller of `TurnLoop::run`
+  in the workspace; it takes the brief as text, builds the `Body` itself, scrubs
+  once, and writes `Event::BriefRecorded` beside the `AttemptPhaseEntered`. So
+  *was the model told X* is `json_extract(body, '$.text')` over
+  `kind = 'brief_recorded'` rather than a code path somebody re-reads. Before it,
+  thirty event kinds carried no prompt body at all and every prompt-surface arm
+  this project has flown asserted its own prompt. ⚠ **Do not build a `Body`
+  anywhere else**: the record is honest because the text logged and the text sent
+  are one expression, and a second construction site is a prompt with no witness.
+  ⚠ The head is a compile-time constant and is on the log as `head_digest`, a
+  digest rather than the text. ⚠ **Tool output still is not** — a tool's text
+  reaches the model's context and `ToolCallEnded` keeps only its exit and its
+  arguments-when-refused, so `apply_patch`'s F649 sentence is a prompt surface
+  the log still cannot read back.
 - ⚠ **`Command::OrdersGiven` has no sender** (F703). `AwaitingOrders`'s only
   named edge back to a slot is driven by nothing but a lifecycle test, so a
   refused task returns to the board through `abcc take` + `abcc release`, or not

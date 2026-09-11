@@ -129,6 +129,40 @@ pub enum Event {
     },
 
     // -- the model ---------------------------------------------------------
+    /// 🚨 **F708: what the model was actually shown, opening this phase.**
+    ///
+    /// Until this existed the log had thirty event kinds and **not one carried a
+    /// prompt body**. [`Event::ModelCallStarted`] records the provider, the
+    /// model, the head's key, the ceiling and the budget — every fact about the
+    /// call except the one the call was made of. So *was the model told* was
+    /// always answered by reading a code path and a precondition and **never by
+    /// reading the log**: F649's `write_file` sentence, F655's rescue prose,
+    /// F531's rung view and F700's refusal paragraph are each a change to what a
+    /// model is shown whose only witness is a test. An arm that cannot say what
+    /// its subject was told is asserting its prompt rather than observing it.
+    ///
+    /// ⚠ **The opening body, not the conversation.** This is the brief the
+    /// phase began with; everything appended after it is a turn the model
+    /// produced or a tool result, and those have their own events. The head is
+    /// deliberately absent too — [`abcc_engine::Head::prefix`] is
+    /// `&'static str`, it cannot vary within a build, and
+    /// [`Event::ModelCallStarted`] already names which one by key.
+    ///
+    /// ⚠ **The phase is not repeated here**, for [`Event::PhaseEnded`]'s
+    /// reason: it is the [`Event::AttemptPhaseEntered`] immediately above, and a
+    /// second copy is a second thing that can disagree.
+    ///
+    /// 🚨 **`Scrubbed`, and the model was sent these same bytes**
+    /// (ADR-0014 §5). A record of a prompt that is not the prompt is the failure
+    /// this event exists to end, so the scrub happens once, before the send, and
+    /// both sinks take its output. Most of a brief is our own prose — but it also
+    /// carries the output of a check that ran over a tree the model itself wrote
+    /// (F700), and an exemption for the strings we wrote is the first of the
+    /// exemptions.
+    BriefRecorded {
+        attempt: AttemptId,
+        text: Scrubbed,
+    },
     ModelCallStarted {
         attempt: AttemptId,
         provider: String,
@@ -137,6 +171,26 @@ pub enum Event {
         /// per attempt (ADR-0011) because prefix caching saves 79.7% of TTFT and
         /// one token changed at the *front* costs a full cold prompt.
         head: String,
+        /// 🚨 **F708's other half: which build's head that was.**
+        ///
+        /// `head` and `ceiling` together name one of nine compile-time
+        /// constants — *within a build*. Edit a charter or a tool's one-line
+        /// `summary`, which is what ruling 2 is, and every field here reads
+        /// exactly as it did before. So *were these two arms shown the same
+        /// head* was not a question the log could answer, for a surface arms are
+        /// flown on.
+        ///
+        /// ⚠ **A digest, where [`Event::BriefRecorded`] is the text**, and the
+        /// asymmetry is the point: a body is composed at run time and exists
+        /// nowhere else, while a prefix is a constant whose text is in the
+        /// source at the commit the run was made from. What the log owes here is
+        /// *this differs from that*.
+        ///
+        /// ⚠ `#[serde(default)]` for the logs written before it existed, where
+        /// it reads as the empty string — *not recorded*, which is a different
+        /// thing from *no head*.
+        #[serde(default)]
+        head_digest: String,
         /// 🚨 **The ceiling that was actually in force** — the slot's cap, or the
         /// role's own, whichever was narrower (ADR-0014 §4).
         ///
@@ -590,6 +644,7 @@ impl Event {
         match self {
             Event::AttemptEnded { attempt, .. }
             | Event::AttemptPhaseEntered { attempt, .. }
+            | Event::BriefRecorded { attempt, .. }
             | Event::ModelCallStarted { attempt, .. }
             | Event::ModelCallEnded { attempt, .. }
             | Event::ToolCallStarted { attempt, .. }
@@ -621,6 +676,7 @@ impl Event {
             Event::AttemptStarted { .. } => "attempt_started",
             Event::AttemptEnded { .. } => "attempt_ended",
             Event::AttemptPhaseEntered { .. } => "attempt_phase_entered",
+            Event::BriefRecorded { .. } => "brief_recorded",
             Event::ModelCallStarted { .. } => "model_call_started",
             Event::ModelCallEnded { .. } => "model_call_ended",
             Event::ToolCallStarted { .. } => "tool_call_started",

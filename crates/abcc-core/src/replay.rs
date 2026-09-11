@@ -791,6 +791,7 @@ const fn attempt_of(event: &Event) -> Option<AttemptId> {
     match event {
         Event::AttemptEnded { attempt, .. }
         | Event::AttemptPhaseEntered { attempt, .. }
+        | Event::BriefRecorded { attempt, .. }
         | Event::ModelCallStarted { attempt, .. }
         | Event::ModelCallEnded { attempt, .. }
         | Event::PhaseEnded { attempt, .. }

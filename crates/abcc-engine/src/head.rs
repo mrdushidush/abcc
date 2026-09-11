@@ -39,6 +39,7 @@ use std::fmt;
 use std::sync::LazyLock;
 
 use abcc_core::run::{AttemptPhase, MissionPhase};
+use sha2::{Digest, Sha256};
 
 use crate::tools::{Policy, Tier, ToolSpec};
 
@@ -309,6 +310,31 @@ impl Posting {
         &PREFIXES[self.index()]
     }
 
+    /// 🚨 **F708's other half: the head, as a fact the log can hold.**
+    ///
+    /// [`Event::BriefRecorded`](abcc_core::event::Event::BriefRecorded) puts the
+    /// body on the log in full, because the body is composed at run time from
+    /// the task, the tree and the operator, and exists nowhere else. A prefix is
+    /// the opposite kind of thing: nine compile-time constants, fully determined
+    /// by the head, the ceiling and **the build**. The log names the first two
+    /// already and has never named the third — so *were these two arms shown the
+    /// same head* has been unanswerable from the record, for a surface arms are
+    /// actually flown on. Ruling 2 is a one-line edit to `diagnostics`'
+    /// [`summary`](crate::tools::ToolSpec::summary), which lands here.
+    ///
+    /// ⚠ **A digest and not the text**, which is where it differs from the
+    /// brief: 4 KB repeated on every phase of every attempt forever would be the
+    /// log storing a constant, and the text of the constant is in the source at
+    /// the commit the run was made from. What the log owes is the ability to say
+    /// *this differs from that*, and 16 hex characters says it.
+    ///
+    /// The first [`DIGEST_CHARS`] of the SHA-256 of [`Posting::prefix`],
+    /// computed once per process beside the prefix itself.
+    #[must_use]
+    pub fn digest(self) -> &'static str {
+        &DIGESTS[self.index()]
+    }
+
     /// This posting's row in [`Posting::ALL`], which is the index of every table
     /// keyed by posting.
     ///
@@ -353,6 +379,24 @@ impl fmt::Display for Posting {
 /// pay the cold prefill it exists to avoid.
 static PREFIXES: LazyLock<Vec<String>> =
     LazyLock::new(|| Posting::ALL.iter().map(|p| compose(*p)).collect());
+
+/// Every posting's prefix as a digest, in the same order. See
+/// [`Posting::digest`].
+static DIGESTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    PREFIXES
+        .iter()
+        .map(|prefix| {
+            let full = format!("{:x}", Sha256::digest(prefix.as_bytes()));
+            full[..DIGEST_CHARS].to_owned()
+        })
+        .collect()
+});
+
+/// How much of the SHA-256 is kept. Sixteen hex characters is 64 bits over a
+/// nine-element set that changes when somebody edits a charter, which is not a
+/// collision problem — and it is the width this project already quotes prompt
+/// shas at.
+const DIGEST_CHARS: usize = 16;
 
 /// Assemble one posting, once. Every input is a constant or the registry, so two
 /// calls cannot differ — which `tests/heads.rs` asserts rather than assumes.

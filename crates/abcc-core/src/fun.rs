@@ -492,6 +492,7 @@ pub const fn in_flight(event: &Event) -> bool {
         | Event::AttemptStarted { .. }
         | Event::AttemptEnded { .. }
         | Event::AttemptPhaseEntered { .. }
+        | Event::BriefRecorded { .. }
         | Event::ModelCallStarted { .. }
         | Event::ModelCallEnded { .. }
         | Event::PhaseEnded { .. }

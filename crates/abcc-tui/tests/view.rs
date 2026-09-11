@@ -93,6 +93,7 @@ fn the_attempt_runs(log: &mut Replay, task: TaskId, attempt: AttemptId, engaged:
         provider: "openai-compat".to_string(),
         model: "qwen3.6-35b-a3b-mtp@iq3_s".to_string(),
         head: "Engineering".to_string(),
+        head_digest: "0d1b0c9dcad12f4a".to_string(),
         ceiling: "read".to_string(),
         budget: 2048,
     });

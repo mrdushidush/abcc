@@ -555,6 +555,7 @@ impl<'a> TurnLoop<'a> {
             provider: self.provider.id().to_string(),
             model: self.model.clone(),
             head: posting.key().to_owned(),
+            head_digest: posting.digest().to_owned(),
             // 🚨 Without this the log cannot say which policy was in force. A
             // capped slot changes what the model is *told* it has, so a run under
             // a cap and the same run without one differ in the prompt and agree

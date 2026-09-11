@@ -120,6 +120,7 @@ fn a_truncated_attempt(store: &mut Store, title: &str) -> (TaskId, AttemptId) {
             provider: "local".to_owned(),
             model: "champion".to_owned(),
             head: "Builders".to_owned(),
+            head_digest: String::new(),
             ceiling: String::new(),
             budget: 8192,
         })
