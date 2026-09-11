@@ -564,8 +564,42 @@ impl<'a> Driver<'a> {
         // ran out of rounds would buy prose at the price of the thing the round
         // budget was already short of. The measurement is what was missing; the
         // review was not.
+        // ⚠ Read before the match because the guard below may not reborrow the
+        // `&mut` it binds. [`Headline::is_pass`] is the workspace's only
+        // producer of a `bool`, and it is `matches!(Green)` — the same question
+        // [`ending`] asks by pattern a few lines down, asked through the one
+        // function that exists to answer it.
+        let green = gate.as_ref().is_some_and(|m| m.headline.is_pass());
         let judged = match (gate.as_mut(), kept.as_ref(), last) {
             (Some(measured), Some(closing), PhaseEnded::Answered { .. }) => {
+                self.judge(row, attempt, &opened, closing, measured, control)?
+            }
+            // 🚨🚨 **An ending the model never chose, over a tree every declared
+            // rung passed, is about to be called `Accomplished` — and that is
+            // the one place the cost argument above stops applying.**
+            //
+            // Measured live on `a8327`, the first attempt of this subject ever
+            // to land: the Change phase exhausted its nudges and ended
+            // [`Why::SaidNothing`], all four rungs came back green, and the
+            // operator's ruling promoted it. The log recorded *the Judge was not
+            // asked: the model never said the change was finished* — on a task
+            // going **terminal**. The diff bypassed the file the task named and
+            // nothing was ever going to say so, because the acceptance rung runs
+            // the suite and no test covers a flag nobody had added yet.
+            //
+            // ⚠ **The Judge does not need the model to have spoken**, which is
+            // what makes this cheap rather than a compromise: [`judge::Dossier`]
+            // holds the task, the diff and the rungs and deliberately holds no
+            // completion report (F280–F282 — the author's prose measured
+            // *subtractive*, 0 of 3). The dossier for a silent ending is the
+            // same dossier.
+            //
+            // ⚠ It still decides nothing. `Report::note` attaches a `Claim`,
+            // [`ending`] is computed from `last` and `gate.headline`, and a
+            // review that times out or says nothing leaves this `Accomplished`.
+            // What it buys is that the tree a person will never be asked about
+            // has been read by something.
+            (Some(measured), Some(closing), PhaseEnded::Unmeasured { .. }) if green => {
                 self.judge(row, attempt, &opened, closing, measured, control)?
             }
             // ⚠ Stated rather than omitted, like every other absence here — a
@@ -573,27 +607,14 @@ impl<'a> Driver<'a> {
             // of the two was skipped and why, rather than leave an operator to
             // infer it from a gap.
             (Some(_), Some(_), _) => self.not_asked(
-                "the model never said the change was finished, so there is a measurement to \
-                 read but no completed change to review",
+                "the model never said the change was finished and the ladder did not come back \
+                 green, so there is a measurement to read, no completed change to review, and \
+                 nothing going terminal that a review would be the last word on",
             )?,
             _ => None,
         };
 
-        let path = opened.worktree.path().display().to_string();
-        match opened.worktree.close() {
-            Ok(()) => {
-                self.store.append(Event::WorktreeClosed { task, path })?;
-            }
-            // A worktree that will not go is worth saying out loud and is not
-            // worth failing an attempt over — the work is already in the
-            // checkpoint. `close` prunes even when the remove fails, so the
-            // metadata does not accumulate the way BCF's does (F325).
-            Err(e) => {
-                self.store.append(Event::Note {
-                    text: format!("the worktree at {path} would not close: {e}"),
-                })?;
-            }
-        }
+        self.close_worktree(task, opened.worktree)?;
 
         // A fact about the log, not a budget: how many attempts this task has
         // had, the one that just ended included. The *policy* — how many it may
@@ -673,6 +694,31 @@ impl<'a> Driver<'a> {
     /// running cold build instead of waiting it out. A ten-minute rung with no
     /// stop verb would be the one place in the system where the console goes
     /// deaf.
+    /// Take the worktree down and say on the log which way it went.
+    ///
+    /// ⚠ **A worktree that will not go is worth saying out loud and is not
+    /// worth failing an attempt over** — the work is already in the checkpoint
+    /// by the time this runs. `close` prunes even when the remove fails, so the
+    /// metadata does not accumulate the way BCF's does (F325).
+    ///
+    /// It is a method rather than a block in [`Driver::land`] because clippy's
+    /// `too_many_lines` refused that function once the Judge grew an arm, and of
+    /// everything in there this is the part that is about one thing.
+    fn close_worktree(&mut self, task: TaskId, worktree: Worktree) -> Result<()> {
+        let path = worktree.path().display().to_string();
+        match worktree.close() {
+            Ok(()) => {
+                self.store.append(Event::WorktreeClosed { task, path })?;
+            }
+            Err(e) => {
+                self.store.append(Event::Note {
+                    text: format!("the worktree at {path} would not close: {e}"),
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     fn gate(&mut self, attempt: AttemptId, opened: &Opened, closing: &Kept) -> Result<Measured> {
         // 🚨 `Repo::open` on the *worktree*, for `checkpoint_worktree`'s reason:
         // it shares the git directory, so both snapshot shas resolve, and every

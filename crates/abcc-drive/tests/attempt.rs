@@ -716,9 +716,57 @@ fn an_unchanged_tree_stops_at_the_free_rung_however_the_phase_ended() {
     );
 }
 
-/// ⚠ **The Judge was not widened with the gate**, because it is a model call
-/// that decides nothing, and spending one on an attempt that already ran out of
-/// room buys prose at the price of the thing it was short of.
+/// 🚨🚨 **The Judge IS asked for an ending the model never chose, when the
+/// ladder came back green — because that attempt is going terminal.**
+///
+/// F655 widened the gate and deliberately left the Judge alone: a model call
+/// spent on an attempt that had already run out of room buys prose at the price
+/// of the thing it was short of. The operator's ruling of 2026-09-10 changed what
+/// that attempt *is*. `a8327` — the first attempt on the `--version` subject ever
+/// to land — ended `SaidNothing` with four green rungs, was promoted to
+/// `Accomplished`, and the log recorded *the Judge was not asked: the model never
+/// said the change was finished* about a task nobody would ever be asked about
+/// again. Its diff bypassed the file the task named, and the acceptance rung
+/// could not notice: it runs the suite, and no test covers a flag nobody had
+/// added yet.
+///
+/// ⚠ **The dossier is the same dossier.** [`abcc_gate::judge`] is shown the task,
+/// the diff and the rungs, and deliberately not the author's completion report
+/// (F280–F282: the prose measured *subtractive*, 0 of 3). So a silent ending
+/// costs the Judge nothing it needed.
+#[test]
+fn the_judge_is_asked_for_a_green_ending_the_model_did_not_choose() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let mut scripts = cut_off_mid_change();
+    scripts.push(Script::says(REVIEWED));
+    let (landed, seen) = watched(&subject, &mut store, task, scripts, Some(PASSING));
+
+    assert_eq!(
+        landed.gate.as_ref().map(|g| &g.headline),
+        Some(&Headline::Green { rungs: 3 }),
+        "the fixture must be green for this test to be about anything"
+    );
+    assert!(landed.judge.is_some(), "the Judge was not asked");
+    assert!(
+        seen.iter().any(|s| s.head_key == "commandos"),
+        "a task went terminal with nothing having read the diff"
+    );
+    // ⚠ And it still decides nothing: the landing is the measurement's.
+    assert_eq!(landed.outcome, AttemptOutcome::Success);
+    assert!(
+        matches!(landed.state, TaskState::Accomplished { .. }),
+        "{:?}",
+        landed.state
+    );
+}
+
+/// ⚠ **And it is still not asked when the ladder did not come back green**,
+/// which is the half of F655's argument that survives: that attempt is going
+/// back to a person, who is owed the rungs and not a paragraph about a tree that
+/// was already refused.
 #[test]
 fn the_judge_is_not_asked_for_an_ending_the_model_did_not_choose() {
     let subject = subject();
@@ -729,11 +777,15 @@ fn the_judge_is_not_asked_for_an_ending_the_model_did_not_choose() {
         &subject,
         &mut store,
         task,
-        cut_off_mid_change(),
+        cut_off_having_written_nothing(),
         Some(PASSING),
     );
 
     assert!(landed.gate.is_some(), "the gate was not asked");
+    assert!(
+        !landed.gate.as_ref().is_some_and(|g| g.headline.is_pass()),
+        "the fixture must NOT be green for this test to be about anything"
+    );
     assert!(landed.judge.is_none(), "the Judge ran anyway");
     assert!(
         !seen.iter().any(|s| s.head_key == "commandos"),
