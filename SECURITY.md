@@ -199,8 +199,11 @@ today, and the check was made rather than assumed:
   the Posture milestone". It has not; declaring it now would be a name standing in for a
   specification, and a veto that cannot fire is one an operator trusts for the wrong reason.
 - The **Judge does see it**. `judge::Dossier` carries the task's title and prompt beside the patch, so
-  a change that does something other than the task is within what the reviewer is shown, and it has
-  been observed objecting on exactly those grounds.
+  a change that does something other than the task is within what the reviewer is shown. ⚠ The
+  nearest thing to evidence is F536: across 15 calls the best answer was the one that checked the
+  change against *the scope the ticket states* — but that was an **incomplete** change, not a
+  displaced one, so it is a reason to think the Judge could notice this and not a measurement that
+  it does.
 - 🚨 **And the Judge may never refuse.** Only deterministic rungs may (`AttemptPhase::may_refuse` is
   `!uses_model()`); a model verdict is a `Claim` and there is no function in the workspace that turns
   one into an `Outcome`. That is a standing ruling and it is not being revisited for this row.
