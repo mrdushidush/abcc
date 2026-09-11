@@ -239,6 +239,33 @@ do not reformat around it.
 - **Attempts are immutable.** Retry, edit, re-route and replay are all one
   operation — fork from a checkpoint with a `Cause` — so lineage exists by
   construction. Nothing updates an attempt row except the event that ends it.
+- 🚨 **That sentence was aspirational until 2026-09-11, and `Driver::fork_point`
+  is what makes it true.** `open_workspace` snapshotted the operator's checkout
+  unconditionally and never read `Cause`, so every retry and every redirect threw
+  its parent's work away — while seven places in three crates, this bullet
+  included, said otherwise (F701, F702). All seven agreed with each other and
+  none agreed with the code: **a comment and a prompt that agree are one witness,
+  not two.** A retry, an edit and a rescope now open on the task's latest
+  checkpoint (`abcc take`'s rule, so the operator's hand-back is not stepped
+  over); a replay opens where the attempt it replays *started*; `Cause::Fresh`
+  still gets the checkout, which is what `abcc run` relies on.
+- 🚨 **The gate's diff is what *this attempt* changed, and that is a control
+  rather than a detail.** A forked attempt reuses its parent's checkpoint as its
+  own opening one, so `checkpoint_from` names a real ancestor. Take that away and
+  a retry could inherit a green tree, do nothing at all, pass `Rung::Structural`
+  — whose whole job is refusing an unchanged tree — and be promoted to
+  `Accomplished` having done no work.
+- 🚨 **A brief may only say what `Opened::continues` supports.** What refused the
+  previous attempt is in the next one's brief (F700), and it is read from the
+  field that says whose work is under this tree — never from the task's last
+  attempt. The two differ for a replay and for a task the operator has taken
+  over, and in both cases the easy answer describes a tree the model is not
+  looking at. That is the failure F702 *was*; do not re-introduce a second
+  source for it.
+- ⚠ **`Command::OrdersGiven` has no sender** (F703). `AwaitingOrders`'s only
+  named edge back to a slot is driven by nothing but a lifecycle test, so a
+  refused task returns to the board through `abcc take` + `abcc release`, or not
+  at all. The transition table is not evidence that a transition happens.
 - **A tool below the exec tier may not start a child process — including to do
   its own job.** `apply_patch` applies diffs in-process and `list_files` reads
   ignore rules in-process, rather than either of them calling git, because the
