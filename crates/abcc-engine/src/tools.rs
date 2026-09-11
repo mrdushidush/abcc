@@ -272,7 +272,17 @@ pub const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "diagnostics",
         reach: Reach::SpawnsChild,
-        summary: "Build or typecheck the workspace and return the compiler's own output.",
+        // 🚨 **F673: this sentence is the fix as much as the code is.** The
+        // tool now runs the compiler *and* the standard the repository declares
+        // for itself — the same commands the gate grades with — so the old
+        // summary, "return the compiler's own output", stopped being true. A
+        // summary that undersells what a tool measures is how a model comes to
+        // believe it has checked its work.
+        summary: concat!(
+            "Typecheck the workspace and run the standard it declares for itself ",
+            "(formatting, lints), and return their own output. The gate's standard ",
+            "rung runs the same commands over the same tree."
+        ),
         schema: concat!(
             r#"{"type":"object","properties":{"selector":{"type":"string"}},"#,
             r#""additionalProperties":false}"#

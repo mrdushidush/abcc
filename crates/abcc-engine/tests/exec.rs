@@ -13,7 +13,7 @@ use abcc_core::outcome::{Reading, Why};
 use abcc_engine::provider::ToolCall;
 use abcc_engine::tools::{Confinement, lookup};
 use abcc_engine::turn::{ToolResult, Tools};
-use abcc_engine::workspace::{TOOLCHAINS, Toolchain, Workspace};
+use abcc_engine::workspace::{Standard, TOOLCHAINS, Toolchain, Workspace};
 
 fn run(workspace: &Workspace, tool: &str, arguments: &serde_json::Value) -> ToolResult {
     let spec = lookup(tool).expect("registry");
@@ -303,6 +303,183 @@ fn run_tests_runs_the_profiles_command_and_reports_what_happened() {
     assert_eq!(result.exit, Some(3), "{}", result.text);
     assert_eq!(result.unmeasured, None);
     assert!(result.text.contains("ran the tests"), "{}", result.text);
+}
+
+// ---------------------------------------------------------------------------
+// diagnostics, and the standard the repository declares
+// ---------------------------------------------------------------------------
+
+/// A profile whose standard is two commands and whose witness is a file each
+/// test decides whether to put in the tree. ⚠ Nothing here needs cargo
+/// installed: what is under test is which commands the tool layer runs, and in
+/// what order.
+#[cfg(windows)]
+const DECLARING: Toolchain = Toolchain {
+    name: "declaring",
+    witnesses: &[],
+    test: &["cmd", "/C", "echo ran the tests"],
+    diagnostics: &["cmd", "/C", "echo compiled"],
+    reading: Reading::Cargo,
+    standard: Some(Standard {
+        witnesses: &["standard.toml"],
+        commands: &[
+            &["cmd", "/C", "echo formatted"],
+            &["cmd", "/C", "echo linted"],
+        ],
+    }),
+};
+
+#[cfg(not(windows))]
+const DECLARING: Toolchain = Toolchain {
+    name: "declaring",
+    witnesses: &[],
+    test: &["sh", "-c", "echo ran the tests"],
+    diagnostics: &["sh", "-c", "echo compiled"],
+    reading: Reading::Cargo,
+    standard: Some(Standard {
+        witnesses: &["standard.toml"],
+        commands: &[
+            &["sh", "-c", "echo formatted"],
+            &["sh", "-c", "echo linted"],
+        ],
+    }),
+};
+
+/// The same profile whose compiler refuses, so the conjunction has something to
+/// stop at.
+#[cfg(windows)]
+const NOT_COMPILING: Toolchain = Toolchain {
+    diagnostics: &["cmd", "/C", "echo E0004 non-exhaustive patterns & exit 101"],
+    ..DECLARING
+};
+
+#[cfg(not(windows))]
+const NOT_COMPILING: Toolchain = Toolchain {
+    diagnostics: &["sh", "-c", "echo E0004 non-exhaustive patterns; exit 101"],
+    ..DECLARING
+};
+
+/// 🚨🚨 **F673: the tool the model checks its own work with now runs the
+/// commands the model is graded on.**
+///
+/// The defect was a criterion the model could not see. The standard rung is
+/// `cargo fmt --check` then `cargo clippy -- -D warnings`, `diagnostics` was
+/// `cargo check --all-targets`, and `cargo check` sees neither. Four attempts
+/// reached that rung on the E0004 subject and **none passed**, while the rung is
+/// passable on other subjects — so the fix is what the tool *measures* rather
+/// than a sentence in the brief, which W7 measured at 39 of 50 for the best
+/// prompt in its family and 0 of 50 for a better-written one.
+#[test]
+fn diagnostics_also_runs_the_standard_the_repository_declares() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("standard.toml"), "").expect("write");
+    let workspace = Workspace::open(dir.path())
+        .expect("open")
+        .with_toolchain(DECLARING)
+        .with_budget(Duration::from_secs(30));
+
+    let result = run(&workspace, "diagnostics", &serde_json::json!({}));
+    assert_eq!(result.exit, Some(0), "{}", result.text);
+    assert_eq!(result.unmeasured, None);
+    for ran in ["compiled", "formatted", "linted"] {
+        assert!(
+            result.text.contains(ran),
+            "{ran} did not run: {}",
+            result.text
+        );
+    }
+    // The compiler first, and that is the one ordering question this had: the
+    // standard's own order is cheapest-first, so a tree with a type error would
+    // otherwise be handed a formatting refusal instead of its error.
+    let at = |needle: &str| result.text.find(needle).expect(needle);
+    assert!(at("compiled") < at("formatted"), "{}", result.text);
+    assert!(at("formatted") < at("linted"), "{}", result.text);
+}
+
+/// 🚨 **A repository that declares no standard gets exactly what it got
+/// before.**
+///
+/// [`Standard::declared_at`] is the whole of it, and it is the rule the gate
+/// holds one level up: an undeclared rung is *absent* rather than missing, and
+/// running a linter over a project that never opted into one is this tool having
+/// an opinion about somebody else's code. The witness is a file in the tree, so
+/// a profile can carry a standard the repository has not asked for.
+#[test]
+fn diagnostics_stays_the_compiler_where_no_standard_is_declared() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // `DECLARING` names `standard.toml` as its witness, and this tree has none.
+    let workspace = Workspace::open(dir.path())
+        .expect("open")
+        .with_toolchain(DECLARING)
+        .with_budget(Duration::from_secs(30));
+
+    let result = run(&workspace, "diagnostics", &serde_json::json!({}));
+    assert_eq!(result.exit, Some(0), "{}", result.text);
+    assert!(result.text.contains("compiled"), "{}", result.text);
+    assert!(
+        !result.text.contains("formatted") && !result.text.contains("linted"),
+        "a standard nobody declared was run anyway: {}",
+        result.text
+    );
+}
+
+/// ⚠ **A conjunction, and the first refusal ends it** — the same rule the
+/// standard rung itself holds. A model that cannot compile is not owed a
+/// formatting diff, and a red that names the wrong program is F555 read
+/// backwards.
+#[test]
+fn diagnostics_stops_at_the_first_refusal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("standard.toml"), "").expect("write");
+    let workspace = Workspace::open(dir.path())
+        .expect("open")
+        .with_toolchain(NOT_COMPILING)
+        .with_budget(Duration::from_secs(30));
+
+    let result = run(&workspace, "diagnostics", &serde_json::json!({}));
+    assert_eq!(result.exit, Some(101), "{}", result.text);
+    assert!(result.text.contains("E0004"), "{}", result.text);
+    assert!(
+        !result.text.contains("formatted"),
+        "the conjunction walked past a refusal: {}",
+        result.text
+    );
+}
+
+/// ⚠ **The standard is not the test suite's business.** `run_tests` runs the
+/// profile's test command and nothing else, however the repository is declared:
+/// two tools that ran the same lint would be two places for one red to come
+/// from.
+#[test]
+fn run_tests_does_not_run_the_standard() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("standard.toml"), "").expect("write");
+    let workspace = Workspace::open(dir.path())
+        .expect("open")
+        .with_toolchain(DECLARING)
+        .with_budget(Duration::from_secs(30));
+
+    let result = run(&workspace, "run_tests", &serde_json::json!({}));
+    assert!(result.text.contains("ran the tests"), "{}", result.text);
+    assert!(
+        !result.text.contains("linted"),
+        "run_tests ran the standard: {}",
+        result.text
+    );
+}
+
+/// 🚨 **The summary a model reads has to say what the tool measures**,
+/// because this is the instrument it checks its own work with and F673 is what
+/// happens when it understates. The tool list is in the frozen head (F81), so
+/// this sentence is as durable as the code beside it.
+#[test]
+fn the_diagnostics_summary_says_it_runs_the_standard() {
+    let spec = lookup("diagnostics").expect("registry");
+    assert!(
+        spec.summary.contains("standard"),
+        "the summary stopped naming the standard: {}",
+        spec.summary
+    );
 }
 
 // ---------------------------------------------------------------------------

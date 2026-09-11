@@ -660,6 +660,45 @@ impl Runner {
             Runner::Diagnostics => toolchain.diagnostics,
         }
     }
+
+    /// What else this call runs, after [`Runner::command`] and only if it
+    /// passed.
+    ///
+    /// 🚨 **F673: the model was graded by a rung it was never told about, with a
+    /// tool that ran neither of its commands.** `diagnostics` was
+    /// `cargo check --all-targets`; the standard rung is
+    /// `cargo fmt --check` **then** `cargo clippy --all-targets -- -D warnings`,
+    /// and `cargo check` sees neither. Four attempts reached that rung on the
+    /// E0004 subject and none passed, while the rung *is* passable on other
+    /// subjects — so the model was not failing at the work, it was failing at a
+    /// criterion its instrument could not show it. The fix is **what the tool
+    /// measures** and not a sentence in the brief, because W7 measured the best
+    /// prompt in its family at 39 of 50 and a better-written one at 0 of 50:
+    /// a tool result is a fact and a prompt is a request.
+    ///
+    /// ⚠ **Appended, never substituted, and only where the repository declares
+    /// it.** [`Standard::declared_at`] is the whole of that: a repository with
+    /// no `clippy.toml` declares no standard, an undeclared rung is *absent*
+    /// rather than missing, and running clippy there would be this tool having
+    /// an opinion about somebody else's code — the same rule the gate holds one
+    /// level up. A workspace with no standard gets exactly what it got before.
+    ///
+    /// ⚠ **And the compiler still runs first**, which is the one ordering
+    /// question this had. The standard's own order is cheapest-first — rustfmt
+    /// is a parse, clippy is a compile — but a tree with a type error would then
+    /// be refused by `cargo fmt` or told about its formatting before its error,
+    /// and `diagnostics` exists to report compile errors. A refusal that names
+    /// the wrong program is F555 read backwards and F492's class.
+    fn also(self, toolchain: Toolchain, root: &Path) -> &'static [&'static [&'static str]] {
+        const NOTHING: &[&[&str]] = &[];
+        match self {
+            Runner::Test => NOTHING,
+            Runner::Diagnostics => toolchain
+                .standard
+                .filter(|s| s.declared_at(root))
+                .map_or(NOTHING, |s| s.commands),
+        }
+    }
 }
 
 impl Workspace {
@@ -730,7 +769,38 @@ impl Workspace {
                 .map(ToOwned::to_owned),
         );
         let display = format!("{} {}", command[0], argv.join(" "));
-        Ok(self.exec(command[0], &argv, &display, self.budget))
+        let mut result = self.exec(command[0], &argv, &display, self.budget);
+
+        // 🚨 **A conjunction, in order, and the first refusal ends it** — the
+        // same shape as the standard rung itself (`abcc_gate::rung::standard`),
+        // for the same reason: once a command in the list has refused, the ones
+        // after it cannot be reported as passed, and an operator or a model
+        // reading a red wants the *first* one.
+        //
+        // ⚠ **The selector narrows the profile's own command and nothing else.**
+        // A standard is a claim about the tree, it is not narrowable, and
+        // appending `-p something` to a command with a `--` separator in it
+        // hands the argument to rustc. Every argv that ran is in the text
+        // verbatim, so a narrowed call says what it actually did.
+        for command in which.also(toolchain, &self.root) {
+            if result.exit != Some(0) {
+                break;
+            }
+            let argv: Vec<String> = command[1..].iter().map(|a| (*a).to_owned()).collect();
+            let display = format!("{} {}", command[0], argv.join(" "));
+            let next = self.exec(command[0], &argv, &display, self.budget);
+            result = ToolResult {
+                text: format!(
+                    "{}
+{}",
+                    result.text, next.text
+                ),
+                exit: next.exit,
+                elapsed_ms: result.elapsed_ms + next.elapsed_ms,
+                unmeasured: next.unmeasured,
+            };
+        }
+        Ok(result)
     }
 
     fn exec(
