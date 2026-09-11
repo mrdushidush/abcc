@@ -16,7 +16,7 @@ use abcc_vcs::Repo;
 use crate::confirm::{self, FINGERPRINT_ENV, MODEL_ENV};
 use crate::feed::StoreFeed;
 use crate::pulse;
-use crate::{AppError, Home, Invocation, cli, operator};
+use crate::{AppError, Home, Invocation, cli, home, operator, run, weights};
 
 /// The repository and the state directory beside it, resolved together because
 /// the second is keyed by the first.
@@ -538,4 +538,84 @@ fn first_line(prompt: &str) -> String {
     }
     let short: String = line.chars().take(CAP).collect();
     format!("{short}...")
+}
+
+/// 🚨 `abcc weights` — the one ungated input, looked at on purpose.
+///
+/// Three shapes, and they are deliberately three words rather than one flag with
+/// a mode:
+///
+/// * bare — the same cheap check a run does, said out loud;
+/// * `--verify` — read the whole file, **51.9 s on the champion**, and the only
+///   thing that answers the question the threat-model row asks;
+/// * `--repin` — accept what is there as the new reference. ⚠ Separate from
+///   `--verify` because re-pinning after a mismatch is a **decision**, not a
+///   repair, and a `--verify` that quietly re-pinned would turn the alarm into
+///   a formality.
+///
+/// # Errors
+///
+/// Fails if the repository or its log cannot be opened, or if the pin file
+/// exists and cannot be read.
+pub fn weights(
+    invocation: &Invocation,
+    model: Option<&str>,
+    verify: bool,
+    repin: bool,
+    out: &mut impl Write,
+) -> Result<(), AppError> {
+    let ground = ground(invocation)?;
+    let mut store = open_log(&ground.home)?;
+    let asked = model_name(model)?;
+    let path = weights::pin_path(&home::shared_root());
+    let mut pins = weights::Pins::load(&path)?;
+
+    if repin {
+        // Forget this model's pin first, so the check that follows takes what is
+        // there as a first sight. ⚠ It goes through the same `check` rather than
+        // writing a `Pin` directly: one recipe for what a pin contains (F330).
+        pins.forget(&asked);
+    }
+    let effort = if verify || repin {
+        weights::Effort::Full
+    } else {
+        weights::Effort::Cheap
+    };
+    // ⚠ Asked rather than inferred from the flags. A **first sight reads the
+    // file too**, so a bare `abcc weights` on an unpinned model pauses for the
+    // better part of a minute — and a pause with no sentence in front of it is
+    // how a check gets reported as a hang.
+    if weights::reads_the_file(&pins, &asked, effort) {
+        writeln!(
+            out,
+            "reading the whole file — 54 s on this box for the 12.67 GiB champion"
+        )?;
+        out.flush()?;
+    }
+
+    let checked = weights::check(&mut pins, &asked, effort, weights::now_ms());
+    if checked.pin.is_some() {
+        pins.save(&path)?;
+    }
+    store.append(Event::WeightsChecked {
+        model: asked.clone(),
+        digest: checked.digest.clone(),
+        outcome: checked.outcome.clone(),
+    })?;
+
+    writeln!(out, "{asked}")?;
+    if let Some(pin) = pins.get(&asked) {
+        writeln!(out, "  file    {}", pin.path)?;
+        writeln!(out, "  bytes   {}", pin.identity.len)?;
+    }
+    writeln!(out, "  {}", run::describe(&checked))?;
+    if checked.alarming() {
+        writeln!(
+            out,
+            "\n\u{26a0} If you re-downloaded this model, `abcc weights --repin` accepts what is \
+             there. If you did not, the bytes changed underneath the name and that is the thing \
+             this check exists to tell you."
+        )?;
+    }
+    Ok(())
 }

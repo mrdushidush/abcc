@@ -88,6 +88,20 @@ pub enum Command {
         by: Option<String>,
         crossed_boundary: bool,
     },
+    /// 🚨 ADR-0014 §6: the weights are the one ungated input, and this is the
+    /// verb that looks at them.
+    ///
+    /// A bare `abcc weights` is the same cheap check every run does, said out
+    /// loud. `--verify` reads the whole file — **51.9 s on the champion** — and
+    /// is the only thing that answers the question the threat-model row actually
+    /// asks. `--repin` accepts what is there as the new reference, and is
+    /// deliberately a separate word from `--verify`: re-pinning after a
+    /// mismatch is a decision, never a repair.
+    Weights {
+        model: Option<String>,
+        verify: bool,
+        repin: bool,
+    },
     /// The operator has read the work and takes responsibility for it.
     Accept { task: TaskRef, note: Option<String> },
     /// The operator has read the work and stops the task.
@@ -192,6 +206,9 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc check [--model M]              ask the server which model it is holding
   abcc breaker [--model M]            one real token, and what the log says about retrying
   abcc review <change> <minutes> [--by W] [--boundary]
+  abcc weights [--model M] [--verify] [--repin]
+                                      which bytes are behind the model; --verify
+                                      re-reads the whole file (~52 s)
   abcc accept <task> [--note N]       the work is good; you take responsibility
   abcc reject <task> [--note N]       stop the task
   abcc take <task>                    take the keyboard: a worktree of your own, and the
@@ -347,6 +364,17 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
                 seconds: minutes_as_seconds(&args[1])?,
                 by,
                 crossed_boundary,
+            }
+        }
+        "weights" => {
+            let model = take_flag(&mut args, "--model")?;
+            let verify = take_switch(&mut args, "--verify");
+            let repin = take_switch(&mut args, "--repin");
+            no_positionals(&args, "weights")?;
+            Command::Weights {
+                model,
+                verify,
+                repin,
             }
         }
         "accept" | "reject" | "take" | "release" => operator_verb(&verb, &mut args)?,

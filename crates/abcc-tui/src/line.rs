@@ -19,7 +19,7 @@
 use std::fmt::Write as _;
 
 use abcc_core::attempt::{AttemptOutcome, Cause};
-use abcc_core::event::{Control, Event, Finish, Logged, TraceSignal};
+use abcc_core::event::{Control, Event, Finish, Logged, TraceSignal, WeightsOutcome};
 use abcc_core::outcome::{Outcome, Why};
 use abcc_core::run::DowngradeReason;
 use abcc_core::seq::{Seq, TaskId};
@@ -228,6 +228,40 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
                 ""
             }
         ),
+        // 🚨 The one line in the feed that can say the model is not the model.
+        // `Changed` leads with the word rather than burying it after the id,
+        // because it is the only arm an operator has to act on — and the two
+        // passing arms are worded apart on purpose: `verified` read the bytes,
+        // `unchanged` read the directory entry.
+        Event::WeightsChecked {
+            model,
+            digest,
+            outcome,
+        } => {
+            let short = digest.as_deref().map_or("--", |d| &d[..d.len().min(12)]);
+            match outcome {
+                WeightsOutcome::Pinned => {
+                    format!("weights pinned · {} · {short}", clip(model))
+                }
+                WeightsOutcome::Verified => {
+                    format!("weights verified · {} · {short}", clip(model))
+                }
+                WeightsOutcome::Unchanged => {
+                    format!(
+                        "weights unchanged · {} · {short} (not re-read)",
+                        clip(model)
+                    )
+                }
+                WeightsOutcome::Changed { was } => format!(
+                    "WEIGHTS CHANGED · {} · was {} · now {short}",
+                    clip(model),
+                    &was[..was.len().min(12)]
+                ),
+                WeightsOutcome::Unlocated { why } => {
+                    format!("weights unchecked · {} · {}", clip(model), clip(why))
+                }
+            }
+        }
         Event::Note { text } => clip(text),
     };
     Line {

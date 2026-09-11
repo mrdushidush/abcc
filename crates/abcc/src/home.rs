@@ -128,6 +128,18 @@ pub fn default_root(repo: &Path) -> PathBuf {
         .join(format!("{name}-{:016x}", fingerprint(&canonical)))
 }
 
+/// 🚨 **The one directory that is per-MACHINE rather than per-repository**, and
+/// the only thing in it is the weights pin (ADR-0014 §6).
+///
+/// Everything else under here is `abcc/<repo>-<hash>/`, because a log is about
+/// one repository's work. The weights are not: one file serves every checkout on
+/// the box, and a per-repository pin would mean each new clone silently pinned
+/// whatever was there while the checkout beside it already knew better.
+#[must_use]
+pub fn shared_root() -> PathBuf {
+    data_dir().join("abcc")
+}
+
 /// The platform's per-user data directory, without a dependency to ask for it.
 fn data_dir() -> PathBuf {
     if let Some(local) = env::var_os("LOCALAPPDATA") {

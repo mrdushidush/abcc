@@ -28,6 +28,7 @@ abcc-tui = { workspace = true }
 abcc-vcs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 # ⚠ The one dependency this crate adds that the engine did not already need, and
 # it is spent on the model-confirmation check. `GET /v1/models` is a different

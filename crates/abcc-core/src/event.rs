@@ -361,11 +361,69 @@ pub enum Event {
         /// occupies M0 with 15 of 471 commits, none architectural.
         crossed_boundary: bool,
     },
+    /// 🚨 **The one control no donor in the family has** (ADR-0014 §6, F420).
+    ///
+    /// The weights are the ungated input: every other dependency passes a
+    /// supply-chain gate and the model does not. The control is *record the
+    /// digest at first pull and compare it on every start, surfacing a mismatch
+    /// as a run-visible event* — this is that event.
+    ///
+    /// ⚠ **Measured 2026-09-11, and it is why there are two positive arms.**
+    /// Neither `/v1/models` nor LM Studio's `/api/v0/models` carries a digest, a
+    /// size or a path — the listing identifies a model by *name*, which is the
+    /// thing being checked. So the digest is of the file, and a full SHA-256 of
+    /// the champion's 12.67 GiB costs **51.9 s**. Paying that on every start
+    /// would get the check turned off, so a start compares the cheap identity
+    /// and [`WeightsOutcome`] keeps the weaker answer from reading as the
+    /// stronger one.
+    WeightsChecked {
+        /// The model the run asked for.
+        model: String,
+        /// The digest that identifies the bytes — `None` only when there was no
+        /// file to read.
+        digest: Option<String>,
+        outcome: WeightsOutcome,
+    },
     /// Anything worth seeing that is not one of the above. Deliberately last and
     /// deliberately dull: a note is not a state, and nothing may branch on it.
     Note {
         text: String,
     },
+}
+
+/// What comparing the weights against their pin found.
+///
+/// 🚨 **`Verified` and `Unchanged` are separate arms and that is the whole
+/// design.** This is F495's shape one asset over: there, keeping *the server
+/// says it is loaded* apart from *the server lists it* is what stops a weaker
+/// answer being read as a stronger one. Here, `Verified` means the 51.9-second
+/// read happened and the bytes hash to the pin; `Unchanged` means the length and
+/// the modification time match, so **the digest was not recomputed**. One is a
+/// measurement of the bytes and the other is a measurement of the directory
+/// entry, and collapsing them would make every start look like a full check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "weights", rename_all = "snake_case")]
+pub enum WeightsOutcome {
+    /// First sight of this model. The digest was computed and is now the
+    /// reference. ⚠ **A first pin trusts what is there** — it can only record
+    /// the bytes, never vouch for them — which is why the README says where the
+    /// weights came from is the operator's assertion.
+    Pinned,
+    /// The digest was recomputed from the file and matches the pin.
+    Verified,
+    /// Length and modification time match the pin, so the file was not read.
+    /// Cheap, and weaker on purpose: it catches a re-pull or a swapped file and
+    /// it does not catch an adversary who preserves both.
+    Unchanged,
+    /// 🚨 The bytes behind this model id are not the bytes that were pinned.
+    Changed {
+        /// The digest that was pinned, so the operator can tell a re-download
+        /// from something else.
+        was: String,
+    },
+    /// There was nothing to check, and why. Not a pass: a control that cannot
+    /// find its subject has to say so rather than stay quiet.
+    Unlocated { why: String },
 }
 
 /// 🚨 **F511: what a completion was made OF, as opposed to how big it was.**
@@ -580,6 +638,7 @@ impl Event {
             Event::PhaseNudged { .. } => "phase_nudged",
             Event::PhaseEnded { .. } => "phase_ended",
             Event::ReviewRecorded { .. } => "review_recorded",
+            Event::WeightsChecked { .. } => "weights_checked",
             Event::Note { .. } => "note",
         }
     }

@@ -44,6 +44,7 @@ pub mod pulse;
 pub mod replay;
 pub mod run;
 pub mod takeover;
+pub mod weights;
 
 pub use cli::{Command, Invocation};
 pub use home::Home;
@@ -73,6 +74,12 @@ pub enum AppError {
     Provider(#[from] abcc_engine::provider::ProviderError),
     #[error("{0}")]
     Confirm(#[from] confirm::ConfirmError),
+    /// ⚠ Its own arm rather than folded into `Io`, because *the weights pin
+    /// cannot be read* and *a file could not be opened* want different things
+    /// done about them, and this one has to be distinguishable from the alarm it
+    /// is not (ADR-0014 §6).
+    #[error("{0}")]
+    Weights(#[from] weights::WeightsError),
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
@@ -151,6 +158,11 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
             *crossed_boundary,
             out,
         ),
+        Command::Weights {
+            model,
+            verify,
+            repin,
+        } => ops::weights(invocation, model.as_deref(), *verify, *repin, out),
         Command::Accept { task, note } => {
             ops::finish(invocation, *task, note.as_deref(), ops::Finish::Accept, out)
         }

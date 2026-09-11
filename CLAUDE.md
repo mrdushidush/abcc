@@ -32,9 +32,9 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test assets --test battlefield --test breaker --test cli --test confirm --test control --test corpus_review --test desk --test durability --test endings --test feed --test films --test frame_cost --test fun --test heads --test home --test http --test journal --test judge --test keys --test lifecycle --test lines --test patch --test policy --test properties --test pulse --test reading --test redact --test roster --test screen --test sixel --test theme --test turn_loop --test view --test workspace`
-covers everything that does not start a process: **35 names of the 48**, 400
-tests, re-derived 2026-09-11 when Posture added `redact`.
+`cargo test --workspace --test assets --test battlefield --test breaker --test cli --test confirm --test control --test corpus_review --test desk --test durability --test endings --test feed --test films --test frame_cost --test fun --test heads --test home --test http --test journal --test judge --test keys --test lifecycle --test lines --test patch --test policy --test properties --test pulse --test reading --test redact --test roster --test screen --test sixel --test theme --test turn_loop --test view --test weights --test workspace`
+covers everything that does not start a process: **36 names of the 49**, 412
+tests, re-derived 2026-09-11 when Posture added `redact` and `weights`.
 
 🚨 **That list is derived, not remembered — check it against `crates/*/tests/`
 whenever a test file is added.** It has now drifted twice. The first time it
@@ -48,13 +48,13 @@ measurement.
 
 The process bucket is exactly `attempt`, `child`, `corpus`, `cycle_cost`,
 `durability_rate`, `exec`, `isolation`, `ladder`, `live`, `operator`, `paint`,
-`replay` and `sortie` — thirteen of the forty-eight named targets, so the
-subset is the other thirty-five. ⚠ **`replay` is in the bucket for a reason
+`replay` and `sortie` — thirteen of the forty-nine named targets, so the
+subset is the other thirty-six. ⚠ **`replay` is in the bucket for a reason
 that is not about processes**: two crates have a target of that name
 (`abcc-core` and `abcc`, and the same is true of `fun`), and `--test replay`
 runs both, so the pair is as cheap as its more expensive half.
 
-The full suite is **563 tests** (19 ignored), and almost all of the time is in
+The full suite is **575 tests** (19 ignored), and almost all of the time is in
 seven targets:
 `ladder` 3.5 s, `attempt` 2.7 s, `sortie` 2.5 s, `exec` 2.5 s, `child` 2.3 s,
 `operator` 2.0 s and `isolation` 1.3 s — real children, real git, and in
@@ -268,6 +268,18 @@ do not reformat around it.
   on every event would land in every snapshot and no two snapshots of unchanged
   work would be equal; and git will not nest a worktree inside the tree it came
   from. Do not add a `.abcc/` directory to a working tree.
+- 🚨 **The weights are the one ungated input, and the run says which bytes
+  answered it** (ADR-0014 §6, F688). Measured 2026-09-11: **neither `/v1/models`
+  nor `/api/v0/models` carries a digest, a length or a path**, so the digest is
+  of the file, and a full SHA-256 of the champion's 12.67 GiB is **54 s**. That
+  is why `WeightsOutcome` has two passing arms and they are not interchangeable
+  — `Verified` read the bytes, `Unchanged` read the directory entry — which is
+  F495's *loaded versus listed* one asset over. ⚠ **A mismatch does not re-pin.**
+  Overwriting the pin there would make the alarm fire exactly once and then
+  describe the substitute as the reference; `abcc weights --repin` is the
+  operator's deliberate act. It reports and does not refuse: ADR-0014 asks for a
+  run-visible event, and `confirm`'s veto has evidence behind it that this does
+  not.
 - 🚨 **Nothing runs against an unconfirmed model, and there is no `--force`.**
   `abcc::confirm` asks the server what it is holding and matches it against what
   was asked for, or against an operator-configured substring

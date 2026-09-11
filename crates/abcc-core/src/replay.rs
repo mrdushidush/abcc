@@ -817,6 +817,9 @@ const fn attempt_of(event: &Event) -> Option<AttemptId> {
         | Event::ControlRequested { .. }
         | Event::ControlApplied { .. }
         | Event::ReviewRecorded { .. }
+        // The weights are checked before the first attempt is opened — it is a
+        // fact about the run, not about an attempt.
+        | Event::WeightsChecked { .. }
         | Event::Note { .. } => None,
     }
 }

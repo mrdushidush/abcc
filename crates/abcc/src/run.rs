@@ -20,7 +20,7 @@ use std::io::Write;
 use std::thread;
 
 use abcc_core::attempt::Cause;
-use abcc_core::event::Event;
+use abcc_core::event::{Event, WeightsOutcome};
 use abcc_core::outcome::Outcome;
 use abcc_core::run::Mode;
 use abcc_core::seq::{Seq, TaskId, UnitId};
@@ -35,7 +35,7 @@ use abcc_store::{Reconciled, Store};
 use abcc_tui::Theme;
 
 use crate::desk::{Desk, VERBS};
-use crate::{AppError, Invocation, cli, confirm, ops, pulse};
+use crate::{AppError, Invocation, cli, confirm, home, ops, pulse, weights};
 
 /// Run one attempt and report where it landed.
 ///
@@ -216,6 +216,17 @@ pub(crate) fn confirm_model(
     })?;
     writeln!(out, "{beat_note}")?;
 
+    // 🚨 ADR-0014 §6: the weights are the one ungated input, so the run says on
+    // its own log which bytes answered it. `Effort::Cheap` because a full digest
+    // is 51.9 s on the champion — see `weights` for the measurement and for why
+    // the outcome names which of the two checks actually ran.
+    //
+    // ⚠ It reports and does not refuse. The ADR asks for *a run-visible event*,
+    // and a mismatch is as often an operator's own re-download as it is an
+    // attack; inventing a refusal the ADR did not ask for would put this check
+    // in the class of `confirm`, which has evidence behind its veto.
+    weights_note(store, &asked, weights::Effort::Cheap, out)?;
+
     // ⚠ The model verdict is checked first and keeps its own advice. Both are
     // fatal; that one is more specific, and an operator sent to reload a wedged
     // server when the real fault is an unconfirmed model reloads the wrong
@@ -227,6 +238,92 @@ pub(crate) fn confirm_model(
         return Err(AppError::Refused(pulse::refusal_advice(&beat)));
     }
     Ok(asked)
+}
+
+/// Check the weights against their pin, write the event, and say so.
+///
+/// 🚨 **One seam for both entry points.** `abcc fleet` calls `confirm_model`
+/// too, so the check lands on a sortie's log by construction rather than by
+/// somebody remembering to add it to a second place (F330's rule).
+///
+/// ⚠ A failure to read or write the pin file is reported and does not stop the
+/// run. *The weights changed* and *the pin file is unreadable* are different
+/// facts and only the first is an alarm; failing the run on the second would
+/// make a chore look like an attack.
+pub(crate) fn weights_note(
+    store: &mut Store,
+    asked: &str,
+    effort: weights::Effort,
+    out: &mut impl Write,
+) -> Result<(), AppError> {
+    let path = weights::pin_path(&home::shared_root());
+    let mut pins = match weights::Pins::load(&path) {
+        Ok(pins) => pins,
+        Err(e) => {
+            let text = format!("weights unchecked: {e}");
+            store.append(Event::Note { text: text.clone() })?;
+            writeln!(out, "{text}")?;
+            return Ok(());
+        }
+    };
+
+    // ⚠ Same reason as the verb's: the first run against a model pays the full
+    // read, in the middle of a preflight, and an unexplained minute of silence
+    // there is indistinguishable from the hang ADR-0006 exists to detect.
+    if weights::reads_the_file(&pins, asked, effort) {
+        writeln!(
+            out,
+            "weights: no pin for this model yet, reading it once to record one \
+             (54 s for the 12.67 GiB champion)"
+        )?;
+        out.flush()?;
+    }
+    let checked = weights::check(&mut pins, asked, effort, weights::now_ms());
+    if checked.pin.is_some()
+        && let Err(e) = pins.save(&path)
+    {
+        let text = format!("the weights pin could not be written: {e}");
+        store.append(Event::Note { text: text.clone() })?;
+        writeln!(out, "{text}")?;
+    }
+
+    store.append(Event::WeightsChecked {
+        model: asked.to_owned(),
+        digest: checked.digest.clone(),
+        outcome: checked.outcome.clone(),
+    })?;
+    writeln!(out, "weights {}", describe(&checked))?;
+    if checked.alarming() {
+        writeln!(
+            out,
+            "\u{26a0} the bytes behind {asked} are not the bytes that were pinned. If you \
+             re-downloaded it, run `abcc weights --repin`; if you did not, stop and find out why."
+        )?;
+    }
+    Ok(())
+}
+
+/// The operator's sentence for one check. The feed's is `abcc_tui::line`; this
+/// one is for the terminal the command was typed into.
+pub(crate) fn describe(checked: &weights::Checked) -> String {
+    let short = checked
+        .digest
+        .as_deref()
+        .map_or_else(|| "--".to_owned(), |d| d[..d.len().min(12)].to_owned());
+    match &checked.outcome {
+        WeightsOutcome::Pinned => format!(
+            "pinned at {short} — first sight, so this records the bytes rather than vouching \
+             for them"
+        ),
+        WeightsOutcome::Verified => format!("verified: the file hashes to {short}"),
+        WeightsOutcome::Unchanged => {
+            format!("unchanged at {short} — length and timestamp match, the file was not re-read")
+        }
+        WeightsOutcome::Changed { was } => {
+            format!("CHANGED: pinned {}, now {short}", &was[..was.len().min(12)])
+        }
+        WeightsOutcome::Unlocated { why } => format!("unchecked: {why}"),
+    }
 }
 
 pub(crate) fn limits_for(run: &cli::Run) -> Limits {
