@@ -122,7 +122,12 @@ do not reformat around it.
 - 🚨 **Only a measurement says `Accomplished`, and the measurement is
   `Headline::Green`.** The Gate milestone made that word reachable and did not
   make it cheap: `Green` requires **every declared rung to have produced a
-  measurement** and none of them to be red. What still cannot reach it is
+  measurement** and none of them to be red. ⚠ It does **not** require the model
+  to have said it was finished — an ending it never chose is measured (F655) and,
+  since the operator's ruling of 2026-09-10, promoted. There is no driver-side
+  check that the tree *changed*, and adding one would be a defect: `Rung::Structural`
+  refuses an unchanged tree, runs first, and a refusal breaks the walk, so
+  **green already implies updated**. What still cannot reach it is
   anything a model wrote — its verdict is a `Claim`, and there is no function in
   the workspace that turns one into an `Outcome`. Do not add one.
 - 🚨 **The conjunction is `Report::headline`, not code in `abcc-gate`.** ADR-0008's

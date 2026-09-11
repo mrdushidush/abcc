@@ -24,7 +24,13 @@
 //!    into an `Outcome`. ⚠ When no rung could measure — no toolchain profile in
 //!    the tree — the ending is still
 //!    [`AttemptOutcome::Uncertain`]`{ why: `[`Why::NoCheckerForArtifact`]` }` and
-//!    the operator is still owed the question.
+//!    the operator is still owed the question. 🚨 **And a measurement says it
+//!    whether or not the model got as far as claiming to be finished** (the
+//!    operator's ruling, 2026-09-10): `Green` under a `PhaseEnded::Unmeasured`
+//!    lands `Accomplished` too, because the ladder reads the tree and the
+//!    ending reads the conversation. The second limb of that ruling — *and
+//!    updated* — needs no code: `Rung::Structural` refuses an unchanged tree
+//!    and runs first, so `Green` already means the tree moved.
 //! 2. **A failure before `AttemptStarted` leaves the task `Deployed`, and that is
 //!    the design rather than a leak.** `Deployed`'s contract *is* "a slot is held
 //!    and no attempt has started"; it is reaped on the spin-up bound and
@@ -527,12 +533,14 @@ impl<'a> Driver<'a> {
             // explicit that a second copy of that rule is a second thing that
             // can drift from the first.
             //
-            // 🚨 **This measures; it does not promote.** [`ending`] reads the
-            // gate **only** under `Answered`, so a `BudgetExhausted` attempt
-            // ends `Uncertain` with its rungs on the log exactly as it ended
-            // `Uncertain` without them. Whether a gate-green tree the model
+            // 🚨 **And since 2026-09-11 it promotes as well as measures.** F655
+            // left that open on purpose — whether a gate-green tree the model
             // never declared finished may be `Accomplished` is a question about
-            // who is allowed to stop, and it is not this arm's to answer.
+            // who is allowed to stop, and it was not this arm's to answer. The
+            // operator answered it: [`ending`] now reads `Headline::Green` under
+            // `Unmeasured` too, so a `BudgetExhausted` attempt over a tree every
+            // declared rung passed lands `Accomplished` rather than `Uncertain`
+            // with its rungs sitting unread on the log.
             (Some(closing), PhaseEnded::Answered { .. } | PhaseEnded::Unmeasured { .. }) => {
                 Some(self.gate(attempt, &opened, closing)?)
             }
@@ -964,6 +972,21 @@ fn keep_for(last: &PhaseEnded) -> Keep {
     }
 }
 
+/// The one landing a measurement is entitled to produce.
+///
+/// 🚨 It is a function and not two literals because there are now **two** ways
+/// to reach it — the model said it was finished, or it never got to say so and
+/// the ladder came back green anyway — and rule 1 is that *only a measurement
+/// says `Accomplished`*. Two copies of the landing would be two places for that
+/// rule to be edited into disagreement.
+fn accomplished() -> Ending {
+    Ending {
+        outcome: AttemptOutcome::Success,
+        next: Some(NextAction::Stop),
+        landing: Landing::Accomplished,
+    }
+}
+
 fn ending(
     last: &PhaseEnded,
     attempt: AttemptId,
@@ -984,11 +1007,7 @@ fn ending(
                 // 🚨 The one path to success in the whole system, and it is a
                 // conjunction of measurements: `Green` means every declared rung
                 // ran and none of them refused.
-                Some(Headline::Green { .. }) => Ending {
-                    outcome: AttemptOutcome::Success,
-                    next: Some(NextAction::Stop),
-                    landing: Landing::Accomplished,
-                },
+                Some(Headline::Green { .. }) => accomplished(),
                 // 🚨 A deterministic rung refused. The task goes to the operator
                 // rather than to `Failed`, and the recommendation is another
                 // attempt — the two do not disagree, because the rule this
@@ -1046,6 +1065,33 @@ fn ending(
                     }
                 }
             }
+        }
+        // 🚨 **The model did not choose this ending, and a green ladder ends
+        // it anyway.** David's ruling, 2026-09-10: *the model is allowed to
+        // accomplish only if the gate tree is green — and updated.* F655 made the
+        // gate get *asked* for an ending the model never chose and deliberately
+        // did not make this function read it; the question it left open —
+        // whether a gate-green tree the model never declared finished may be
+        // called done — is a question about who is allowed to stop, and the
+        // operator has answered it. The measurement is.
+        //
+        // ⚠ **There is nothing here for *and updated*, and writing it would be a
+        // defect.** [`abcc_gate::Rung::Structural`] returns `exit: 1` on a tree
+        // that changed no tracked file, it runs first, and a refusal breaks the
+        // walk — so `Green`, which is every declared rung measured and none of
+        // them red, already means the tree carries a change. A driver that
+        // re-derived *did anything change* for itself would be a second copy of
+        // that rule, and two copies are what drift.
+        //
+        // ⚠ It reads the headline and not `why`, because `why` says why the
+        // *conversation* stopped and the ladder is about the *tree*.
+        // [`Why::Denied`] cannot reach here at all — a refused tool call is a
+        // `ToolCallEnded` and the loop carries on — and a [`Why::EngineError`]
+        // over a tree every declared rung passed is still on the log as itself.
+        PhaseEnded::Unmeasured { .. }
+            if matches!(gate.map(|g| &g.headline), Some(Headline::Green { .. })) =>
+        {
+            accomplished()
         }
         PhaseEnded::Unmeasured { why, .. } => {
             let next = next_after(why, attempt);

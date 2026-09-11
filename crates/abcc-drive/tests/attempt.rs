@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as OsCommand;
 
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
-use abcc_core::event::{Control, Event};
+use abcc_core::event::{Control, Event, Finish};
 use abcc_core::outcome::{Headline, Outcome, Reading, Why};
 use abcc_core::seq::{MissionId, Seq, TaskId, UnitId};
 use abcc_core::task::{AbortReason, TaskState};
@@ -218,6 +218,22 @@ fn rungs(store: &Store) -> Vec<Outcome> {
         .into_iter()
         .filter_map(|l| match l.event {
             Event::RungRecorded { outcome, .. } => Some(outcome),
+            _ => None,
+        })
+        .collect()
+}
+
+/// How each model call in the attempt ended, in order. The witness for *the
+/// phase really was cut off* now that the attempt's own outcome no longer says
+/// so — [`Event::PhaseEnded`] deliberately carries the accounting and not the
+/// `Why`, and `Landed::change` carries the phase's report and not its ending.
+fn finishes(store: &Store) -> Vec<Finish> {
+    store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::ModelCallEnded { finish, .. } => Some(finish),
             _ => None,
         })
         .collect()
@@ -579,16 +595,16 @@ fn an_ending_the_model_did_not_choose_is_measured_when_the_tree_changed() {
         Some(PASSING),
     );
 
-    // The fixture guard, read off the outcome because `Landed::change` carries
-    // the phase's *report* and not its ending: this test is only about anything
-    // if the change phase really did end in an absence.
+    // The fixture guard. ⚠ It used to be read off `landed.outcome`, and
+    // cannot be any more: David's ruling promotes exactly this ending to
+    // `Success`, so the outcome no longer witnesses the absence it is a guard
+    // against. The last model call's `Finish` is the same fact one level down,
+    // where the promotion cannot reach it.
     assert_eq!(
-        landed.outcome,
-        AttemptOutcome::Uncertain {
-            why: Why::TruncatedAtCap {
-                budget: Head::Builders.budget()
-            }
-        },
+        finishes(&store).last(),
+        Some(&Finish::Length {
+            content_empty: true
+        }),
         "the fixture stopped being the shape this test is about"
     );
     let gate = landed.gate.as_ref().expect("the gate was not asked");
@@ -596,16 +612,27 @@ fn an_ending_the_model_did_not_choose_is_measured_when_the_tree_changed() {
     assert_eq!(rungs(&store).len(), 3, "every rung is on the log");
 }
 
-/// 🚨 **And a green ladder underneath it does not make the attempt
-/// `Accomplished`.**
+/// 🚨 **And a green ladder underneath it DOES make the attempt
+/// `Accomplished`.** The operator's ruling, 2026-09-10: *the model is allowed to
+/// accomplish only if the gate tree is green — and updated.*
 ///
-/// This is the boundary F655 deliberately did not cross. `ending` reads the gate
-/// only under `Answered`, so the measurement lands on the log and changes no
-/// verdict — whether a gate-green tree the model never declared finished may be
-/// called done is a question about who is allowed to stop, and it is nobody's to
-/// answer by widening a `match` arm.
+/// This is the boundary F655 deliberately did not cross, and it was not a
+/// technical one: the measurement landed on the log and changed no verdict,
+/// because *whether a gate-green tree the model never declared finished may be
+/// called done* is a question about who is allowed to stop. The operator was the
+/// one entitled to answer it and did. The measurement is allowed to stop it —
+/// which is rule 1 of this driver read literally, rather than rule 1 plus an
+/// unwritten rider that the model must also have said so.
+///
+/// ⚠ **Both limbs are asserted by the one headline, and the second is not
+/// checked here or anywhere in the driver.** `Green` is every declared rung
+/// measured with none red, `Rung::Structural` runs first and refuses a tree that
+/// changed no tracked file, and a refusal breaks the walk — so *green* already
+/// means *updated*. The test immediately below is the proof standing up:
+/// the same ending over an unwritten tree stops at the free rung and is
+/// **not** promoted.
 #[test]
-fn a_green_ladder_under_an_unchosen_ending_is_still_uncertain() {
+fn a_green_ladder_under_an_unchosen_ending_is_accomplished() {
     let subject = subject();
     let mut store = Store::in_memory().expect("store");
     let task = seed(&mut store);
@@ -624,20 +651,29 @@ fn a_green_ladder_under_an_unchosen_ending_is_still_uncertain() {
         "the fixture must be green for this test to be about anything"
     );
     assert_eq!(
+        finishes(&store).last(),
+        Some(&Finish::Length {
+            content_empty: true
+        }),
+        "the model must NOT have chosen this ending for this test to be about          anything"
+    );
+    assert_eq!(
         landed.outcome,
-        AttemptOutcome::Uncertain {
-            why: Why::TruncatedAtCap {
-                budget: Head::Builders.budget()
-            }
-        },
-        "a measurement promoted an ending the model never chose"
+        AttemptOutcome::Success,
+        "a green ladder did not promote an ending the model never chose"
     );
     assert!(
-        !matches!(landed.state, TaskState::Accomplished { .. }),
+        matches!(landed.state, TaskState::Accomplished { .. }),
         "{:?}",
         landed.state
     );
-    assert_ne!(landed.next, Some(NextAction::Stop));
+    assert_eq!(landed.next, Some(NextAction::Stop));
+    // ⚠ Terminal, and nothing is owed: the operator is prompted for a refusal
+    // and for an absence, and this is neither.
+    assert!(
+        !kinds(&store).contains(&"operator_prompted"),
+        "a task went terminal with a question outstanding"
+    );
 }
 
 /// ⚠ **And it costs the free rung and nothing else when nothing was written.**
