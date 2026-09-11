@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use abcc_core::event::Event;
+use abcc_core::redact::Secrets;
 use abcc_core::seq::{MissionId, Seq, TaskId};
 use abcc_core::task::{AbortReason, Command, TaskState};
 use abcc_engine::openai::{API_KEY_ENV, BASE_URL_ENV, DEFAULT_BASE_URL};
@@ -289,6 +290,27 @@ pub(crate) fn base_url(explicit: Option<&str>) -> String {
 
 pub(crate) fn api_key() -> Option<String> {
     std::env::var(API_KEY_ENV).ok().filter(|k| !k.is_empty())
+}
+
+/// 🚨 **The one recipe for the denylist** (ADR-0014 §5).
+///
+/// A free function with one caller per entry point rather than a `Secrets` built
+/// beside each provider, for `abcc_drive::snapshot`'s reason (F330): two places
+/// that assemble one policy are two places that agree until the day somebody
+/// adds a credential to the first of them.
+///
+/// What goes in is what this process actually holds — today that is the model
+/// API key and nothing else, because [`ENV_ALLOWLIST`] is what a tool child
+/// inherits and it names no credential. ⚠ A key shorter than the redactor's
+/// floor is dropped rather than kept, so `Secrets::literals` can be 0 here and
+/// that is the honest answer, not a failure.
+///
+/// [`ENV_ALLOWLIST`]: abcc_engine::child::ENV_ALLOWLIST
+pub(crate) fn secrets() -> Secrets {
+    match api_key() {
+        Some(key) => Secrets::default().with_literal(key),
+        None => Secrets::default(),
+    }
 }
 
 pub(crate) fn fingerprint_for(explicit: Option<&str>) -> Option<String> {

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use abcc_core::event::{Composition, Control, Event, Finish, Usage};
 use abcc_core::outcome::Why;
+use abcc_core::redact::{MARKER, Secrets};
 use abcc_core::seq::{AttemptId, Seq};
 use abcc_engine::provider::{Delta, Message, ProviderError, Role, TraceSignal};
 use abcc_engine::scripted::{Script, Scripted};
@@ -1139,7 +1140,7 @@ fn a_refused_tool_call_keeps_its_arguments_and_a_successful_one_does_not() {
         })
         .expect("the refused call kept nothing to diagnose");
     assert!(
-        kept.contains("@@ -123,3 +123,4 @@"),
+        kept.as_str().contains("@@ -123,3 +123,4 @@"),
         "the refused diff is not on the log: {kept}"
     );
 
@@ -1488,4 +1489,192 @@ fn a_phase_writes_its_accounting_exactly_once_however_it_ends() {
         let r = ended.report();
         assert_eq!((*turns, *tool_calls), (r.turns, r.tool_calls), "{name}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 🚨 The redaction boundary (ADR-0014 §5)
+// ---------------------------------------------------------------------------
+
+/// A tool that hands back a credential, the way `bash cat .env` would.
+struct Leaks {
+    text: String,
+    refuse: bool,
+}
+
+impl Tools for Leaks {
+    fn run(&self, _spec: &'static ToolSpec, _call: &ToolCall) -> ToolResult {
+        ToolResult {
+            text: self.text.clone(),
+            exit: if self.refuse { None } else { Some(0) },
+            elapsed_ms: 2,
+            unmeasured: self.refuse.then(|| Why::FailedBeforeRunning {
+                detail: "refused".to_owned(),
+            }),
+        }
+    }
+}
+
+/// 🚨 **All three sinks, in one run.** A secret in a tool result reaches the
+/// durable log, the console that projects that log, and the model's own
+/// context. The donor redacted the two disk sinks and neither of the others
+/// (F418), so this asserts the *context* as hard as it asserts the log.
+///
+/// ⚠ It is not a claim that the redactor catches everything — see
+/// `abcc-core/tests/redact.rs`. It is a claim that the boundary is **on the
+/// path**, which is the property the donor's good denylist did not have: it
+/// hung off `validate_read_path`, and `bash` never called it.
+#[test]
+fn a_secret_in_a_tool_result_reaches_neither_the_log_nor_the_model() {
+    const KEY: &str = "lm-studio-0123456789abcdef";
+    let tools = Leaks {
+        // 🚨 Three occurrences, and the **third is the load-bearing one**: the
+        // first two also match a shape, so a mutation that dropped the literal
+        // half of the denylist would still pass a test that had only those. In
+        // prose, only the exact half catches it.
+        text: format!(
+            "ABCC_MODEL_API_KEY={KEY}\nAuthorization: Bearer {KEY}\nthe key is {KEY} by the way"
+        ),
+        refuse: false,
+    };
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "bash", r#"{"command":"cat .env"}"#),
+        Script::says("read it"),
+    ]);
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find the configuration");
+    let mut log: Vec<Event> = Vec::new();
+
+    let _ = TurnLoop::new(&provider, &tools, MODEL)
+        .secrets(Secrets::default().with_literal(KEY))
+        .run(
+            Head::Builders,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+
+    // Sink 1 and 2: the log, and the console that reads it.
+    let on_the_log = format!("{log:?}");
+    assert!(
+        !on_the_log.contains(KEY),
+        "the key is on the durable log: {on_the_log}"
+    );
+
+    // Sink 3: the model's own context, which is the one the donor left open.
+    let in_context: String = body.messages().iter().map(|m| m.content.as_str()).collect();
+    assert!(
+        in_context.contains(MARKER),
+        "the tool result never reached the body at all: {in_context}"
+    );
+    assert!(
+        !in_context.contains(KEY),
+        "the key is in the model's context: {in_context}"
+    );
+
+    // And the operator is told a class was removed, without being told what.
+    let note = log
+        .iter()
+        .find_map(|e| match e {
+            Event::Note { text } => Some(text.clone()),
+            _ => None,
+        })
+        .expect("nothing on the log says a redaction happened");
+    assert!(note.contains("redacted"), "{note}");
+    assert!(!note.contains(KEY), "the note quoted the secret: {note}");
+}
+
+/// 🚨 **The refused-arguments field is the one that puts a whole file on
+/// disk.** F505 keeps a refused call's arguments so five undiagnosable
+/// `apply_patch` refusals cannot happen again; a `write_file` whose content is
+/// a credentials file is refused exactly as readily, and that field is then a
+/// verbatim copy of it. `Scrubbed` is what makes the two rules compose.
+#[test]
+fn the_arguments_of_a_refused_call_are_scrubbed_before_they_are_kept() {
+    const KEY: &str = "sk-live-0123456789abcdefghij";
+    let tools = Leaks {
+        text: "refused".to_owned(),
+        refuse: true,
+    };
+    let arguments = format!(r#"{{"path":".env","content":"OPENAI_API_KEY={KEY}"}}"#);
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "write_file", &arguments),
+        Script::says("done"),
+    ]);
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("write the config");
+    let mut log: Vec<Event> = Vec::new();
+
+    let _ = TurnLoop::new(&provider, &tools, MODEL)
+        .secrets(Secrets::default().with_literal(KEY))
+        .run(
+            Head::Builders,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+
+    let kept = log
+        .iter()
+        .find_map(|e| match e {
+            Event::ToolCallEnded {
+                arguments: Some(a), ..
+            } => Some(a.clone()),
+            _ => None,
+        })
+        .expect("the refused call kept nothing to diagnose");
+
+    // Still diagnosable — F505's whole point — and no longer a copy of the key.
+    assert!(
+        kept.as_str().contains(".env"),
+        "F505 lost: the refused call is undiagnosable: {kept}"
+    );
+    assert!(
+        !kept.as_str().contains(KEY),
+        "the key is on the log: {kept}"
+    );
+}
+
+/// A run with no secret in it is byte-for-byte what it was before the boundary
+/// existed. ⚠ This is the test that fails if a shape is widened carelessly: the
+/// cost of a false positive is the model being shown `[redacted]` where its own
+/// diff used to be, and it would be discovered in the field.
+#[test]
+fn an_ordinary_tool_result_passes_through_the_boundary_untouched() {
+    let tools = Leaks {
+        text: "@@ -123,3 +123,4 @@ fn main() {\n+    println!(\"two\");".to_owned(),
+        refuse: false,
+    };
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "apply_patch", r#"{"diff":"@@"}"#),
+        Script::says("applied"),
+    ]);
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("make the change");
+    let mut log: Vec<Event> = Vec::new();
+
+    let _ = TurnLoop::new(&provider, &tools, MODEL)
+        .secrets(Secrets::default().with_literal("lm-studio-0123456789abcdef"))
+        .run(
+            Head::Builders,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+
+    let in_context: String = body.messages().iter().map(|m| m.content.as_str()).collect();
+    assert!(
+        in_context.contains("+    println!(\"two\");"),
+        "the boundary ate an ordinary diff: {in_context}"
+    );
+    assert!(
+        !log.iter().any(|e| matches!(e, Event::Note { .. })),
+        "a redaction was reported where nothing was removed: {:?}",
+        kinds(&log)
+    );
 }

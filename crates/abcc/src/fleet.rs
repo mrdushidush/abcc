@@ -108,6 +108,7 @@ pub fn sortie(
         ground.home.worktrees(),
     )
     .limits(run::limits_for(args))
+    .secrets(ops::secrets())
     .in_flight(in_flight)
     .stand_down(stand_down);
     if let Some(ceiling) = args.ceiling {

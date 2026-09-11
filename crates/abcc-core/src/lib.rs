@@ -31,6 +31,7 @@ pub mod attempt;
 pub mod event;
 pub mod fun;
 pub mod outcome;
+pub mod redact;
 pub mod replay;
 pub mod run;
 pub mod seq;

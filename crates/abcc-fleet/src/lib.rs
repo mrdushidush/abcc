@@ -92,6 +92,7 @@ pub mod budget;
 
 use abcc_core::attempt::{Cause, NextAction};
 use abcc_core::event::{Control, Event};
+use abcc_core::redact::Secrets;
 use abcc_core::seq::{AttemptId, Seq, TaskId, UnitId};
 use abcc_core::task::TaskState;
 use abcc_drive::{DriveError, Driver, Landed};
@@ -244,6 +245,10 @@ pub struct Fleet<'a> {
     limits: Limits,
     toolchain: Option<Toolchain>,
     ceiling: Tier,
+    /// The denylist, handed to every driver this fleet dispatches (ADR-0014 §5).
+    /// `Secrets::default()` is the shapes and no literals, so a fleet nobody
+    /// configured still scrubs.
+    secrets: Secrets,
     in_flight: InFlight,
     stand_down: StandDown,
 }
@@ -273,6 +278,7 @@ impl<'a> Fleet<'a> {
             // The slot allows whatever a role asks for, so the effective ceiling
             // is the role's own and an operator who sets nothing sees no change.
             ceiling: Tier::Exec,
+            secrets: Secrets::default(),
             // Both default to a surface nobody is holding: a fleet with no
             // console publishes where the slot is to nothing and is never stood
             // down, which is what `abcc fleet` did before either existed.
@@ -307,6 +313,13 @@ impl<'a> Fleet<'a> {
     /// profile does — ADR-0008 calls that operator configuration — and it is one
     /// value rather than one per role because the role already has its own and
     /// two dials on the same quantity is F392's shape.
+    /// Give every driver this fleet dispatches the values this process holds.
+    #[must_use]
+    pub fn secrets(mut self, secrets: Secrets) -> Fleet<'a> {
+        self.secrets = secrets;
+        self
+    }
+
     #[must_use]
     pub fn ceiling(mut self, ceiling: Tier) -> Fleet<'a> {
         self.ceiling = ceiling;
@@ -506,6 +519,7 @@ impl<'a> Fleet<'a> {
             .limits(self.limits)
             .retry_available(retry_available)
             .ceiling(self.ceiling)
+            .secrets(self.secrets.clone())
             .redirect(redirect);
             if let Some(toolchain) = &self.toolchain {
                 driver = driver.toolchain(*toolchain);

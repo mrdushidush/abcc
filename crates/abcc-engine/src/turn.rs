@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use abcc_core::event::{Event, Finish, Usage};
 use abcc_core::outcome::{Claim, Why};
+use abcc_core::redact::Secrets;
 use abcc_core::seq::AttemptId;
 
 use crate::control::{ControlPoint, Disposition, Stop};
@@ -354,6 +355,16 @@ pub struct TurnLoop<'a> {
     /// the ceiling is the role's own and nothing changed for a caller that never
     /// sets one.
     ceiling: Tier,
+    /// 🚨 **The denylist, and its default is ON** (ADR-0014 §5).
+    ///
+    /// `Secrets::default()` carries no literals and every shape, so a caller who
+    /// never sets one still gets the shape half. A redactor whose default was
+    /// *nothing* would be a control that protects the code paths somebody
+    /// remembered, which is the donor defect one layer up: a good denylist hung
+    /// off a function the shell never calls (F416).
+    ///
+    /// ⚠ It is not the control. See [`abcc_core::redact`].
+    secrets: Secrets,
 }
 
 impl<'a> TurnLoop<'a> {
@@ -365,7 +376,18 @@ impl<'a> TurnLoop<'a> {
             model: model.into(),
             limits: Limits::default(),
             ceiling: Tier::Exec,
+            secrets: Secrets::default(),
         }
+    }
+
+    /// Give the loop the literals this process holds — the model API key, today.
+    ///
+    /// The shapes are on either way; this adds the exact half, which is the only
+    /// half with no false-positive story.
+    #[must_use]
+    pub fn secrets(mut self, secrets: Secrets) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     #[must_use]
@@ -595,6 +617,20 @@ impl<'a> TurnLoop<'a> {
                         tier: spec.required_tier().to_string(),
                     });
                     let result = self.tools.run(spec, call);
+                    // 🚨 **The redaction boundary, and it is one place** (ADR-0014
+                    // §5). Everything a tool produces reaches its three sinks
+                    // through these four lines: the log below, the model's
+                    // context under it, and the console that projects the log.
+                    // Scrubbing at each sink instead would be three denylists
+                    // that agree until the day one of them is edited.
+                    let output = self.secrets.scrub(result.text);
+                    let asked = self.secrets.scrub(call.arguments.clone());
+                    // The record says a class was removed and never what it was:
+                    // a note quoting the match would put the secret back on the
+                    // log one field to the left.
+                    for note in [output.note(), asked.note()].into_iter().flatten() {
+                        journal.record(Event::Note { text: note });
+                    }
                     journal.record(Event::ToolCallEnded {
                         attempt,
                         tool: spec.name.to_owned(),
@@ -602,9 +638,9 @@ impl<'a> TurnLoop<'a> {
                         elapsed_ms: result.elapsed_ms,
                         unmeasured: result.unmeasured.clone(),
                         // F505: what was refused, kept only when it was.
-                        arguments: result.unmeasured.is_some().then(|| call.arguments.clone()),
+                        arguments: result.unmeasured.is_some().then_some(asked.text),
                     });
-                    body.append(Message::tool_result(&call.id, result.text));
+                    body.append(Message::tool_result(&call.id, output.text));
                 }
                 Err(denied) => {
                     report.denials += 1;
@@ -628,7 +664,15 @@ impl<'a> TurnLoop<'a> {
                     });
                     // The model is told, in its own transcript. A refusal it
                     // cannot see is a refusal it asks for again.
-                    body.append(Message::tool_result(&call.id, denied.to_string()));
+                    //
+                    // ⚠ Scrubbed like any other result even though the text is
+                    // ours: the type is what makes *every* path to the context
+                    // go through the boundary, and an exemption for the strings
+                    // we wrote is the first of the exemptions.
+                    body.append(Message::tool_result(
+                        &call.id,
+                        self.secrets.scrub(denied.to_string()).text,
+                    ));
                 }
             }
         }

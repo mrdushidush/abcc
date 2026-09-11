@@ -9,6 +9,12 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# 🚨 In the LOWEST crate deliberately. `redact::Scrubbed` guards a sink that
+# is defined here (`Event::ToolCallEnded`), and a type whose only constructor
+# lives in a crate above the sink is a type the sink cannot require
+# (ADR-0014 §5). Already in the lock file for `search`, so it costs a line
+# here and nothing in the build.
+regex = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

@@ -14,6 +14,7 @@
 use abcc_core::attempt::AttemptOutcome;
 use abcc_core::event::{Event, Logged};
 use abcc_core::outcome::{Outcome, Why};
+use abcc_core::redact::Secrets;
 use abcc_core::seq::{AttemptId, Seq, TaskId};
 use abcc_tui::line::CLIP;
 use abcc_tui::{Theme, describe};
@@ -84,7 +85,7 @@ fn a_tools_unmeasured_ending_and_a_rung_are_clipped_too() {
         }),
         // F505 keeps the refused arguments on the log; F501 keeps them off the
         // feed. A whole diff here must not widen the line.
-        arguments: Some(REAL_500.to_owned()),
+        arguments: Some(Secrets::default().scrub(REAL_500).text),
     });
     assert_one_line(&tool);
 

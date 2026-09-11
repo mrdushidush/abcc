@@ -32,8 +32,9 @@ asserted nothing. It is dropped rather than repaired, because clippy over
 `--all-targets` already compiles every test target.
 
 When you want tests inside the middle rung, name them:
-`cargo test --workspace --test assets --test battlefield --test breaker --test cli --test confirm --test control --test corpus_review --test desk --test durability --test endings --test feed --test films --test frame_cost --test fun --test heads --test home --test http --test journal --test judge --test keys --test lifecycle --test lines --test patch --test policy --test properties --test pulse --test reading --test roster --test screen --test sixel --test theme --test turn_loop --test view --test workspace`
-is **2.5 s** for 384 tests and covers everything that does not start a process.
+`cargo test --workspace --test assets --test battlefield --test breaker --test cli --test confirm --test control --test corpus_review --test desk --test durability --test endings --test feed --test films --test frame_cost --test fun --test heads --test home --test http --test journal --test judge --test keys --test lifecycle --test lines --test patch --test policy --test properties --test pulse --test reading --test redact --test roster --test screen --test sixel --test theme --test turn_loop --test view --test workspace`
+covers everything that does not start a process: **35 names of the 48**, 400
+tests, re-derived 2026-09-11 when Posture added `redact`.
 
 🚨 **That list is derived, not remembered — check it against `crates/*/tests/`
 whenever a test file is added.** It has now drifted twice. The first time it
@@ -47,14 +48,14 @@ measurement.
 
 The process bucket is exactly `attempt`, `child`, `corpus`, `cycle_cost`,
 `durability_rate`, `exec`, `isolation`, `ladder`, `live`, `operator`, `paint`,
-`replay` and `sortie` — thirteen of the forty-seven named targets, so the
-subset is the other thirty-four. ⚠ **`replay` is in the bucket for a reason
+`replay` and `sortie` — thirteen of the forty-eight named targets, so the
+subset is the other thirty-five. ⚠ **`replay` is in the bucket for a reason
 that is not about processes**: two crates have a target of that name
 (`abcc-core` and `abcc`, and the same is true of `fun`), and `--test replay`
 runs both, so the pair is as cheap as its more expensive half.
 
-The full suite costs **27.9 s** over **536 tests** (19 ignored), and almost all of
-that is seven targets:
+The full suite is **563 tests** (19 ignored), and almost all of the time is in
+seven targets:
 `ladder` 3.5 s, `attempt` 2.7 s, `sortie` 2.5 s, `exec` 2.5 s, `child` 2.3 s,
 `operator` 2.0 s and `isolation` 1.3 s — real children, real git, and in
 `ladder`'s case both. That time is processes, not compilation, and it is the
@@ -191,6 +192,16 @@ do not reformat around it.
   500s. `content_empty` and the F498 comparison select *which* `Why` — never
   whether there is one. ⚠ `a422` was 8,209 + 8,192 = 16,401 against a 32,768
   window, so do not reach for the context window to explain a 500.
+- 🚨 **Text out of a tool call reaches the log and the model's context only as
+  a `Scrubbed`, and there is one constructor** (ADR-0014 §5). `redact::Secrets`
+  is applied at exactly one seam — `TurnLoop::tool_round` — because a tool's
+  output has three sinks (the durable log, the console that projects it, the
+  model's own context) and scrubbing at each would be three denylists that agree
+  until one is edited. **Do not add a `From<String> for Scrubbed`**: the missing
+  conversion is what makes a new path to either sink a compile error. ⚠ It is a
+  **backstop and not the control** — the control is that a role without
+  `Tier::Exec` cannot run `cat` at all — and a denylist over text is the shape
+  W7 measured at 39 of 50 and rejected. Say that, do not oversell it.
 - **A refused tool call keeps its arguments on the log; a successful one does
   not, and a denied one does not either** (F505). Five `apply_patch` refusals
   were once undiagnosable after the fact. The denial case stays empty because

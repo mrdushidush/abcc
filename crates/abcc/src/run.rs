@@ -102,6 +102,7 @@ pub fn attempt(
     )
     .limits(limits)
     .ceiling(run.ceiling.unwrap_or(Tier::Exec))
+    .secrets(ops::secrets())
     .run(task, unit, Cause::Fresh, &mut control)?;
 
     report(&landed, out)

@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::attempt::{AttemptOutcome, Cause};
 use crate::outcome::{Claim, Outcome};
+use crate::redact::Scrubbed;
 use crate::run::{AttemptPhase, DowngradeReason, MissionPhase, Mode};
 use crate::seq::{AttemptId, CheckpointId, MissionId, PromptId, Seq, TaskId, UnitId};
 use crate::task::{Command, TaskState};
@@ -251,8 +252,14 @@ pub enum Event {
         /// reflected in the tree is a copy of the work, and the log is not a
         /// second copy of the workspace. ⚠ It is **not** rendered on the feed —
         /// see F501; one event is one line, and this one can be a whole diff.
+        ///
+        /// 🚨 **[`Scrubbed`] rather than `String`, and that is the enforcement**
+        /// (ADR-0014 §5). The arguments of a refused `bash` call are an operator's
+        /// shell line and the arguments of a refused `write_file` are a file's
+        /// whole content; this is the field that puts either on disk verbatim, so
+        /// it is the field that may not take text nobody scrubbed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        arguments: Option<String>,
+        arguments: Option<Scrubbed>,
     },
 
     // -- the gate ----------------------------------------------------------

@@ -42,6 +42,7 @@ use std::time::Duration;
 pub use abcc_core::event::TraceSignal;
 use abcc_core::event::{CallShape, Composition, Finish, Usage};
 use abcc_core::outcome::Why;
+use abcc_core::redact::Scrubbed;
 use serde::{Deserialize, Serialize};
 
 use crate::head::Posting;
@@ -166,11 +167,19 @@ impl Message {
         }
     }
 
+    /// A tool's output, on its way into the model's context.
+    ///
+    /// 🚨 **It takes a [`Scrubbed`] and not a `String`** (ADR-0014 §5). The
+    /// model's context is one of the three sinks a secret in a tool result
+    /// reaches, and it is the sink the donor left open — redaction there covered
+    /// both disk sinks and neither the console nor the context (F418). This
+    /// signature is what makes a second path to it a compile error rather than
+    /// an omission.
     #[must_use]
-    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Message {
+    pub fn tool_result(call_id: impl Into<String>, content: Scrubbed) -> Message {
         Message {
             role: Role::Tool,
-            content: content.into(),
+            content: content.into_string(),
             tool_call_id: Some(call_id.into()),
             tool_calls: Vec::new(),
         }

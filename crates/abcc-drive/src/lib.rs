@@ -56,6 +56,7 @@ use std::path::PathBuf;
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
 use abcc_core::event::Event;
 use abcc_core::outcome::{Headline, Why};
+use abcc_core::redact::Secrets;
 use abcc_core::run::AttemptPhase;
 use abcc_core::seq::{AttemptId, CheckpointId, PromptId, TaskId, UnitId};
 use abcc_core::task::{AbortReason, Command, Refused, RequeueReason, TaskState};
@@ -188,6 +189,15 @@ pub struct Driver<'a> {
     /// Default [`Tier::Exec`]: the slot allows whatever the role asks for, so an
     /// unset ceiling changes nothing.
     ceiling: Tier,
+    /// 🚨 **The literals this process holds, on their way to the redactor**
+    /// (ADR-0014 §5).
+    ///
+    /// The driver is the first place that has both the credential and the loop
+    /// that writes the log, so it is where the exact half of the denylist is
+    /// assembled. The shape half needs nothing and is on by default — a redactor
+    /// configured *off* by an omitted builder call is the shape of control that
+    /// protects only the paths somebody remembered.
+    secrets: Secrets,
     /// 🚨 **F646: the prompt a `redirect` named, carried into both briefs.**
     ///
     /// The operator stopped an attempt and said what to do instead. `Cause::Edit`
@@ -226,6 +236,7 @@ impl<'a> Driver<'a> {
             toolchain: None,
             retry_available: false,
             ceiling: Tier::Exec,
+            secrets: Secrets::default(),
             redirect: None,
         }
     }
@@ -251,6 +262,14 @@ impl<'a> Driver<'a> {
     #[must_use]
     pub fn retry_available(mut self, yes: bool) -> Driver<'a> {
         self.retry_available = yes;
+        self
+    }
+
+    /// Give the redactor the values this process holds. See
+    /// [`Driver::secrets`](Driver#structfield.secrets).
+    #[must_use]
+    pub fn secrets(mut self, secrets: Secrets) -> Driver<'a> {
+        self.secrets = secrets;
         self
     }
 
@@ -431,6 +450,7 @@ impl<'a> Driver<'a> {
         let model = self.model.clone();
         let limits = self.limits;
         let ceiling = self.ceiling;
+        let secrets = self.secrets.clone();
 
         let mut journal = StoreJournal::new(self.store);
         // 🚨 `None` for the two phases whose artifact is prose an operator
@@ -443,6 +463,7 @@ impl<'a> Driver<'a> {
         let ended = TurnLoop::new(provider, tools, model)
             .limits(limits)
             .ceiling(ceiling)
+            .secrets(secrets)
             .run(head, attempt, schema, body, control, &mut journal);
         journal.into_result()?;
         Ok(ended)
