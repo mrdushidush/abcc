@@ -41,6 +41,19 @@ pub fn localize(row: &TaskRow, redirect: Option<&str>) -> String {
 /// attempt reached rather than on a clean tree, so work already done is present
 /// and re-doing it is the failure this paragraph exists to prevent.
 ///
+/// 🚨 **That last paragraph was false for the whole of Skeleton, Gate and Fleet
+/// (F702), and the witness that would have caught it is this comment.**
+/// `Driver::open_workspace` snapshotted the operator's checkout and never read
+/// `Cause`, so every redirected attempt opened on a clean tree while this
+/// sentence sat in its context telling it otherwise. **Nothing caught it because
+/// the comment and the prose agreed with each other** — two copies of one claim,
+/// which is one witness and not two. It is true since F701; what makes it true
+/// is `Driver::fork_point`, and if that function stops consulting the cause,
+/// this paragraph is a lie again with nothing here to notice. The test that
+/// holds the two together is
+/// `a_redirected_attempt_opens_on_the_tree_its_brief_promises`, which asserts
+/// the tree and this string in one place, on purpose.
+///
 /// An empty string when there is no redirect, so the brief has one shape.
 fn redirected(prompt: Option<&str>) -> String {
     prompt.map_or_else(String::new, |prompt| {

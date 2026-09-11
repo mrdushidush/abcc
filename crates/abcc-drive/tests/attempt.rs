@@ -1614,3 +1614,331 @@ fn an_ordinary_attempt_carries_no_redirect_heading() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// F701/F702 — where an attempt opens, and the brief that promises it
+// ---------------------------------------------------------------------------
+
+/// The tree each attempt cut its worktree on, in order.
+///
+/// 🚨 **This is the witness F701 was proved with on the live log, and the one
+/// this crate did not have.** Five sorties produced seven attempts whose seven
+/// *distinct* opening checkpoints all named one tree — because every one of them
+/// was a fresh snapshot of the same untouched checkout. Asserting over the
+/// checkpoint ids would have shown seven different values and hidden it; the sha
+/// is the fact.
+fn opened_on(store: &Store) -> Vec<String> {
+    store
+        .read_from(Seq::ORIGIN, 1000)
+        .expect("read")
+        .into_iter()
+        .filter_map(|l| match l.event {
+            Event::WorktreeOpened { sha, .. } => Some(sha),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The **tree** a checkpoint commit points at.
+///
+/// 🚨 **Two snapshots of one unchanged checkout are two different commits.**
+/// `abcc_drive::snapshot` puts the log head in the commit message so the ref name
+/// says where in the replay it was taken, so the commit sha moves even when
+/// nothing in the working tree has. The live-log evidence for F701 was a *tree*
+/// hash for exactly this reason — seven distinct checkpoints naming one tree
+/// `9088b222` — and a test that compared commits would have agreed the seven were
+/// seven different things.
+fn tree_of(root: &Path, sha: &str) -> String {
+    let out = OsCommand::new("git")
+        .current_dir(root)
+        .args(["rev-parse", &format!("{sha}^{{tree}}")])
+        .output()
+        .expect("git rev-parse");
+    assert!(out.status.success(), "{sha} is not a commit");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// `git show <sha>:<path>`, or `None` when that tree has no such file. Asks git
+/// rather than the log, because *the work is in the tree* is a claim about git.
+fn show(root: &Path, sha: &str, path: &str) -> Option<String> {
+    let out = OsCommand::new("git")
+        .current_dir(root)
+        .args(["show", &format!("{sha}:{path}")])
+        .output()
+        .expect("git show");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// An attempt that writes a file and is then cut off mid-phase, so it lands
+/// `Queued` with its work at a checkpoint — which is the state a fleet dispatches
+/// a retry from (F548).
+fn wrote_then_ran_out() -> Vec<Script> {
+    vec![
+        Script::says("src/lib.rs is the place"),
+        Script::calls(
+            "c1",
+            "write_file",
+            r#"{"path":"src/new.rs","content":"pub fn two() -> u32 { 2 }\n"}"#,
+        ),
+        Script::truncated_at_cap(Head::Builders.budget()),
+    ]
+}
+
+/// Run a first attempt that leaves work behind, and hand back where it landed.
+fn left_work_behind(subject: &Subject, store: &mut Store, task: TaskId) -> Landed {
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(wrote_then_ran_out());
+    let repo = Repo::open(&subject.root).expect("open");
+    let landed = Driver::new(store, &repo, &provider, MODEL, &subject.worktrees)
+        .retry_available(true)
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+    assert_eq!(
+        landed.state,
+        TaskState::Queued,
+        "the setup stopped producing a task an attempt can start from"
+    );
+    assert!(
+        landed.kept.is_some(),
+        "the setup stopped keeping the work it is about"
+    );
+    landed
+}
+
+/// The second attempt, whatever its cause.
+fn again(subject: &Subject, store: &mut Store, task: TaskId, cause: Cause) -> Landed {
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("nothing more to find")]);
+    let repo = Repo::open(&subject.root).expect("open");
+    Driver::new(store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(task, UnitId(0), cause, &mut control)
+        .expect("run")
+}
+
+/// 🚨 **F701: a retry opens on the tree the attempt it retries left behind, and
+/// until 2026-09-11 it opened on the operator's checkout instead.**
+///
+/// `Driver::open_workspace` took `self.checkpoint(row, "before")` unconditionally
+/// and never looked at `Cause`, so every retry in this project's history threw
+/// its parent's work away and started from the same untouched tree. Seven places
+/// in three crates said otherwise and all seven agreed with each other, which is
+/// why nothing caught it — there was no witness outside the prose. This is it.
+#[test]
+fn a_retry_opens_on_the_tree_the_attempt_it_retries_left_behind() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let first = left_work_behind(&subject, &mut store, task);
+    let closing = first.kept.clone().expect("kept");
+
+    let second = again(
+        &subject,
+        &mut store,
+        task,
+        Cause::Retry { of: first.attempt },
+    );
+    assert_ne!(second.attempt, first.attempt, "the attempt row was reused");
+
+    let opened = opened_on(&store);
+    assert_eq!(opened.len(), 2, "one worktree per attempt: {opened:?}");
+    assert_eq!(
+        opened[1], closing,
+        "the retry opened on a tree the attempt it retries never produced"
+    );
+    assert_ne!(
+        opened[0], opened[1],
+        "both attempts opened on one tree — this is F701 itself, back again"
+    );
+
+    // ...and *the work is there* is a claim about git, so ask git.
+    assert!(
+        show(&subject.root, &opened[1], "src/new.rs").is_some(),
+        "the retry's tree does not carry what the first attempt wrote"
+    );
+    assert!(
+        show(&subject.root, &opened[0], "src/new.rs").is_none(),
+        "the operator's checkout already had the file, so this proves nothing"
+    );
+}
+
+/// ⚠ **A fresh attempt still opens on the operator's checkout**, which is the
+/// half that must not move: `abcc run` dispatches `Cause::Fresh` for every
+/// attempt it makes, including on a task with a history behind it.
+#[test]
+fn a_fresh_attempt_opens_on_the_operators_checkout_however_much_history_it_has() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let first = left_work_behind(&subject, &mut store, task);
+    let _ = again(&subject, &mut store, task, Cause::Fresh);
+
+    // ⚠ The **trees**, not the commits: see [`tree_of`].
+    let opened = opened_on(&store);
+    assert_eq!(
+        tree_of(&subject.root, &opened[0]),
+        tree_of(&subject.root, &opened[1]),
+        "a fresh attempt inherited something, and `abcc run` only ever says fresh"
+    );
+    assert_ne!(
+        opened[0], opened[1],
+        "two snapshots of one checkout became one commit, so this test proves nothing"
+    );
+    assert!(
+        show(&subject.root, &opened[1], "src/new.rs").is_none(),
+        "a fresh attempt opened on work it did not do"
+    );
+    assert!(first.kept.is_some());
+}
+
+/// 🚨 **F702: the sentence in the brief and the tree it is about, asserted in one
+/// place.**
+///
+/// `brief::redirected` ends *the tree you are looking at is the one that attempt
+/// left behind, at its checkpoint*. That was **false against
+/// `Driver::open_workspace`** for the whole of Skeleton, Gate and Fleet, and it
+/// was in the model's context on every redirect. The function's own doc comment
+/// made the same claim, which is exactly why nothing caught it: **a comment and a
+/// prompt that agree with each other are one witness, not two.**
+///
+/// So this test deliberately asserts *both halves together* — the words the model
+/// is shown, and the tree it was actually given. Either one alone is the
+/// arrangement that failed.
+#[test]
+fn a_redirected_attempt_opens_on_the_tree_its_brief_promises() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let first = left_work_behind(&subject, &mut store, task);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("nothing more to find")]);
+    let repo = Repo::open(&subject.root).expect("open");
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .redirect(Some("look in src/other.rs instead".to_owned()))
+        .run(
+            task,
+            UnitId(0),
+            Cause::Edit { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    // Half one: what the model was told.
+    let brief = provider
+        .seen()
+        .into_iter()
+        .find(|call| call.head_key == "recon")
+        .and_then(|call| call.messages.first().map(|m| m.content.clone()))
+        .expect("Recon was never asked anything");
+    assert!(
+        brief.contains("the one that attempt left behind"),
+        "the promise this test exists to hold the code to is gone: {brief}"
+    );
+
+    // Half two: the tree it was given.
+    let opened = opened_on(&store);
+    assert_eq!(
+        opened[1],
+        first.kept.expect("kept"),
+        "the brief promises the stopped attempt's tree and the driver handed over another"
+    );
+    assert!(
+        show(&subject.root, &opened[1], "src/new.rs").is_some(),
+        "the brief says the work it already did is there, and it is not"
+    );
+}
+
+/// ⚠ **A replay opens where the attempt it replays *started*, not where it
+/// stopped.** It is the one parented cause that does not continue work —
+/// `Cause::Replay` is the console's after-action re-run and produces none — and a
+/// replay from the finished tree replays nothing.
+#[test]
+fn a_replay_opens_where_the_attempt_it_replays_opened_and_not_where_it_stopped() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let first = left_work_behind(&subject, &mut store, task);
+    let _ = again(
+        &subject,
+        &mut store,
+        task,
+        Cause::Replay { of: first.attempt },
+    );
+
+    let opened = opened_on(&store);
+    assert_eq!(
+        opened[0], opened[1],
+        "a replay started from the tree the attempt finished on, which replays nothing"
+    );
+    assert!(
+        show(&subject.root, &opened[1], "src/new.rs").is_none(),
+        "a replay opened on work the attempt it replays had not done yet"
+    );
+}
+
+/// 🚨 **A retry that inherits a tree and adds nothing to it is refused, and this
+/// is the reason the opening checkpoint is the parent's own rather than a fresh
+/// snapshot of it.**
+///
+/// Inheritance moves what the gate's diff is *about*: it is now what this attempt
+/// changed, not what the chain changed. That is not a side effect to be tolerated
+/// — it is the control. Take it away and a retry could open on a green tree its
+/// parent produced, do nothing whatsoever, and reach `Green` through
+/// [`abcc_gate::Rung::Structural`] — whose entire job is refusing an unchanged
+/// tree — because the tree differs from the operator's checkout. Since the
+/// operator's ruling of 2026-09-10 a `Green` ladder is promoted to
+/// `Accomplished`, so that is a terminal state reached by an attempt that did no
+/// work.
+///
+/// ⚠ The first attempt here is the one that changed something, and it is still
+/// `Queued` when the retry starts — so nothing about *this* refusal is a claim
+/// that the work is bad.
+#[test]
+fn a_retry_that_adds_nothing_to_the_tree_it_inherited_is_refused_by_the_free_rung() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let first = left_work_behind(&subject, &mut store, task);
+
+    // Answers, calls no tool, writes nothing — over a tree that already carries
+    // `src/new.rs` because its parent put it there.
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![
+        Script::says("src/new.rs is the place"),
+        Script::says("it is already done"),
+    ]);
+    let repo = Repo::open(&subject.root).expect("open");
+    let second = Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .toolchain(PASSING)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Retry { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    assert!(
+        show(&subject.root, &opened_on(&store)[1], "src/new.rs").is_some(),
+        "the retry did not inherit, so this asserts nothing about inheriting"
+    );
+    assert!(
+        matches!(
+            second.gate.as_ref().map(|g| &g.headline),
+            Some(Headline::Red { .. })
+        ),
+        "an attempt that added nothing to the tree it was handed was not refused: {:?}",
+        second.gate.map(|g| g.headline)
+    );
+    assert!(
+        !matches!(second.state, TaskState::Accomplished { .. }),
+        "a retry reached a terminal success having done no work"
+    );
+}

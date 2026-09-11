@@ -60,7 +60,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
-use abcc_core::event::Event;
+use abcc_core::event::{Event, Logged};
 use abcc_core::outcome::{Headline, Why};
 use abcc_core::redact::Secrets;
 use abcc_core::run::AttemptPhase;
@@ -105,6 +105,22 @@ pub enum DriveError {
     Refused {
         command: &'static str,
         refusal: Refused,
+    },
+    /// 🚨 **An attempt forks from a checkpoint the log cannot produce** — the
+    /// `CheckpointTaken` at that position is missing, or its sha will not parse.
+    ///
+    /// ⚠ **This is deliberately an error and not a fallback to the operator's
+    /// checkout**, because a silent fallback is F701 exactly: the attempt would
+    /// open on a clean tree while `brief::redirected` told the model its
+    /// parent's work was already there. A parent that legitimately kept nothing
+    /// is not this — it produces no checkpoint id at all, and
+    /// `Driver::fork_point` answers `None`.
+    #[error("{attempt} forked from {at}, which {task}'s log cannot produce: {why}")]
+    Lineage {
+        task: TaskId,
+        attempt: AttemptId,
+        at: CheckpointId,
+        why: &'static str,
     },
 }
 
@@ -325,7 +341,7 @@ impl<'a> Driver<'a> {
         };
         self.command(task, onto_slot)?;
 
-        let opened = self.open_workspace(&row, control.watch())?;
+        let opened = self.open_workspace(&row, &cause, control.watch())?;
 
         let started = self.store.append(Event::AttemptStarted {
             task,
@@ -394,10 +410,89 @@ impl<'a> Driver<'a> {
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
-    /// Take the opening snapshot, cut a worktree at it, and open the tool layer
-    /// over that worktree.
-    fn open_workspace(&mut self, row: &TaskRow, watch: Watch) -> Result<Opened> {
-        let taken = self.checkpoint(row, "before")?;
+    /// The checkpoint this attempt's [`Cause`] forks from, if it forks from one.
+    ///
+    /// 🚨 **Exhaustive on `Cause`, because the four parented causes do not all
+    /// want the same tree.** A retry, an edit and a rescope continue work — they
+    /// open where the attempt they name *stopped*. A replay re-runs one, so it
+    /// opens where that attempt *started*; a replay from the finished tree
+    /// replays nothing. `Fresh` forks from no attempt and gets the operator's
+    /// checkout, which is what `abcc run` relies on — it dispatches
+    /// `Cause::Fresh` for every attempt it makes, including on a task with a
+    /// history.
+    ///
+    /// ⚠ **`None` is also the answer when the named attempt left no checkpoint
+    /// to fork from**, and the caller then falls back to the operator's
+    /// checkout. That fallback is not invented here — `abcc take`'s `cut` has had
+    /// exactly it since the operator's verbs shipped — but it is deliberately
+    /// narrow, because *silently opening on the checkout* is F701 itself. A
+    /// checkpoint the log records and cannot produce is
+    /// [`DriveError::Lineage`] rather than a quiet fresh start.
+    ///
+    /// ⚠ The obvious way to have no checkpoint — [`Keep::Nothing`], the
+    /// operator's `kill` — cannot actually reach here, because that landing is
+    /// `Aborted` and a terminal task admits no command at all. What reaches it is
+    /// a `Cause` naming an attempt this task's history does not have.
+    fn fork_point(&self, task: TaskId, cause: &Cause) -> Result<Option<Kept>> {
+        let Some(parent) = cause.parent() else {
+            return Ok(None);
+        };
+        let history = self.store.task_history(task)?;
+        let wanted = match cause {
+            // Unreachable — `parent()` just answered `Some` — and stated rather
+            // than asserted.
+            Cause::Fresh => return Ok(None),
+            Cause::Retry { .. } | Cause::Edit { .. } | Cause::Rescope { .. } => {
+                closing_checkpoint(&history, parent)
+            }
+            Cause::Replay { .. } => opening_checkpoint(&history, parent),
+        };
+        let Some(at) = wanted else {
+            return Ok(None);
+        };
+        resolve(&history, at)
+            .ok_or(DriveError::Lineage {
+                task,
+                attempt: parent,
+                at,
+                why: "no checkpoint was recorded there, or its sha will not parse",
+            })
+            .map(Some)
+    }
+
+    /// Open the attempt's tree — **at the checkpoint its cause forked from**,
+    /// or at a fresh snapshot of the operator's checkout when it forked from
+    /// nothing — and open the tool layer over it.
+    ///
+    /// 🚨 **F701: this used to snapshot the operator's checkout unconditionally,
+    /// and `Cause` was never consulted.** Seven attempts across the five-sortie
+    /// arm took seven distinct opening checkpoints that all named **one tree**
+    /// (`9088b222`), a retry of an attempt that left three changed files among
+    /// them: every retry threw its parent's work away and started again. Seven
+    /// places in three crates said otherwise — `brief::redirected` and its doc
+    /// comment, [`abcc_core::event::Control::Redirect`],
+    /// [`abcc_core::task::Command::Resume`], [`abcc_core::seq::AttemptId`], the
+    /// fleet's `Held::Asked` arm, and `CLAUDE.md`'s *retry, edit, re-route and
+    /// replay are all one operation — fork from a checkpoint with a `Cause`*.
+    /// **All seven agreed with each other and none of them agreed with this
+    /// function** (F702), which is why nothing caught it: there was no witness
+    /// outside the prose. The operator's ruling of 2026-09-11 is that the prose
+    /// was right and the code was wrong.
+    ///
+    /// ⚠ **The opening checkpoint is the parent's own, reused rather than
+    /// re-taken.** `checkpoint_from` on [`Event::AttemptStarted`] then names a
+    /// real ancestor instead of a fresh snapshot that happens to hold the same
+    /// tree, so lineage is a fact on the log rather than a coincidence — and the
+    /// gate's diff becomes *what this attempt changed* rather than *what the
+    /// chain changed*. That second consequence is load-bearing: without it a
+    /// retry that inherited a green tree and did nothing at all would pass
+    /// [`abcc_gate::Rung::Structural`] — whose whole job is refusing an
+    /// unchanged tree — and land `Accomplished` having done no work.
+    fn open_workspace(&mut self, row: &TaskRow, cause: &Cause, watch: Watch) -> Result<Opened> {
+        let taken = match self.fork_point(row.id, cause)? {
+            Some(inherited) => inherited,
+            None => self.checkpoint(row, "before")?,
+        };
 
         fs::create_dir_all(&self.worktrees).map_err(|source| DriveError::Io {
             what: "creating the worktree directory",
@@ -918,6 +1013,55 @@ struct Opened {
     /// this system does, and it would be the one place an operator's verb goes
     /// unanswered.
     watch: Watch,
+}
+
+/// The last checkpoint taken **inside** `parent`'s span — the tree that attempt
+/// left behind.
+///
+/// 🚨 The span is bounded rather than the history scanned to its end, because
+/// `CheckpointTaken` carries a `task` and **no `attempt`** (see
+/// [`Event::attempt`]): the only thing that says which attempt a checkpoint
+/// belongs to is where it sits between that attempt's `AttemptStarted` and its
+/// `AttemptEnded`. An unbounded *last checkpoint on this task* would answer with
+/// the operator's, if `abcc take` had been anywhere near the task since.
+///
+/// ⚠ A parent's **opening** checkpoint is outside its own span on purpose: the
+/// driver's order is snapshot → worktree → `AttemptStarted` (rule 2), so the
+/// opening event has the smaller `seq` and this cannot return it by accident.
+fn closing_checkpoint(history: &[Logged], parent: AttemptId) -> Option<CheckpointId> {
+    let mut inside = false;
+    let mut last = None;
+    for logged in history {
+        match &logged.event {
+            Event::AttemptStarted { .. } if logged.seq == parent.born() => inside = true,
+            Event::AttemptEnded { attempt, .. } if *attempt == parent => break,
+            Event::CheckpointTaken { .. } if inside => last = Some(CheckpointId::at(logged.seq)),
+            _ => {}
+        }
+    }
+    last
+}
+
+/// The checkpoint `parent` opened on, read from the `AttemptStarted` that named
+/// it. What a [`Cause::Replay`] re-runs from.
+fn opening_checkpoint(history: &[Logged], parent: AttemptId) -> Option<CheckpointId> {
+    history.iter().find_map(|logged| match &logged.event {
+        Event::AttemptStarted {
+            checkpoint_from, ..
+        } if logged.seq == parent.born() => *checkpoint_from,
+        _ => None,
+    })
+}
+
+/// A [`CheckpointId`] back to the sha it names. The id **is** the position of the
+/// event that recorded it (ADR-0005), so this is a lookup and never a search.
+fn resolve(history: &[Logged], at: CheckpointId) -> Option<Kept> {
+    history.iter().find_map(|logged| match &logged.event {
+        Event::CheckpointTaken { sha, .. } if logged.seq == at.born() => {
+            Sha::parse(sha).ok().map(|sha| Kept { id: at, sha })
+        }
+        _ => None,
+    })
 }
 
 /// Snapshot `repo`, write it to a ref, and record it on the log.

@@ -390,6 +390,11 @@ impl<'a> Fleet<'a> {
                 // which is exactly what the budget is for. ⚠ That makes `pause`
                 // cost something, and it should: the fleet is being asked for a
                 // second run at one question.
+                // 🚨 **`from the checkpoint` was aspirational until F701.**
+                // `Driver::open_workspace` never read the cause, so this arm
+                // dispatched a `Retry` that opened on the operator's checkout
+                // and the resumed task lost whatever the paused attempt had
+                // done. `Driver::fork_point` is what makes the phrase true.
                 Held::Asked => match self.last_attempt(row.id)? {
                     Some(of) => Cause::Retry { of },
                     None => Cause::Fresh,
