@@ -2196,3 +2196,195 @@ fn a_retry_after_a_takeover_continues_the_operators_tree_and_claims_no_refusal()
         );
     }
 }
+
+/// 🚨 **The case the first live arm produced, nine times out of nine, and which
+/// the first shipped version of F700 could not see.**
+///
+/// `refusal_under` originally read `AttemptOutcome::Refused` off `AttemptEnded` —
+/// the easy read, already in `task_history`. It fired **zero times in nine
+/// attempts**. `a9292` and `a9480` each left a tree the veto rung had refused with
+/// *the tree does not build*, E0004, the compiler printing the exact missing arm;
+/// both *ended* `Uncertain/BudgetExhausted`, because what ran out was the model's
+/// rounds. Their retries inherited those broken trees, were told nothing, read a
+/// few files and stopped.
+///
+/// ▶ **`AttemptOutcome` is about the conversation; the ladder is about the tree.**
+/// This crate says so one function over, about `ending`'s use of `why`. Keying a
+/// sentence about a tree to how a conversation ended was the defect.
+#[test]
+fn a_retry_is_told_what_a_rung_refused_even_though_its_parent_ran_out_of_budget() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    // Changes the tree, then runs out of completion budget. The gate is asked
+    // anyway (F655), the suite is red, and the ATTEMPT ends `Uncertain`.
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(wrote_then_ran_out());
+    let repo = Repo::open(&subject.root).expect("open");
+    let first = Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .toolchain(FAILING)
+        .retry_available(true)
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+
+    assert!(
+        matches!(first.outcome, AttemptOutcome::Uncertain { .. }),
+        "the setup stopped producing the case: {:?}",
+        first.outcome
+    );
+    let red = first
+        .gate
+        .as_ref()
+        .expect("the gate was not asked")
+        .report
+        .outcomes()
+        .iter()
+        .find(|o| o.is_red() && o.rung() != "structural")
+        .cloned()
+        .expect("no rung refused the tree, so this asserts nothing");
+    assert_eq!(first.state, TaskState::Queued);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("nothing more to find")]);
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Retry { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    for (head, brief) in briefs(&provider) {
+        assert!(
+            brief.contains(red.rung()),
+            "{head} inherited a tree the {} rung refused and was not told: {brief}",
+            red.rung()
+        );
+    }
+}
+
+/// ⚠ **`Rung::Structural`'s refusal is not repeated to the next attempt**, and
+/// that is the same distinction the test above turns on, pointed the other way.
+///
+/// *The attempt changed no file the repository tracks* is a fact about an
+/// **attempt**; every other rung runs a checker on the **tree**. Telling a retry
+/// that a check refused this tree because its predecessor did nothing would be
+/// true of the predecessor and useless to it — and on the first live arm two of
+/// the four refusals were exactly that.
+#[test]
+fn the_structural_rungs_refusal_is_about_an_attempt_and_is_not_passed_on() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    // Answers, writes nothing: structural refuses and the ladder stops there.
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![
+        Script::says("src/lib.rs is the place"),
+        Script::truncated_at_cap(Head::Builders.budget()),
+    ]);
+    let repo = Repo::open(&subject.root).expect("open");
+    let first = Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .toolchain(PASSING)
+        .retry_available(true)
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+    assert!(
+        first
+            .gate
+            .as_ref()
+            .expect("gate")
+            .report
+            .outcomes()
+            .iter()
+            .any(|o| o.is_red() && o.rung() == "structural"),
+        "the setup stopped producing a structural refusal"
+    );
+    assert_eq!(first.state, TaskState::Queued);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("nothing more to find")]);
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Retry { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    for (head, brief) in briefs(&provider) {
+        assert!(
+            !brief.contains("already refused"),
+            "{head} was told a check refused the tree because its predecessor did \
+             nothing, which is a fact about the predecessor: {brief}"
+        );
+    }
+}
+
+/// 🚨 **A take-over that changed nothing still lets the refusal through — and
+/// without this, F700 has no reachable path at all.**
+///
+/// A refusal lands `AwaitingOrders`, which the fleet never admits (F703), so
+/// `abcc take` + `abcc release` is the **only** route a refused task has back onto
+/// the board. `hand_back` always writes a checkpoint. So the first version of
+/// this rule — *`continues` survives only if the latest checkpoint IS the one that
+/// attempt closed on* — went `None` on exactly the path that reaches it, because
+/// an operator who read the tree and changed nothing still moved the id.
+///
+/// ▶ **An identity is not content**, for the third time on this feature (F704).
+/// The question is about the tree, so `fork_point` asks git.
+#[test]
+fn a_takeover_that_changed_nothing_still_lets_the_refusal_reach_the_next_attempt() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (first, rung, _) = refused_then_back_on_the_board(&subject, &mut store, task);
+
+    // Exactly what `abcc take` + `abcc release` do when the operator looks and
+    // changes nothing: cut a worktree at the task's last checkpoint (`cut`), then
+    // snapshot THAT worktree as `operator` (`hand_back`). ⚠ Snapshotting
+    // `subject.root` instead would be a different tree entirely — the work lives
+    // in the checkpoint and never in the operator's checkout — and would make
+    // this test pass or fail for the wrong reason.
+    let row = store.task(task).expect("read").expect("row");
+    let repo = Repo::open(&subject.root).expect("open");
+    let at = Sha::parse(&first.kept.clone().expect("kept")).expect("sha");
+    let taken = repo
+        .open_worktree(&subject.worktrees.join("take"), &at)
+        .expect("take");
+    let inner = Repo::open(taken.path()).expect("open the taken tree");
+    let handed_back = abcc_drive::snapshot(&mut store, &inner, &row, "operator").expect("snapshot");
+    assert!(
+        taken.path().join("src/new.rs").exists(),
+        "the operator was handed a tree without the work in it"
+    );
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("nothing more to find")]);
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Retry { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    let opened = opened_on(&store);
+    assert_eq!(
+        *opened.last().expect("opened"),
+        handed_back.sha.to_string(),
+        "the retry did not open on what the operator handed back"
+    );
+    for (head, brief) in briefs(&provider) {
+        assert!(
+            brief.contains(&rung),
+            "{head} was not told what refused the tree, because a checkpoint moved \
+             while the tree did not: {brief}"
+        );
+    }
+}

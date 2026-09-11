@@ -61,7 +61,7 @@ use std::path::PathBuf;
 
 use abcc_core::attempt::{AttemptOutcome, Cause, NextAction};
 use abcc_core::event::{Event, Logged};
-use abcc_core::outcome::{Headline, Why};
+use abcc_core::outcome::{Headline, Outcome, Why};
 use abcc_core::redact::Secrets;
 use abcc_core::run::AttemptPhase;
 use abcc_core::seq::{AttemptId, CheckpointId, PromptId, TaskId, UnitId};
@@ -72,7 +72,7 @@ use abcc_engine::provider::{Body, Provider, Schema};
 use abcc_engine::tools::Tier;
 use abcc_engine::turn::{Limits, NoTools, PhaseEnded, PhaseReport, Tools, TurnLoop};
 use abcc_engine::workspace::{Toolchain, Workspace};
-use abcc_gate::{Gate, Measured, judge};
+use abcc_gate::{Gate, Measured, Rung, judge};
 use abcc_store::{Applied, Store, StoreError, TaskRow};
 use abcc_vcs::{Repo, Sha, VcsError, Worktree, checkpoint_ref};
 
@@ -359,7 +359,7 @@ impl<'a> Driver<'a> {
         // The refusal is only worth saying to a model standing on the tree that
         // was refused, and `Opened::continues` is the one place that says whether
         // it is.
-        let refused = self.refusal_under(task, &opened)?;
+        let refused = self.refusal_under(&opened)?;
         let mut recon = Body::opening(brief::localize(
             &row,
             self.redirect.as_deref(),
@@ -469,15 +469,7 @@ impl<'a> Driver<'a> {
             // person's. This is `abcc take`'s rule, `last_checkpoint`, so the two
             // verbs continue one tree.
             Cause::Retry { .. } | Cause::Edit { .. } | Cause::Rescope { .. } => {
-                let last = last_checkpoint(&history);
-                // ⚠ And the attribution narrows when the tree does not: if
-                // anything checkpointed after the parent finished, the work under
-                // this attempt is no longer that attempt's, so nothing may be
-                // said about it — F700's paragraph would otherwise describe a
-                // refusal of a tree the operator has since edited.
-                let continues = (last.is_some() && last == closing_checkpoint(&history, parent))
-                    .then_some(parent);
-                (last, continues)
+                (last_checkpoint(&history), Some(parent))
             }
             Cause::Replay { .. } => (opening_checkpoint(&history, parent), None),
         };
@@ -490,13 +482,53 @@ impl<'a> Driver<'a> {
             at,
             why: "no checkpoint was recorded there, or its sha will not parse",
         })?;
+        // 🚨 **Whether this tree is still the one `parent` left is a question
+        // about the TREE, and it is asked of git.**
+        //
+        // ⚠ It used to be asked of the checkpoint *id* — `is the latest
+        // checkpoint the one that attempt closed on` — and that was wrong in the
+        // one case it exists for. `abcc take` + `abcc release` is the only route
+        // a refused task has back onto the board (F703), `hand_back` always
+        // writes a checkpoint, and an operator who looked at the tree and
+        // changed nothing still moved the id. So the id said *somebody has been
+        // in here* where the truth was *nothing has changed*, and F700's
+        // paragraph was suppressed on exactly the path that reaches it. **An
+        // identity is not content** — the third time that has been the answer on
+        // this feature (F704).
+        let continues = match continues {
+            Some(parent) if self.tree_still_theirs(&history, parent, &kept)? => Some(parent),
+            _ => None,
+        };
         Ok(Some(Forked {
             at: kept,
             continues,
         }))
     }
 
-    /// What the attempt underneath this one was refused for, if it was refused.
+    /// Whether `kept` holds the same tree `parent` left behind — so that a
+    /// sentence about what a rung said of that tree is still a true sentence
+    /// about this one.
+    fn tree_still_theirs(
+        &self,
+        history: &[Logged],
+        parent: AttemptId,
+        kept: &Kept,
+    ) -> Result<bool> {
+        let Some(theirs) = closing_checkpoint(history, parent).and_then(|id| resolve(history, id))
+        else {
+            return Ok(false);
+        };
+        // ⚠ `changed_between` is the structural rung's own primitive, deliberately:
+        // *did anything the repository tracks move* is one question and it should
+        // not have two answers in one workspace.
+        Ok(self
+            .repo
+            .changed_between(&theirs.sha, &kept.sha)?
+            .is_empty())
+    }
+
+    /// What a deterministic rung already said about the tree underneath this
+    /// attempt.
     ///
     /// 🚨 **F700: a gate refusal used to reach a person and never a model.**
     /// `brief::refused` puts the rung and the check's own output into
@@ -507,31 +539,67 @@ impl<'a> Driver<'a> {
     /// and never told that a deterministic check had already refused this exact
     /// work, or which one, or what it said.
     ///
+    /// 🚨 **This asks the LADDER and not the attempt's ending, and the first arm
+    /// is why.** It shipped reading `AttemptOutcome::Refused` off
+    /// [`Event::AttemptEnded`] — the easy read, already in `task_history` — and
+    /// **it fired zero times in nine attempts.** `a9292` and `a9480` each left a
+    /// tree the veto rung had refused with `exit 1 — the tree does not build`,
+    /// E0004, the compiler printing the exact missing arm; both *ended*
+    /// `Uncertain/BudgetExhausted`, because what ran out was the model's rounds.
+    /// Their retries inherited those broken trees, were told nothing, read a few
+    /// files and stopped. **`AttemptOutcome` is about the conversation and the
+    /// ladder is about the tree** — this crate's own rule, one function over, in
+    /// [`ending`]. Keying a sentence about a tree to how a conversation ended was
+    /// the defect.
+    ///
+    /// ⚠ **`Rung::Structural` is excluded, and that is the same distinction
+    /// again.** Its refusal — *the attempt changed no file the repository tracks*
+    /// — is a fact about an **attempt**, not a defect in a tree; every other rung
+    /// runs a checker *on the tree*. Telling a retry that a check refused the
+    /// tree because its predecessor did nothing would be true of the predecessor
+    /// and useless to it.
+    ///
     /// ⚠ **It reads the attempt the tree came from and not "the last attempt"**,
     /// which are different questions the moment a task has a rescope or a
     /// takeover in its history — and answering the easy one would be a sentence
     /// about a tree the model is not looking at.
     ///
-    /// ⚠ `AttemptOutcome::Refused` is already on [`Event::AttemptEnded`], which
-    /// `Store::task_history` already returns; nothing new is written for this.
-    /// `Event::RungRecorded` carries the same detail and is **not** in that
-    /// history — it has no `task` — so this is the read that exists.
-    fn refusal_under(&self, task: TaskId, opened: &Opened) -> Result<Option<brief::Refusal>> {
+    /// ⚠ `Event::RungRecorded` carries no `task`, so it is **not** in
+    /// `Store::task_history` and this pages `Store::read_from` across the
+    /// parent's own span instead. Nothing new is written for it either way.
+    fn refusal_under(&self, opened: &Opened) -> Result<Option<brief::Refusal>> {
         let Some(under) = opened.continues else {
             return Ok(None);
         };
-        Ok(self
-            .store
-            .task_history(task)?
-            .into_iter()
-            .find_map(|logged| match logged.event {
-                Event::AttemptEnded {
-                    attempt,
-                    outcome: AttemptOutcome::Refused { rung, detail },
-                    ..
-                } if attempt == under => Some(brief::Refusal { rung, detail }),
-                _ => None,
-            }))
+        let mut since = under.born();
+        loop {
+            let page = self.store.read_from(since, RUNGS_PAGE)?;
+            let Some(last) = page.last() else {
+                return Ok(None);
+            };
+            since = last.seq;
+            for logged in page {
+                match logged.event {
+                    Event::RungRecorded { attempt, outcome }
+                        if attempt == under
+                            && outcome.is_red()
+                            && outcome.rung() != Rung::Structural.name() =>
+                    {
+                        return Ok(Some(brief::Refusal {
+                            rung: outcome.rung().to_owned(),
+                            detail: match outcome {
+                                Outcome::Measured(m) => m.detail,
+                                // Unreachable: `is_red` is false for an absence.
+                                Outcome::Unmeasured { why, .. } => why.to_string(),
+                            },
+                        }));
+                    }
+                    // The span ends here, and a rung is never recorded after it.
+                    Event::AttemptEnded { attempt, .. } if attempt == under => return Ok(None),
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// Open the attempt's tree — **at the checkpoint its cause forked from**,
@@ -1058,6 +1126,14 @@ impl<'a> Driver<'a> {
 /// Who a stop is attributed to. One constant, because every verb on the control
 /// channel came from the console and there is nobody else it could be.
 const OPERATOR: &str = "operator";
+
+/// How much log [`Driver::refusal_under`] reads at a time.
+///
+/// ⚠ A page size and **not a bound on the search** — it pages until it reaches
+/// the parent's `AttemptEnded`, because an attempt's span is however long the
+/// attempt was. The busiest attempt on this project's log spans ~250 events, so
+/// one page is the common case and two is the worst seen.
+const RUNGS_PAGE: usize = 512;
 
 /// One phase's worth of arguments, in one place.
 ///

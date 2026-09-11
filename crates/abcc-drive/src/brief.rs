@@ -16,11 +16,16 @@ use abcc_store::TaskRow;
 
 /// What a deterministic rung refused the tree underneath this attempt for.
 ///
-/// 🚨 **The same two strings the operator is shown** — `brief::refused` puts
-/// them in the question, this puts them in the brief. They are one fact and they
-/// come from one place, [`abcc_core::attempt::AttemptOutcome::Refused`] on the
-/// attempt's own `AttemptEnded`, because a rung's verdict rendered twice from two
-/// sources is two renderings that agree until one is edited.
+/// 🚨 **The same two strings the operator is shown** — `brief::refused` puts them
+/// in the question, this puts them in the brief — and they come from the rung's
+/// own `Event::RungRecorded`, so a verdict is not rendered twice from two
+/// sources that agree until one is edited.
+///
+/// ⚠ **Not from `AttemptOutcome::Refused`**, which is what shipped first and
+/// fired zero times in nine live attempts: that says how the *conversation*
+/// ended, and a tree can be refused by a rung while the attempt over it ends
+/// `Uncertain` because the model ran out of rounds. See
+/// `Driver::refusal_under`.
 pub struct Refusal {
     pub rung: String,
     pub detail: String,
@@ -51,12 +56,13 @@ fn refused_before(refusal: Option<&Refusal>) -> String {
     refusal.map_or_else(String::new, |Refusal { rung, detail }| {
         format!(
             "\n## A check has already refused this tree\n\n\
-             The attempt whose work you are looking at was stopped by the {rung} \
-             rung. It is one of the checks this repository asks of every change, it \
-             runs again on whatever you leave behind, and until it passes the change \
-             cannot land however good it is. This is what it said:\n\n{detail}\n\n\
-             Fix what it names. It is a statement about the tree, not about whether \
-             the task was understood.\n"
+             The tree you are looking at was left unfinished by an earlier attempt, \
+             and the {rung} rung has already been run over it and refused it. It is \
+             one of the checks this repository asks of every change, it runs again \
+             on whatever you leave behind, and until it passes the change cannot \
+             land however good it is. This is what it said:\n\n{detail}\n\n\
+             Fix what it names before anything else. It is a statement about the \
+             tree, not about whether the task was understood.\n"
         )
     })
 }
