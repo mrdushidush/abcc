@@ -355,7 +355,16 @@ impl<'a> Driver<'a> {
         // Two phases, two heads, two bodies. The body cannot be shared across
         // them: a phase is a different frozen prefix, so continuing one body into
         // the other would be a cold prefill wearing a warm one's clothes.
-        let mut recon = Body::opening(brief::localize(&row, self.redirect.as_deref()));
+        // 🚨 **F700, and it is read from `opened` rather than from `cause`.**
+        // The refusal is only worth saying to a model standing on the tree that
+        // was refused, and `Opened::continues` is the one place that says whether
+        // it is.
+        let refused = self.refusal_under(task, &opened)?;
+        let mut recon = Body::opening(brief::localize(
+            &row,
+            self.redirect.as_deref(),
+            refused.as_ref(),
+        ));
         let localize = self.phase(
             Call {
                 attempt,
@@ -370,8 +379,12 @@ impl<'a> Driver<'a> {
 
         let change = match &localize {
             PhaseEnded::Answered { text, .. } => {
-                let mut builders =
-                    Body::opening(brief::change(&row, text, self.redirect.as_deref()));
+                let mut builders = Body::opening(brief::change(
+                    &row,
+                    text,
+                    self.redirect.as_deref(),
+                    refused.as_ref(),
+                ));
                 Some(self.phase(
                     Call {
                         attempt,
@@ -433,31 +446,92 @@ impl<'a> Driver<'a> {
     /// operator's `kill` — cannot actually reach here, because that landing is
     /// `Aborted` and a terminal task admits no command at all. What reaches it is
     /// a `Cause` naming an attempt this task's history does not have.
-    fn fork_point(&self, task: TaskId, cause: &Cause) -> Result<Option<Kept>> {
+    fn fork_point(&self, task: TaskId, cause: &Cause) -> Result<Option<Forked>> {
         let Some(parent) = cause.parent() else {
             return Ok(None);
         };
         let history = self.store.task_history(task)?;
-        let wanted = match cause {
+        // ⚠ `continues` is not `Some(parent)` for every parented cause, and that
+        // is the whole point of the pairing: a replay stands on the tree its
+        // parent *started* from, so it continues nothing.
+        let (wanted, continues) = match cause {
             // Unreachable — `parent()` just answered `Some` — and stated rather
             // than asserted.
             Cause::Fresh => return Ok(None),
+            // 🚨 **The task's *latest* checkpoint, not the parent attempt's own,
+            // and the difference is the operator.** `abcc release` snapshots what
+            // the operator did in a taken-over worktree (`hand_back`, `when =
+            // "operator"`) and that snapshot lands *after* the attempt's
+            // `AttemptEnded` — so a retry dispatched through take-and-hand-back,
+            // which is the only route a refused task has back onto the board,
+            // would throw the operator's own edits away. That is the same class
+            // of loss as F701 and a worse one, because the work discarded is a
+            // person's. This is `abcc take`'s rule, `last_checkpoint`, so the two
+            // verbs continue one tree.
             Cause::Retry { .. } | Cause::Edit { .. } | Cause::Rescope { .. } => {
-                closing_checkpoint(&history, parent)
+                let last = last_checkpoint(&history);
+                // ⚠ And the attribution narrows when the tree does not: if
+                // anything checkpointed after the parent finished, the work under
+                // this attempt is no longer that attempt's, so nothing may be
+                // said about it — F700's paragraph would otherwise describe a
+                // refusal of a tree the operator has since edited.
+                let continues = (last.is_some() && last == closing_checkpoint(&history, parent))
+                    .then_some(parent);
+                (last, continues)
             }
-            Cause::Replay { .. } => opening_checkpoint(&history, parent),
+            Cause::Replay { .. } => (opening_checkpoint(&history, parent), None),
         };
         let Some(at) = wanted else {
             return Ok(None);
         };
-        resolve(&history, at)
-            .ok_or(DriveError::Lineage {
-                task,
-                attempt: parent,
-                at,
-                why: "no checkpoint was recorded there, or its sha will not parse",
-            })
-            .map(Some)
+        let kept = resolve(&history, at).ok_or(DriveError::Lineage {
+            task,
+            attempt: parent,
+            at,
+            why: "no checkpoint was recorded there, or its sha will not parse",
+        })?;
+        Ok(Some(Forked {
+            at: kept,
+            continues,
+        }))
+    }
+
+    /// What the attempt underneath this one was refused for, if it was refused.
+    ///
+    /// 🚨 **F700: a gate refusal used to reach a person and never a model.**
+    /// `brief::refused` puts the rung and the check's own output into
+    /// [`Event::OperatorPrompted`], and the only readers of that event anywhere
+    /// in the workspace are `abcc-tui`, `replay` and `fun` — none of which builds
+    /// a model body. So the retry the same ending *recommends* was dispatched
+    /// with a brief byte-identical to the fresh attempt's: it was told the task
+    /// and never told that a deterministic check had already refused this exact
+    /// work, or which one, or what it said.
+    ///
+    /// ⚠ **It reads the attempt the tree came from and not "the last attempt"**,
+    /// which are different questions the moment a task has a rescope or a
+    /// takeover in its history — and answering the easy one would be a sentence
+    /// about a tree the model is not looking at.
+    ///
+    /// ⚠ `AttemptOutcome::Refused` is already on [`Event::AttemptEnded`], which
+    /// `Store::task_history` already returns; nothing new is written for this.
+    /// `Event::RungRecorded` carries the same detail and is **not** in that
+    /// history — it has no `task` — so this is the read that exists.
+    fn refusal_under(&self, task: TaskId, opened: &Opened) -> Result<Option<brief::Refusal>> {
+        let Some(under) = opened.continues else {
+            return Ok(None);
+        };
+        Ok(self
+            .store
+            .task_history(task)?
+            .into_iter()
+            .find_map(|logged| match logged.event {
+                Event::AttemptEnded {
+                    attempt,
+                    outcome: AttemptOutcome::Refused { rung, detail },
+                    ..
+                } if attempt == under => Some(brief::Refusal { rung, detail }),
+                _ => None,
+            }))
     }
 
     /// Open the attempt's tree — **at the checkpoint its cause forked from**,
@@ -489,8 +563,10 @@ impl<'a> Driver<'a> {
     /// [`abcc_gate::Rung::Structural`] — whose whole job is refusing an
     /// unchanged tree — and land `Accomplished` having done no work.
     fn open_workspace(&mut self, row: &TaskRow, cause: &Cause, watch: Watch) -> Result<Opened> {
-        let taken = match self.fork_point(row.id, cause)? {
-            Some(inherited) => inherited,
+        let forked = self.fork_point(row.id, cause)?;
+        let continues = forked.as_ref().and_then(|f| f.continues);
+        let taken = match forked {
+            Some(forked) => forked.at,
             None => self.checkpoint(row, "before")?,
         };
 
@@ -523,6 +599,7 @@ impl<'a> Driver<'a> {
 
         Ok(Opened {
             opening: taken,
+            continues,
             worktree,
             workspace,
             watch,
@@ -1000,12 +1077,38 @@ struct Call<'a> {
     schema: Option<Schema>,
 }
 
+/// Where an attempt forks from, and whose work is under it.
+///
+/// 🚨 **The two travel together on purpose.** A tree and *what happened to
+/// produce it* are one fact, and F702 is what happens when they are two: a
+/// sentence about the tree was built from one of them while the tree came from
+/// the other, and the two disagreed for three milestones with nothing in a
+/// position to notice.
+struct Forked {
+    at: Kept,
+    /// The attempt whose finished work this tree carries. See
+    /// [`Opened::continues`], which this becomes.
+    continues: Option<AttemptId>,
+}
+
 /// The attempt's isolation, alive for as long as the attempt is.
 struct Opened {
     /// 🚨 The whole opening snapshot and not only its id, because the gate's
     /// free rung is the diff between this sha and the closing one — and a
     /// `CheckpointId` is a position in the log, which git cannot diff.
     opening: Kept,
+    /// 🚨 **The attempt whose finished work is underneath this one**, when
+    /// there is one. `None` when this attempt opened on the operator's checkout,
+    /// and `None` for a [`Cause::Replay`] — a replay opens where the attempt it
+    /// replays *started*, so nothing that attempt did is under here.
+    ///
+    /// ⚠ **It exists so that a brief cannot say something the tree does not**
+    /// (F702). What the previous attempt was refused for is only worth telling a
+    /// model that is standing on the tree that was refused, and reading *which
+    /// attempt* from anywhere but here would be a second answer to a question
+    /// this field already answers — which is the arrangement that let one false
+    /// sentence sit in the model's context for three milestones.
+    continues: Option<AttemptId>,
     worktree: Worktree,
     workspace: Workspace,
     /// The same watch the workspace got, kept so the gate's rungs are as
@@ -1013,6 +1116,19 @@ struct Opened {
     /// this system does, and it would be the one place an operator's verb goes
     /// unanswered.
     watch: Watch,
+}
+
+/// The most recent checkpoint this task has, whoever took it.
+///
+/// 🚨 **The same rule `abcc take`'s `cut` uses**, deliberately: the operator's
+/// verb and the fleet's next attempt must continue one tree, or handing work back
+/// loses it. It is *unbounded* on purpose — a checkpoint taken by `abcc release`
+/// belongs to no attempt at all, and a span-bounded read would step over it.
+fn last_checkpoint(history: &[Logged]) -> Option<CheckpointId> {
+    history.iter().rev().find_map(|logged| match &logged.event {
+        Event::CheckpointTaken { .. } => Some(CheckpointId::at(logged.seq)),
+        _ => None,
+    })
 }
 
 /// The last checkpoint taken **inside** `parent`'s span — the tree that attempt

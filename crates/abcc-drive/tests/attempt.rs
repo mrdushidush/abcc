@@ -1942,3 +1942,257 @@ fn a_retry_that_adds_nothing_to_the_tree_it_inherited_is_refused_by_the_free_run
         "a retry reached a terminal success having done no work"
     );
 }
+
+// ---------------------------------------------------------------------------
+// F700 — a gate refusal that reaches the next model and not only the operator
+// ---------------------------------------------------------------------------
+
+/// An attempt refused by a deterministic rung, and the task walked back onto the
+/// board the way the operator's own verbs walk it: `abcc take` then
+/// `abcc release`.
+///
+/// ⚠ **That detour is the finding underneath the test.** A refusal lands
+/// `AwaitingOrders`, whose only way back to a slot is `Command::OrdersGiven` —
+/// and **nothing in the workspace sends it**. So the retry this very ending
+/// *recommends* is reachable only by taking the task over and handing it back.
+fn refused_then_back_on_the_board(
+    subject: &Subject,
+    store: &mut Store,
+    task: TaskId,
+) -> (Landed, String, String) {
+    let landed = driven(subject, store, task, changing(), Some(FAILING));
+    let (rung, detail) = match &landed.outcome {
+        AttemptOutcome::Refused { rung, detail } => (rung.clone(), detail.clone()),
+        other => panic!("the setup stopped producing a refusal: {other:?}"),
+    };
+    assert!(
+        matches!(landed.state, TaskState::AwaitingOrders { .. }),
+        "a refusal stopped going to a person: {:?}",
+        landed.state
+    );
+    store
+        .apply(task, abcc_core::task::Command::Commandeer)
+        .expect("take");
+    store
+        .apply(task, abcc_core::task::Command::Release)
+        .expect("release");
+    (landed, rung, detail)
+}
+
+/// Both working heads' opening bodies, in the order they were asked.
+fn briefs(provider: &Scripted) -> Vec<(String, String)> {
+    provider
+        .seen()
+        .into_iter()
+        .filter(|call| matches!(call.head_key, "recon" | "builders"))
+        .map(|call| {
+            let opening = call
+                .messages
+                .first()
+                .expect("an opening message")
+                .content
+                .clone();
+            (call.head_key.to_owned(), opening)
+        })
+        .collect()
+}
+
+/// 🚨 **F700: a gate refusal reached a person and never a model.**
+///
+/// `brief::refused` writes the rung and the check's own output into
+/// `Event::OperatorPrompted`, and the only readers of that event in the whole
+/// workspace are `abcc-tui`, `replay` and `fun` — none of which builds a model
+/// body. So the retry the same ending *recommends* opened with a brief
+/// byte-identical to the fresh attempt's: told the task, and not told that a
+/// deterministic check had already refused this exact tree, or which one, or what
+/// it said.
+///
+/// ⚠ **It could not have been fixed before F701.** A brief that says *a check
+/// refused the tree you are looking at* is only true if the retry is looking at
+/// that tree, and until F701 every retry opened on the operator's untouched
+/// checkout. The two are one change in two commits.
+#[test]
+fn a_retry_is_told_which_rung_refused_the_tree_it_inherited() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (first, rung, detail) = refused_then_back_on_the_board(&subject, &mut store, task);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![
+        Script::says("src/new.rs is the place"),
+        Script::says("fixed it"),
+    ]);
+    let repo = Repo::open(&subject.root).expect("open");
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Retry { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    let seen = briefs(&provider);
+    assert_eq!(seen.len(), 2, "both phases should have run: {seen:?}");
+    for (head, brief) in &seen {
+        assert!(
+            brief.contains(&rung),
+            "{head} was not told which rung refused the tree it is standing on: {brief}"
+        );
+        assert!(
+            brief.contains(detail.trim()),
+            "{head} was told the rung but not what it said: {brief}"
+        );
+        // F512's distinction, and it is the operator's wording rather than a
+        // second one invented here.
+        assert!(
+            brief.contains("cannot land"),
+            "{head} was told the work is wrong rather than that it cannot land: {brief}"
+        );
+    }
+}
+
+/// ⚠ **An attempt on a tree nothing refused grows no such heading**, which is the
+/// half that keeps the addition honest: the paragraph is evidence, and a brief
+/// that carried it unconditionally would be a template.
+#[test]
+fn an_attempt_on_a_tree_nothing_refused_carries_no_refusal_heading() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    // This first attempt ran out of budget. Nothing measured it and nothing
+    // refused it.
+    let first = left_work_behind(&subject, &mut store, task);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("nothing more to find")]);
+    let repo = Repo::open(&subject.root).expect("open");
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Retry { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    for (head, brief) in briefs(&provider) {
+        assert!(
+            !brief.contains("already refused"),
+            "{head} was told a check refused a tree nothing refused: {brief}"
+        );
+    }
+}
+
+/// 🚨 **A replay is told nothing about the refusal, and the reason is the tree.**
+///
+/// `Cause::Replay` opens where the attempt it replays *started*, so the refused
+/// work is not under it and *a check has already refused this tree* would be
+/// false. `Driver::refusal_under` reads `Opened::continues` rather than the
+/// task's last attempt for exactly this case — the two answers differ here, and
+/// the easy one is the wrong one.
+#[test]
+fn a_replay_is_not_told_what_refused_a_tree_it_is_not_standing_on() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (first, rung, _) = refused_then_back_on_the_board(&subject, &mut store, task);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("nothing more to find")]);
+    let repo = Repo::open(&subject.root).expect("open");
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Replay { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    // The tree really is the one the refused attempt started on...
+    let opened = opened_on(&store);
+    assert!(
+        show(&subject.root, &opened[1], "src/new.rs").is_none(),
+        "the replay inherited the refused work, so this asserts nothing"
+    );
+    // ...so the brief does not claim a check refused it.
+    for (head, brief) in briefs(&provider) {
+        assert!(
+            !brief.contains(&rung) && !brief.contains("already refused"),
+            "{head} was told about a refusal of a tree it is not looking at: {brief}"
+        );
+    }
+}
+
+/// 🚨 **A retry continues the operator's tree, not the attempt's, when the
+/// operator has been in it — and it then says nothing about the refusal.**
+///
+/// `abcc take` then `abcc release` is the only route a refused task has back onto
+/// the board: `AwaitingOrders`'s one edge to a slot is `Command::OrdersGiven`, and
+/// nothing in the workspace sends it. `hand_back` snapshots the taken-over
+/// worktree as `"operator"`, *after* the attempt's `AttemptEnded` — so a
+/// span-bounded read of *the parent attempt's closing checkpoint* would step over
+/// it and throw a person's own edits away. That is F701's class of loss and a
+/// worse one, so `fork_point` takes the task's **latest** checkpoint, which is
+/// `abcc take`'s own rule.
+///
+/// ⚠ **And the attribution narrows with it.** Once the operator has edited the
+/// tree, *a check refused the tree you are looking at* (F700) is no longer a
+/// thing anyone can say, so `Opened::continues` goes to `None` and the paragraph
+/// disappears. The tree and the sentence about it move together or they drift —
+/// which is F702.
+#[test]
+fn a_retry_after_a_takeover_continues_the_operators_tree_and_claims_no_refusal() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (first, rung, _) = refused_then_back_on_the_board(&subject, &mut store, task);
+
+    // `refused_then_back_on_the_board` walked the task through Commandeer and
+    // Release with the raw commands. Do what `abcc release` does on top: put a
+    // snapshot of the operator's own work on the log, after the attempt ended.
+    let row = store.task(task).expect("read").expect("row");
+    fs::write(
+        subject.root.join("src/by_hand.rs"),
+        "pub fn fixed() -> u32 { 2 }\n",
+    )
+    .expect("write");
+    let repo = Repo::open(&subject.root).expect("open");
+    let by_hand = abcc_drive::snapshot(&mut store, &repo, &row, "operator").expect("snapshot");
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![Script::says("nothing more to find")]);
+    Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .run(
+            task,
+            UnitId(0),
+            Cause::Retry { of: first.attempt },
+            &mut control,
+        )
+        .expect("run");
+
+    let opened = opened_on(&store);
+    let latest = opened.last().expect("the retry opened nothing");
+    assert_eq!(
+        *latest,
+        by_hand.sha.to_string(),
+        "the retry opened on the attempt's tree and discarded what the operator did by hand"
+    );
+    assert!(
+        show(&subject.root, latest, "src/by_hand.rs").is_some(),
+        "the operator's own file is not in the tree the retry was given"
+    );
+
+    for (head, brief) in briefs(&provider) {
+        assert!(
+            !brief.contains(&rung) && !brief.contains("already refused"),
+            "{head} was told a check refused a tree the operator has since edited: {brief}"
+        );
+    }
+}

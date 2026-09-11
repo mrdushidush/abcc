@@ -14,18 +14,66 @@
 use abcc_core::outcome::Why;
 use abcc_store::TaskRow;
 
+/// What a deterministic rung refused the tree underneath this attempt for.
+///
+/// 🚨 **The same two strings the operator is shown** — `brief::refused` puts
+/// them in the question, this puts them in the brief. They are one fact and they
+/// come from one place, [`abcc_core::attempt::AttemptOutcome::Refused`] on the
+/// attempt's own `AttemptEnded`, because a rung's verdict rendered twice from two
+/// sources is two renderings that agree until one is edited.
+pub struct Refusal {
+    pub rung: String,
+    pub detail: String,
+}
+
+/// 🚨 **F700: what already refused this exact tree.**
+///
+/// The ending that recommends a retry writes the rung and the check's own output
+/// into `Event::OperatorPrompted`, and nothing that builds a model body has ever
+/// read that event. So the recommended retry opened with a brief byte-identical
+/// to the fresh attempt's and re-derived, or failed to re-derive, a verdict the
+/// system was already holding. Four attempts have reached the standard rung on
+/// the live subject and none has passed it; half of those refusals were rustfmt
+/// and every summary of them had said clippy (F673).
+///
+/// ⚠ **It says *cannot land* and not *is wrong*, which is `brief::refused`'s
+/// distinction and is real rather than diplomatic**: on F512's runs the
+/// champion's work compiles, prints and passes every test, and is refused for a
+/// function one line over this repository's own limit.
+///
+/// ⚠ **It is only ever built for a model standing on the tree that was refused.**
+/// `Driver::refusal_under` reads `Opened::continues`, not the task's last
+/// attempt, so this paragraph cannot describe a tree the model is not looking at
+/// — which is the failure F702 was.
+///
+/// An empty string when there is nothing, so the brief has one shape.
+fn refused_before(refusal: Option<&Refusal>) -> String {
+    refusal.map_or_else(String::new, |Refusal { rung, detail }| {
+        format!(
+            "\n## A check has already refused this tree\n\n\
+             The attempt whose work you are looking at was stopped by the {rung} \
+             rung. It is one of the checks this repository asks of every change, it \
+             runs again on whatever you leave behind, and until it passes the change \
+             cannot land however good it is. This is what it said:\n\n{detail}\n\n\
+             Fix what it names. It is a statement about the tree, not about whether \
+             the task was understood.\n"
+        )
+    })
+}
+
 /// What Recon is asked, opening the Localize phase.
 #[must_use]
-pub fn localize(row: &TaskRow, redirect: Option<&str>) -> String {
+pub fn localize(row: &TaskRow, redirect: Option<&str>, refused: Option<&Refusal>) -> String {
     format!(
-        "## The task\n\n{}\n\n{}\n{}\n## What is wanted from you now\n\n\
+        "## The task\n\n{}\n\n{}\n{}{}\n## What is wanted from you now\n\n\
          Find the place. Name the files and the specific lines the change belongs in, \
          and say what is already there. You are read-only: nothing you do can change \
          the tree, so look as widely as you need to. When you know where the work \
          goes, say so and stop asking for tools.\n",
         row.title,
         row.prompt,
-        redirected(redirect)
+        redirected(redirect),
+        refused_before(refused)
     )
 }
 
@@ -75,9 +123,14 @@ fn redirected(prompt: Option<&str>) -> String {
 /// or time: on 98 unimpeded attempts a test really ran 81 of 81 times and 14 of
 /// those green, measured, true claims sat on trees the gate fails.
 #[must_use]
-pub fn change(row: &TaskRow, found: &str, redirect: Option<&str>) -> String {
+pub fn change(
+    row: &TaskRow,
+    found: &str,
+    redirect: Option<&str>,
+    refused: Option<&Refusal>,
+) -> String {
     format!(
-        "## The task\n\n{}\n\n{}\n{}\n## What Recon reported\n\n{found}\n\n\
+        "## The task\n\n{}\n\n{}\n{}{}\n## What Recon reported\n\n{found}\n\n\
          ## What is wanted from you now\n\n\
          Make the change. Recon's report is a claim about the tree rather than a \
          measurement of it, so check the part you are about to rely on before you \
@@ -85,7 +138,8 @@ pub fn change(row: &TaskRow, found: &str, redirect: Option<&str>) -> String {
          stop asking for tools.\n",
         row.title,
         row.prompt,
-        redirected(redirect)
+        redirected(redirect),
+        refused_before(refused)
     )
 }
 
