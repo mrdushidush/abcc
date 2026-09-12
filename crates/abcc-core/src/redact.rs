@@ -101,7 +101,9 @@ pub enum Kind {
     AuthHeader,
     /// A vendor-prefixed token: `sk-`, `ghp_`, `xoxb-`, `AKIA…`.
     VendorToken,
-    /// `SOMETHING_SECRET=value`, in the shape an env file or a shell export has.
+    /// `SOMETHING_SECRET=value`, in the shape an env file or a shell export
+    /// has — and **the name half is read in that shape's case**, so a
+    /// lowercase `secrets:` in source is not one of these (F712).
     Assignment,
 }
 
@@ -310,8 +312,20 @@ fn shapes() -> &'static [(Kind, Regex)] {
                 // The name half is the discriminating half; the value must also
                 // be long enough to be a secret, so a bare `token=1` is not
                 // matched and a `PASSWORD=` with nothing after it is not either.
+                //
+                // 🚨 **The name half is case-SENSITIVE, and that is the whole of
+                // F712's fix.** With `(?i)` it matched the English word
+                // `secrets`, so `pub fn secrets(mut self, secrets: Secrets) ->`
+                // reached the model as `secrets: [redacted] ->` — the type gone
+                // and the closing paren with it, because the value half is
+                // greedy over non-space characters and Rust is not an env file.
+                // 14 of this workspace's 132 files were rewritten before a model
+                // saw them. An env var is `SECRET_KEY`; the cost of the fix is a
+                // lowercase YAML `password:`, and the operator ruled it
+                // (2026-09-12). ⚠ Do not put `(?i)` back without moving the
+                // value half off `[^\s"'#]` first.
                 Regex::new(
-                    r#"(?i)(?P<keep>\b[A-Z0-9_]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD|CREDENTIALS?|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|PRIVATE[_-]?KEY)[A-Z0-9_]*\s*[:=]\s*)["']?[^\s"'#]{8,}["']?"#,
+                    r#"(?P<keep>\b[A-Z0-9_]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD|CREDENTIALS?|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|PRIVATE[_-]?KEY)[A-Z0-9_]*\s*[:=]\s*)["']?[^\s"'#]{8,}["']?"#,
                 )
                 .expect("assignment shape"),
             ),

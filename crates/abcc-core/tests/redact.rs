@@ -221,6 +221,129 @@ bbb
     );
 }
 
+/// 🚨 **F712 — the redactor was rewriting this repository's own source, and a
+/// model asked to write Rust was handed Rust that does not parse.** With the
+/// name half case-insensitive the English word `secrets` matched, and the value
+/// half is greedy over non-space characters, so the erasure ate the type and the
+/// closing paren with it. These are the exact lines, from the files the sweep
+/// named.
+#[test]
+fn this_repositorys_own_rust_is_not_rewritten_before_a_model_sees_it() {
+    let rust = [
+        // abcc-drive/src/lib.rs — the builder, the field, the assignment.
+        "    pub fn secrets(mut self, secrets: Secrets) -> Driver<'a> {",
+        "        self.secrets = secrets;",
+        "            secrets: Secrets::default(),",
+        // abcc-core/src/redact.rs — the doc comment was cut exactly where it
+        // would have named the one public constructor.
+        "/// Text that has been through [`Secrets::scrub`] and nothing else.",
+        // abcc-engine/src/turn.rs, abcc-fleet/src/lib.rs.
+        "    secrets: &'a Secrets,",
+        "        let secrets = self.secrets.clone();",
+        // Not a secret in any case: a lowercase word in ordinary prose.
+        "the password is checked by the caller, not here",
+    ];
+    let secrets = Secrets::default().with_literal("lm-studio-abc123xyz");
+    for line in rust {
+        let scrub = secrets.scrub(line);
+        assert_eq!(
+            scrub.text.as_str(),
+            line,
+            "the redactor rewrote the repository's own source: {:?}",
+            scrub.removed
+        );
+    }
+}
+
+/// The other half of F712, and the half that makes the fix a fix rather than a
+/// deletion: **every shape an env file or a shell export actually has is still
+/// caught**, in the case those files actually use.
+#[test]
+fn the_shapes_an_env_file_actually_has_are_still_caught() {
+    let caught = [
+        "SECRET_KEY=hunter2hunter2",
+        "export DATABASE_PASSWORD=hunter2hunter2",
+        "API_KEY: \"sk-not-a-real-key-here\"",
+        "MY_ACCESS_TOKEN = abcdefghijklmnop",
+        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY",
+        "ABCC_MODEL_API_KEY=lm-studio-placeholder",
+    ];
+    let secrets = Secrets::shapes_only();
+    for line in caught {
+        let scrub = secrets.scrub(line);
+        assert!(scrub.touched(), "a real env-file shape got through: {line}");
+        assert!(scrub.text.as_str().contains(MARKER), "{}", scrub.text);
+    }
+}
+
+/// 🚨 **The priced cost of F712, asserted so it cannot be paid twice by
+/// accident.** Dropping `(?i)` on the name half loses a lowercase YAML
+/// `password:`. The operator ruled it on 2026-09-12, against the alternative of
+/// the model being shown source that does not compile. ▶ This test fails the day
+/// somebody puts `(?i)` back — at which point read the note beside the pattern
+/// first: the value half has to stop being greedy over `[^\s"'#]` before the
+/// name half can afford to be case-blind again.
+#[test]
+fn a_lowercase_assignment_is_the_known_and_ruled_cost() {
+    let missed = "password: hunter2hunter2";
+    let scrub = Secrets::shapes_only().scrub(missed);
+    assert_eq!(
+        scrub.text.as_str(),
+        missed,
+        "the case-insensitive name half is back — and so is F712"
+    );
+}
+
+/// 🚨 **The measurement F712 came from, kept as a test.** The shape half runs
+/// over whatever a tool read, and this repository is the subject of the
+/// SELF-HOST milestone, so *the denylist does not alter this workspace's own
+/// `src`* is a property and not a coincidence. Before the fix this named 9
+/// files and 51 assignment hits. ⚠ It asserts on [`Kind::Assignment`] only:
+/// `redact.rs`'s own doc comments quote an `Authorization: Bearer` header, and
+/// the rule is **right** about those.
+#[test]
+fn the_denylist_alters_no_source_file_in_this_workspace() {
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the workspace root is two levels above this crate")
+        .join("crates");
+
+    let mut sources = Vec::new();
+    let mut stack = vec![crates];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("readable").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "target") {
+                    stack.push(path);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.components().any(|c| c.as_os_str() == "src")
+            {
+                // `src` only: a test file may hold a secret-shaped fixture on
+                // purpose, and two of them do.
+                sources.push(path);
+            }
+        }
+    }
+    assert!(sources.len() > 20, "found only {} files", sources.len());
+
+    let secrets = Secrets::shapes_only();
+    let mut rewritten: Vec<String> = Vec::new();
+    for path in &sources {
+        let text = std::fs::read_to_string(path).expect("readable");
+        let scrub = secrets.scrub(text);
+        if scrub.removed.iter().any(|r| r.kind == Kind::Assignment) {
+            rewritten.push(path.display().to_string());
+        }
+    }
+    assert!(
+        rewritten.is_empty(),
+        "the denylist rewrites this repository's own source (F712): {rewritten:#?}"
+    );
+}
+
 /// 🚨 **The default is ON.** A `Secrets` nobody configured still carries every
 /// shape — a redactor whose default is *nothing* protects only the code paths
 /// somebody remembered to wire, which is the donor's defect (F416) one layer up.
