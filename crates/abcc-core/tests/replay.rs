@@ -363,6 +363,7 @@ fn a_hang_after_the_last_event_produces_no_gap() {
             head_digest: String::new(),
             ceiling: String::new(),
             budget: 8192,
+            seed: 0,
         },
     );
     // ...and then the process hangs. Nothing further is ever written.

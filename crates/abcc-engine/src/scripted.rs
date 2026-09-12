@@ -244,6 +244,13 @@ pub struct Seen {
     /// parses today and does not tomorrow, and the failure would look like the
     /// model's.
     pub schema: Option<Schema>,
+    /// The sampler's seed this request carried.
+    ///
+    /// Here for the same reason `head_prefix` is: it is part of the request and
+    /// it is the part a caller can get wrong invisibly. A test that compared the
+    /// log against the derivation instead would be an oracle comparing a thing
+    /// with itself.
+    pub seed: u32,
 }
 
 /// A provider that replays [`Script`]s in order.
@@ -324,6 +331,7 @@ impl Provider for Scripted {
             budget: req.budget(),
             messages: req.body.messages().to_vec(),
             schema: req.schema,
+            seed: req.seed,
         });
         let script = self
             .scripts

@@ -461,8 +461,9 @@ impl<'a> TurnLoop<'a> {
         let mut report = PhaseReport::default();
         let mut nudges = self.limits.nudges;
 
-        for _round in 0..self.limits.rounds {
-            let turn = match self.one_turn(posting, attempt, schema, body, control, journal) {
+        for round in 0..self.limits.rounds {
+            let asking = Asking { posting, schema };
+            let turn = match self.one_turn(asking, attempt, round, body, control, journal) {
                 Ok(turn) => turn,
                 Err(ending) => return ending.into_phase(report, started),
             };
@@ -529,18 +530,20 @@ impl<'a> TurnLoop<'a> {
     /// One model call: the step boundary, the request, the stream, the drain.
     fn one_turn(
         &self,
-        posting: Posting,
+        asking: Asking,
         attempt: AttemptId,
-        schema: Option<Schema>,
+        round: u32,
         body: &Body,
         control: &mut ControlPoint,
         journal: &mut dyn Journal,
     ) -> Result<Turn, Ending> {
+        let Asking { posting, schema } = asking;
         // The step boundary, before any work is committed to.
         if let Disposition::Stop(stop) = control.check() {
             return Err(Ending::Stopped(stop));
         }
 
+        let seed = seed_for(attempt, posting, round);
         let request = ApiRequest {
             model: &self.model,
             posting,
@@ -549,6 +552,7 @@ impl<'a> TurnLoop<'a> {
             idle_gap: self.limits.idle_gap,
             tool_call_gap: self.limits.tool_call_gap,
             liveness_slice: self.limits.liveness_gap,
+            seed,
         };
         journal.record(Event::ModelCallStarted {
             attempt,
@@ -562,6 +566,7 @@ impl<'a> TurnLoop<'a> {
             // in every event — and status is a projection of the log alone.
             ceiling: posting.ceiling().to_string(),
             budget: posting.budget(),
+            seed,
         });
 
         let mut stream = self
@@ -908,4 +913,53 @@ fn elapsed_ms(from: Instant) -> u64 {
 /// somebody will try to explain.
 fn seconds(ms: u64) -> String {
     format!("{}.{} s", ms / 1000, (ms % 1000) / 100)
+}
+
+/// What one phase asks the model for, fixed for the whole phase.
+///
+/// The pair travels together because it is one decision: [`Posting`] composes
+/// the head and the ceiling, and [`Schema`] is the shape the artifact of *that*
+/// head has to take. What varies inside a phase is the round, which is why the
+/// round is not in here.
+#[derive(Clone, Copy)]
+struct Asking {
+    posting: Posting,
+    schema: Option<Schema>,
+}
+
+/// llama.cpp's *pick one for me* sentinel. A derived seed that landed here would
+/// be a call asking for randomness while the log recorded a number, so it is the
+/// one value this function will not return.
+const LLAMA_RANDOM_SEED: u32 = u32::MAX;
+
+/// The sampler's seed for one model call.
+///
+/// 🚨 **Derived rather than fixed, and that distinction is the whole ruling**
+/// (the operator, 2026-09-12). What a sortie needs is to be *replayable*, which
+/// means the seed is **written down**; what it must not become is *repetitive*,
+/// which is what one constant would make it. A retry carries a different
+/// [`AttemptId`] — the id is the seq that opened it — so it samples differently
+/// from its parent, which matters now that F701 has it opening on its parent's
+/// tree. A constant would have made the two together a no-op.
+///
+/// The three inputs are the three things that distinguish one call from another
+/// within a run: which attempt, which head, and which round of that head's
+/// phase. ⚠ The **digest** rather than the head's key, so that editing a
+/// charter re-seeds the calls made under it — two builds that disagree about the
+/// prompt must not agree about the sampler and call the pair a replication.
+///
+/// ⚠ `u32` because the request is JSON and LM Studio parses it in TypeScript,
+/// where anything past 2^53 is rounded on the way in.
+fn seed_for(attempt: AttemptId, posting: Posting, round: u32) -> u32 {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(attempt.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(posting.digest().as_bytes());
+    hasher.update([0]);
+    hasher.update(round.to_le_bytes());
+    let out = hasher.finalize();
+    let seed = u32::from_le_bytes([out[0], out[1], out[2], out[3]]);
+    // One value means *choose your own*, so it is the one this may not hand back.
+    if seed == LLAMA_RANDOM_SEED { 0 } else { seed }
 }

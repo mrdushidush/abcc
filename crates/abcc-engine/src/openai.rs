@@ -861,6 +861,12 @@ fn payload(req: &ApiRequest<'_>) -> Value {
     payload.insert("model".to_owned(), json!(req.model));
     payload.insert("messages".to_owned(), Value::Array(messages));
     payload.insert("max_tokens".to_owned(), json!(req.budget()));
+    // 🚨 The one sampling field this engine sets, and it sets it so that a
+    // run can be re-flown rather than to move the distribution. Without it the
+    // champion answers five identical requests five different ways; with it,
+    // one. Sampling is otherwise the server's, which is where every number this
+    // project has quoted was taken.
+    payload.insert("seed".to_owned(), json!(req.seed));
     payload.insert("stream".to_owned(), json!(true));
     // F84: the compat dialect reports real token counts only when asked.
     payload.insert("stream_options".to_owned(), json!({"include_usage": true}));

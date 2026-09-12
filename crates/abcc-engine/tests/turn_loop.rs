@@ -1551,6 +1551,160 @@ fn a_secret_in_a_tools_output_is_scrubbed_once_for_both_sinks() {
 }
 
 // ---------------------------------------------------------------------------
+// F715 — the sampler was unseeded, and the log could not say otherwise
+// ---------------------------------------------------------------------------
+
+fn seeds_on_the_log(log: &[Event]) -> Vec<u32> {
+    log.iter()
+        .filter_map(|e| match e {
+            Event::ModelCallStarted { seed, .. } => Some(*seed),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 🚨 **F715.** Measured against the champion on 2026-09-12: five identical
+/// requests carrying what this engine used to send — `max_tokens` and nothing
+/// else — produced **five distinct answers of five**; the same five with a seed
+/// produced **one**. So every reliability number this project has quoted was
+/// taken at the server's own default sampling, unseeded, and a finding like
+/// F657's *4 of 5 versus 1 of 5 on a byte-identical prompt* was unfalsifiable by
+/// construction rather than merely unreproduced.
+///
+/// ▶ The seed reaches the provider **and** the log, and this compares the two
+/// against each other rather than either against `seed_for`.
+#[test]
+fn the_seed_reaches_the_provider_and_the_log_says_which_one() {
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "read_file", r#"{"path":"src/lib.rs"}"#),
+        Script::says("read it"),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log: Vec<Event> = Vec::new();
+
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let sent: Vec<u32> = provider.seen().iter().map(|s| s.seed).collect();
+    assert_eq!(sent.len(), 2, "two calls were made");
+    assert_eq!(
+        seeds_on_the_log(&log),
+        sent,
+        "the log's seed is not the seed the provider was given"
+    );
+    assert!(
+        sent.iter().all(|&s| s != u32::MAX),
+        "a call asked the server to pick its own seed while the log recorded a \
+         number: {sent:?}"
+    );
+}
+
+/// 🚨 **Two rounds of one phase are two seeds**, which is the half that makes
+/// this a *recorded* seed rather than a *fixed* one. A constant would have made
+/// the second round of a phase re-decode the first — and the loop exists to give
+/// the model another go at the same body with more in it.
+#[test]
+fn every_round_of_a_phase_gets_its_own_seed() {
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "read_file", r#"{"path":"a"}"#),
+        Script::calls("c2", "read_file", r#"{"path":"b"}"#),
+        Script::says("done"),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log: Vec<Event> = Vec::new();
+
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let seeds = seeds_on_the_log(&log);
+    assert_eq!(seeds.len(), 3);
+    let distinct: std::collections::BTreeSet<u32> = seeds.iter().copied().collect();
+    assert_eq!(distinct.len(), 3, "rounds shared a seed: {seeds:?}");
+}
+
+/// 🚨 **A retry does not re-decode its parent.** F701 made a retry open on its
+/// parent's closing checkpoint, so if it also sampled identically it would walk
+/// the same path from the same tree and the two together would be a no-op. The
+/// `AttemptId` is in the derivation precisely so that it cannot.
+///
+/// ⚠ And the same attempt run again **does** repeat, which is the other half:
+/// that is what *replayable* means, and a test that only asserted difference
+/// would pass on a random number.
+#[test]
+fn a_retry_seeds_differently_and_a_replay_seeds_the_same() {
+    fn seeds_for(attempt: AttemptId) -> Vec<u32> {
+        let provider = Scripted::new(vec![
+            Script::calls("c1", "read_file", r#"{"path":"a"}"#),
+            Script::says("done"),
+        ]);
+        let tools = Recorder::default();
+        let (mut control, _handle) = ControlPoint::new();
+        let mut body = Body::opening("go");
+        let mut log: Vec<Event> = Vec::new();
+        TurnLoop::new(&provider, &tools, MODEL).run(
+            Head::Recon,
+            attempt,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+        seeds_on_the_log(&log)
+    }
+
+    let parent = seeds_for(AttemptId::at(Seq::new(7)));
+    let retry = seeds_for(AttemptId::at(Seq::new(8)));
+    let replay = seeds_for(AttemptId::at(Seq::new(7)));
+
+    assert_eq!(
+        parent, replay,
+        "the same attempt did not re-fly the same way"
+    );
+    assert_ne!(parent, retry, "a retry inherited its parent's sampling");
+}
+
+/// ⚠ **The head's digest is in the derivation, not its name.** Two builds that
+/// disagree about the prompt must not agree about the sampler and have the pair
+/// read as a replication — which is the F711 lesson one layer down: `head` names
+/// a constant *within a build*, and editing a charter leaves every field on the
+/// event reading as it did before.
+#[test]
+fn two_heads_do_not_share_a_seed() {
+    fn first_seed(head: Head) -> u32 {
+        let provider = Scripted::new(vec![Script::says("done")]);
+        let (mut control, _handle) = ControlPoint::new();
+        let mut body = Body::opening("go");
+        let mut log: Vec<Event> = Vec::new();
+        TurnLoop::new(&provider, &NoTools::for_head(head), MODEL).run(
+            head,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+        seeds_on_the_log(&log)[0]
+    }
+    assert_ne!(first_seed(Head::Recon), first_seed(Head::Builders));
+}
+
+// ---------------------------------------------------------------------------
 // F513 — the phase's accounting reaches the log
 // ---------------------------------------------------------------------------
 

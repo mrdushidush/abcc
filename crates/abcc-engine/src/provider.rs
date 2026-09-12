@@ -289,6 +289,10 @@ pub struct ApiRequest<'a> {
     /// liveness period, so the thing that writes the log chooses how often it
     /// can.
     pub liveness_slice: Duration,
+    /// 🚨 **The sampler's seed** (`Event::ModelCallStarted::seed`). Sent on
+    /// the wire so that a sortie is replayable; derived per call so that a
+    /// retry is not a re-decode of its parent.
+    pub seed: u32,
 }
 
 impl ApiRequest<'_> {

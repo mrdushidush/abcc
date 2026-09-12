@@ -97,6 +97,7 @@ fn the_attempt_runs(log: &mut Replay, task: TaskId, attempt: AttemptId, engaged:
         head_digest: "0d1b0c9dcad12f4a".to_string(),
         ceiling: "read".to_string(),
         budget: 2048,
+        seed: 3_041_887_211,
     });
     let model_end = log.advance(3_200).push(Event::ModelCallEnded {
         attempt,

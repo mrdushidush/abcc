@@ -206,6 +206,7 @@ fn request(head: Head, body: &Body, idle_gap: Duration) -> ApiRequest<'_> {
         // has its own tests, which set it deliberately.
         tool_call_gap: idle_gap,
         liveness_slice: idle_gap,
+        seed: 1234,
     }
 }
 
@@ -684,6 +685,19 @@ fn the_request_carries_the_head_the_tools_and_the_ask_for_real_token_counts() {
     // ⚠ `num_ctx` has no analogue in the compat dialect and the window is fixed
     // at load time. Sending one would be the F50 trap wearing a field name.
     assert!(sent.get("num_ctx").is_none());
+    // 🚨 F715: the seed, and it is the only sampling field sent. Measured on the
+    // champion, five identical requests without one are five distinct answers
+    // and with one are a single answer — so its absence is what made every rate
+    // this project has quoted unrepeatable. ⚠ A JSON *number*, not a string:
+    // LM Studio parses this in TypeScript.
+    assert_eq!(sent["seed"], 1234);
+    assert!(sent["seed"].is_number());
+    // ⚠ And temperature and top_p are deliberately NOT here (the operator's
+    // ruling, 2026-09-12): pinning what makes a run replayable without moving
+    // the distribution every past number was taken at. If one appears, a number
+    // measured before it is no longer comparable to one measured after.
+    assert!(sent.get("temperature").is_none());
+    assert!(sent.get("top_p").is_none());
 
     // The advertised surface is the enforced one: exactly the policy's admitted
     // list, no more.
@@ -755,6 +769,7 @@ fn a_schema_travels_as_strict_json_schema_and_never_as_json_object() {
             idle_gap: BUDGET,
             tool_call_gap: BUDGET,
             liveness_slice: BUDGET,
+            seed: 1234,
         },
     );
 
@@ -902,6 +917,7 @@ fn a_live_turn_reports_usage_and_a_reasoning_trace() {
             idle_gap: Duration::from_secs(90),
             tool_call_gap: Limits::default().tool_call_gap,
             liveness_slice: Duration::from_secs(10),
+            seed: 1234,
         },
     );
     for delta in &deltas {
@@ -1113,6 +1129,7 @@ fn request_with_gaps(
         idle_gap,
         tool_call_gap,
         liveness_slice: slice,
+        seed: 1234,
     }
 }
 
@@ -1424,6 +1441,7 @@ fn a_live_turn_writing_a_large_tool_call_survives_its_own_silence() {
         idle_gap: Duration::from_secs(90),
         tool_call_gap: Limits::default().tool_call_gap,
         liveness_slice: Duration::from_secs(10),
+        seed: 1234,
     };
     let mut stream = provider.start(&req).expect("open the turn");
     while let Some(delta) = stream.next_delta() {

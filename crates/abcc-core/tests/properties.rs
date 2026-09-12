@@ -342,6 +342,35 @@ fn a_model_call_written_before_the_head_was_digested_still_replays() {
         "a head nobody digested came back claiming one: {head_digest}"
     );
 }
+
+/// ⚠ **And the same for the seed** (F715). All 11,311 events on this project's
+/// log were written by an engine that sent none, so `0` there means *this call
+/// was unseeded* rather than *seeded with zero* — and the two are the same
+/// number. 🚨 That ambiguity is real and it is the cheaper of the two costs: the
+/// alternative is an `Option<u32>` whose `None` every query has to handle
+/// forever, to distinguish a case that ended on 2026-09-12 and cannot recur.
+/// **The boundary is the date, not the value**: a call before it was unseeded,
+/// a call after it carries what it used.
+#[test]
+fn a_model_call_written_before_the_sampler_was_seeded_still_replays() {
+    let old = r#"{
+        "kind": "model_call_started",
+        "attempt": 645,
+        "provider": "local",
+        "model": "qwen3.6-35b-a3b-mtp@iq3_s",
+        "head": "builders",
+        "head_digest": "0d1b0c9dcad12f4a",
+        "ceiling": "exec",
+        "budget": 16384
+    }"#;
+
+    let event: Event = serde_json::from_str(old).expect("an old event must still replay");
+    let Event::ModelCallStarted { seed, budget, .. } = &event else {
+        panic!("wrong variant: {event:?}");
+    };
+    assert_eq!(*budget, 16384);
+    assert_eq!(*seed, 0, "an unseeded call read back as seeded");
+}
 /// ⚠ **The same half for F713**, and here the distinction the `Option` carries
 /// is worth the field: a `tool_call_ended` written before this existed reads
 /// back as `None` — *nobody recorded what the tool said* — which is not the

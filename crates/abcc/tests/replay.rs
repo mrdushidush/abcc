@@ -123,6 +123,7 @@ fn a_truncated_attempt(store: &mut Store, title: &str) -> (TaskId, AttemptId) {
             head_digest: String::new(),
             ceiling: String::new(),
             budget: 8192,
+            seed: 0,
         })
         .expect("call started");
     store

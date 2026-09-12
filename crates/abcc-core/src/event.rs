@@ -207,6 +207,35 @@ pub enum Event {
         ceiling: String,
         /// Tokens the request declared it would accept back.
         budget: u32,
+        /// 🚨 **The sampler's seed, and the reason a sortie can be re-flown.**
+        ///
+        /// Measured on the champion 2026-09-12, five identical requests each:
+        /// what this engine used to send — `max_tokens` and nothing else —
+        /// produced **five distinct answers of five**. Adding a seed produced
+        /// **one of five**. So every reliability number this project has quoted
+        /// was taken at the server's own default sampling, unseeded, which makes
+        /// a finding like F657's *4 of 5 versus 1 of 5 on a byte-identical
+        /// prompt* unfalsifiable **by construction** rather than merely
+        /// unreproduced.
+        ///
+        /// ▶ **Derived per call, not fixed** (the operator's ruling,
+        /// 2026-09-12): from the attempt, the head's digest and the round index,
+        /// so two calls differ, and **a retry differs from its parent** because
+        /// its `AttemptId` differs. A constant seed would make a retry re-decode
+        /// its parent's tokens — and F701 has just made it open on its parent's
+        /// tree, so the two together would turn a retry into a no-op.
+        ///
+        /// ⚠ **`u32`, deliberately.** The server is reached over JSON and
+        /// LM Studio parses it in TypeScript, where an integer above 2^53 loses
+        /// precision silently — a seed that reads back as a near neighbour of
+        /// itself is a replay that is not one.
+        ///
+        /// ⚠ Temperature and `top_p` are **not** sent and are not recorded:
+        /// the ruling was to pin what makes a run replayable without moving the
+        /// distribution every past number was taken at. Their absence here is
+        /// that decision, not an omission.
+        #[serde(default)]
+        seed: u32,
     },
     ModelCallEnded {
         attempt: AttemptId,
