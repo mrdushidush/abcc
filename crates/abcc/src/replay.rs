@@ -314,6 +314,39 @@ fn spent(attempt: &AttemptTrace, out: &mut impl Write) -> Result<(), AppError> {
         ms(i64::try_from(attempt.spend.ttfb_ms_max).unwrap_or(i64::MAX)),
     )?;
 
+    // 🚨 **F718: whether this attempt can be spoken about at all.** F715 found
+    // every rate this project has published was taken unseeded, so *was this one*
+    // is the first question of any re-reading — and until now the answer was on
+    // the log and on no screen. The distinct count is the second half: F715
+    // derives a seed from (attempt, head digest, round) and nothing enforces that
+    // the triple cannot repeat, so `4 of 5` here is the reading that would say so.
+    //
+    // ⚠ *Recorded no seed*, never *unseeded*. Zero is `serde(default)` over a
+    // `u32`, so it is what 1,910 pre-F715 calls replay as — and, once in 2^32,
+    // what a real derivation returns.
+    if attempt.spend.calls > 0 {
+        let seeds = if attempt.spend.seeded_calls == 0 {
+            "no seed recorded — this attempt was flown at the server's own sampling".to_owned()
+        } else {
+            let distinct = attempt.spend.seeds.len();
+            let same = if distinct == attempt.spend.seeded_calls as usize {
+                String::new()
+            } else {
+                // A repeat means two prompts drew one sample. It has never
+                // happened on this log; if it ever does, it is not a rounding.
+                format!(
+                    " 🚨 {} call(s) shared a seed with another",
+                    attempt.spend.seeded_calls as usize - distinct
+                )
+            };
+            format!(
+                "{} of {} call(s) seeded, {distinct} distinct{same}",
+                attempt.spend.seeded_calls, attempt.spend.calls
+            )
+        };
+        writeln!(out, "  sampler  {seeds}")?;
+    }
+
     // 🚨 F511: a token total says how big a completion was, never where it went.
     if attempt.made.counted > 0 {
         let share = attempt
@@ -381,6 +414,22 @@ fn tools(attempt: &AttemptTrace, out: &mut impl Write) -> Result<(), AppError> {
         }
         if tool.unmeasured > 0 {
             notes.push(format!("{} unmeasured", tool.unmeasured));
+        }
+        // 🚨 **F718: what this tool handed the model, in characters.** F713 put a
+        // tool's output on the log as the prompt surface nothing could read back,
+        // and F717 measured what that costs — a tool result is 244 tokens at the
+        // median and 984 at the mean, so the field roughly quadruples an
+        // attempt's record. This line is where an operator can see which tool is
+        // spending it. ⚠ Unrecorded is its own note and never a zero: 2,147 calls
+        // predate the field.
+        if tool.output_bytes > 0 {
+            notes.push(format!("{} bytes back", tool.output_bytes));
+        }
+        if tool.output_unrecorded > 0 {
+            notes.push(format!(
+                "{} without recorded output",
+                tool.output_unrecorded
+            ));
         }
         let note = if notes.is_empty() {
             String::new()

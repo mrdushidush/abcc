@@ -53,6 +53,8 @@
 //! [`Why::Timeout`]: crate::outcome::Why::Timeout
 //! [`Why::EngineError`]: crate::outcome::Why::EngineError
 
+use std::collections::BTreeSet;
+
 use crate::attempt::{AttemptOutcome, Cause};
 use crate::event::{CallShape, Event, Logged, TraceSignal};
 use crate::fun::SILENCE_BAR_MS;
@@ -498,9 +500,26 @@ impl AttemptTrace {
                 });
             }
             Event::PhaseEnded { .. } => self.close_phase(event),
-            Event::ModelCallStarted { budget, .. } => {
+            Event::ModelCallStarted { budget, seed, .. } => {
                 self.spend.calls += 1;
                 self.spend.budget = self.spend.budget.max(*budget);
+                // 🚨 **Zero is *not recorded*, and it is a sentinel rather than
+                // an absence** (F718). `seed` is `#[serde(default)]` over a
+                // `u32`, a type with no vacant value, so each of the 1,910 model
+                // calls logged before F715 replays as `seed: 0` — and counting
+                // those as seeded would report the whole archive as pinned to
+                // one value, which is the exact inverse of what F715 found.
+                //
+                // ⚠ The read is a convention, not a proof: `seed_for` maps
+                // llama.cpp's *choose your own* sentinel to 0, so a derived seed
+                // really can be zero — once in 2^32 calls. At this log's 1,910
+                // it has never happened and would take a century of sorties to,
+                // but the honest statement is *this attempt recorded no seed*
+                // and never *this attempt was unseeded*.
+                if *seed != 0 {
+                    self.spend.seeds.insert(*seed);
+                    self.spend.seeded_calls += 1;
+                }
             }
             Event::ModelCallEnded { .. } => self.close_call(event),
             Event::ToolCallStarted { tool, tier, .. } => {
@@ -514,6 +533,8 @@ impl AttemptTrace {
                         failures: 0,
                         unmeasured: 0,
                         elapsed_ms: 0,
+                        output_bytes: 0,
+                        output_unrecorded: 0,
                     });
                 }
             }
@@ -522,6 +543,7 @@ impl AttemptTrace {
                 exit,
                 elapsed_ms,
                 unmeasured,
+                output,
                 ..
             } => {
                 if let Some(t) = self.tools.iter_mut().find(|t| t.tool == *tool) {
@@ -531,6 +553,14 @@ impl AttemptTrace {
                     }
                     if unmeasured.is_some() {
                         t.unmeasured += 1;
+                    }
+                    // F718: the two are counted apart because `None` is *nobody
+                    // wrote it down* and `Some("")` is *the tool said nothing*,
+                    // and a tally that added the first as a zero would report the
+                    // second about 2,147 calls that predate F713.
+                    match output {
+                        Some(o) => t.output_bytes += o.len() as u64,
+                        None => t.output_unrecorded += 1,
                     }
                 }
             }
@@ -688,6 +718,25 @@ pub struct Spend {
     pub ttfb_ms_max: u64,
     /// `(finish, count)`, in first-seen order.
     pub finishes: Vec<(&'static str, usize)>,
+    /// 🚨 **F718: every distinct seed this attempt drew, and it is a set on
+    /// purpose.**
+    ///
+    /// F715 derives a call's seed from `(attempt, head digest, round)`, and
+    /// `round` restarts at zero with each phase — so two phases of one attempt
+    /// that posted the *same* head would repeat the whole triple and hand two
+    /// different prompts one sampler draw. Nothing enforces that they cannot:
+    /// it holds because the roster gives each phase its own head, which is a
+    /// property of the charter and not of the derivation. Over 96 attempts and
+    /// 1,910 model calls on this project's log a head has never been posted in
+    /// two phases of one attempt, so the collision has never happened — and
+    /// `seeds.len()` against [`Spend::seeded_calls`] is the reading that would
+    /// notice the day it does.
+    pub seeds: BTreeSet<u32>,
+    /// How many calls carried a seed at all. ⚠ Zero over a populated attempt
+    /// means the events predate F715, not that the sampler was pinned to one
+    /// value — and an attempt flown *unseeded* is the state every rate this
+    /// project has published was measured in.
+    pub seeded_calls: u32,
 }
 
 /// 🚨 **F511: where the completion went**, which a token total cannot say.
@@ -750,6 +799,17 @@ pub struct ToolTally {
     /// Calls that produced no measurable ending at all.
     pub unmeasured: u32,
     pub elapsed_ms: u64,
+    /// 🚨 **F718: how many bytes this tool handed the model**, summed over
+    /// the attempt. F713 put a tool's output on the log because it is the
+    /// prompt surface nothing could read; this is the only number that says
+    /// what that surface *weighed*, and F717 is the reason it is worth saying —
+    /// the field roughly quadruples an attempt's record.
+    pub output_bytes: u64,
+    /// Calls whose output was never written down. ⚠ The distinction is the
+    /// point: `output` is `serde(default)`, so a call logged before F713 reads
+    /// back as `None`, and folding that into `output_bytes` as a zero would
+    /// report *this tool returned nothing* about a call nobody recorded.
+    pub output_unrecorded: u32,
 }
 
 /// The longest silence inside an attempt, and what ended it.

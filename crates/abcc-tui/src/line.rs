@@ -109,12 +109,20 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
         Event::BriefRecorded { attempt, text } => {
             format!("{attempt} · brief · {} chars", text.len())
         }
+        // 🚨 **F718: the seed is here because without it two calls under one head
+        // render identically.** F715 put the sampler's seed on the record and no
+        // reader showed it — the same shape of defect F708 was, a field written
+        // and nobody reading it. It is the only value on this line that changes
+        // from one call to the next within a phase, so a feed that omits it
+        // cannot tell a retry from its parent or a seeded run from the eleven
+        // thousand unseeded events underneath it.
         Event::ModelCallStarted {
             model,
             head,
             budget,
+            seed,
             ..
-        } => format!("calling {model} · head {head} · {budget} tokens back"),
+        } => format!("calling {model} · head {head} · {budget} tokens back · seed {seed}"),
         Event::ModelCallEnded {
             usage,
             finish,
@@ -148,6 +156,7 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
             exit,
             elapsed_ms,
             unmeasured,
+            output,
             ..
         } => {
             // 🚨 The unmeasured class wins over the exit code, always. A stopped
@@ -158,7 +167,31 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
                 (None, Some(code)) => format!("exit {code}"),
                 (None, None) => "no exit status".to_string(),
             };
-            format!("tool {tool} · {ending} · {elapsed_ms} ms")
+            // ⚠ The size and not the body, for `BriefRecorded`'s reason above:
+            // this output is bounded at 64 KiB by `MAX_READ_BYTES` and at 4 MiB
+            // by `MAX_CAPTURE_BYTES`, neither of which is a line.
+            //
+            // 🚨 **Absent, never zero — F494's rule, and here it is load-bearing
+            // rather than pedantic.** `output` is `serde(default)`, so every one
+            // of the 2,147 tool calls logged before F713 reads back as `None`;
+            // rendering those as `0 chars` would put *the tool returned nothing*
+            // on two thousand rows where the truth is that nobody wrote it down.
+            //
+            // 🚨 **And it is gated on the ending, because the budget is real.**
+            // An unmeasured call spends the whole line saying *why nothing was
+            // measured* — that arm was already at 103 characters of F501's
+            // 112-character bar, and appending to it costs the tail of the error
+            // sentence, which is the one thing an operator opens that row for.
+            // So the size goes on the 92.8% of calls that end normally (156 of
+            // 2,156 are unmeasured), and the other 7.2% keep their sentence. The
+            // number is not lost: it is on the log, and `abcc replay` tallies it
+            // per tool, where there is room for both.
+            let back = match (unmeasured, output) {
+                (Some(_), _) => String::new(),
+                (None, Some(o)) => format!(" · {} bytes back", o.len()),
+                (None, None) => " · output not recorded".to_owned(),
+            };
+            format!("tool {tool} · {ending} · {elapsed_ms} ms{back}")
         }
         Event::RungRecorded { attempt, outcome } => {
             format!("{attempt} · rung {}", outcome_text(outcome))

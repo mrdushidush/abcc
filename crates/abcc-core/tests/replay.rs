@@ -22,6 +22,7 @@
 use abcc_core::attempt::{AttemptOutcome, Cause};
 use abcc_core::event::{CallShape, Composition, Event, Finish, Logged, TraceSignal, Usage};
 use abcc_core::outcome::Why;
+use abcc_core::redact::Secrets;
 use abcc_core::replay::{Replay, ending};
 use abcc_core::run::{AttemptPhase, MissionPhase};
 use abcc_core::seq::{AttemptId, MissionId, Seq, TaskId, UnitId};
@@ -666,5 +667,159 @@ fn a_task_nothing_moved_has_no_transition_to_report() {
     assert!(
         replay.endings().is_empty(),
         "a task with no state is in no row"
+    );
+}
+
+/// 🚨 **F718: the fold must not call eleven thousand unseeded events seeded.**
+///
+/// `Event::ModelCallStarted::seed` is `#[serde(default)]` over a `u32`, a type
+/// with no vacant value — so every one of the **1,910** model calls this project
+/// logged before F715 replays as `seed: 0`. A tally that counted rows rather
+/// than reading them would report the entire archive as *pinned to one seed*,
+/// which is the exact inverse of what F715 found: those calls were flown at the
+/// server's own sampling, where five identical requests gave five distinct
+/// answers.
+///
+/// ⚠ And the reading is a convention, not a proof. `seed_for` maps llama.cpp's
+/// *choose your own* sentinel to 0, so a derived seed genuinely can be zero —
+/// once in 2^32 calls. The fold therefore reports *no seed recorded* and the
+/// screen says so; neither says *unseeded*.
+#[test]
+fn a_pre_seed_attempt_is_not_counted_as_pinned_to_one_seed() {
+    let mut log = Log::new();
+    let (_, attempt) = log.a_task_under_attempt("flown before F715");
+    for _ in 0..4 {
+        log.after(
+            10,
+            Event::ModelCallStarted {
+                attempt,
+                provider: "local".to_owned(),
+                model: "m".to_owned(),
+                head: "Builders".to_owned(),
+                head_digest: "9d491d116cf78300".to_owned(),
+                ceiling: "exec".to_owned(),
+                budget: 8192,
+                // What the archive replays as. Not a seed of zero — no seed.
+                seed: 0,
+            },
+        );
+    }
+
+    let replay = Replay::over(&log.events);
+    let spend = &replay.tasks[0].attempts[0].spend;
+    assert_eq!(spend.calls, 4, "the calls themselves are still counted");
+    assert_eq!(
+        spend.seeded_calls, 0,
+        "an archive flown at the server's own sampling reads back as seeded"
+    );
+    assert!(
+        spend.seeds.is_empty(),
+        "a default that is not a value became one: {:?}",
+        spend.seeds
+    );
+}
+
+/// The other direction, and it is the one a naive fold also gets wrong.
+///
+/// F715 derives a seed from `(attempt, head digest, round)` and `round` restarts
+/// at zero with each phase, so two phases of one attempt posting the *same* head
+/// would repeat the triple and hand two different prompts one sampler draw.
+/// Nothing in the derivation forbids it — it holds because the roster gives each
+/// phase its own head, which is a fact about the charter. Over 96 attempts and
+/// 1,910 model calls on this project's log it has never happened.
+///
+/// 🚨 So `seeds.len()` is kept *apart* from `seeded_calls` rather than being
+/// inferred from it: the gap between the two is the only reading that would say
+/// so on the day it does, and a fold that stored a count could not.
+#[test]
+fn two_calls_that_drew_one_seed_are_visible_as_a_gap() {
+    let mut log = Log::new();
+    let (_, attempt) = log.a_task_under_attempt("seeded");
+    for seed in [2_859_510_835_u32, 1_612_451_988, 2_859_510_835] {
+        log.after(
+            10,
+            Event::ModelCallStarted {
+                attempt,
+                provider: "local".to_owned(),
+                model: "m".to_owned(),
+                head: "Builders".to_owned(),
+                head_digest: "9d491d116cf78300".to_owned(),
+                ceiling: "exec".to_owned(),
+                budget: 8192,
+                seed,
+            },
+        );
+    }
+
+    let replay = Replay::over(&log.events);
+    let spend = &replay.tasks[0].attempts[0].spend;
+    assert_eq!(spend.seeded_calls, 3, "three calls carried a seed");
+    assert_eq!(
+        spend.seeds.len(),
+        2,
+        "two calls drew the same seed and the fold cannot say so"
+    );
+}
+
+/// 🚨 **F718: what a tool handed the model, and the absence that is not a zero.**
+///
+/// F713 put a tool's output on `ToolCallEnded` because it is the prompt surface
+/// nothing could read back, and F717 measured the cost — 244 tokens at the
+/// median, 984 at the mean, roughly quadrupling an attempt's record. The tally
+/// is where an operator sees which tool is spending it.
+///
+/// ⚠ `None` is counted apart from `Some("")`. The first is *nobody wrote it
+/// down*, and it is what all **2,147** pre-F713 tool calls replay as; the second
+/// is *the tool said nothing*, which `bash` does on every successful quiet
+/// command. Folding the first in as a zero would report the second about two
+/// thousand rows.
+#[test]
+fn a_tools_output_is_tallied_and_an_unrecorded_one_is_not_a_zero() {
+    let mut log = Log::new();
+    let (_, attempt) = log.a_task_under_attempt("reads");
+    // 🚨 The first one carries a `·`, which is two bytes and one character, so
+    // the assertion below pins the *unit*. `Scrubbed::len()` is `String::len()`
+    // and therefore bytes — the right measure for a field whose whole question
+    // is what it costs on disk and in a context window, and the wrong one to
+    // call characters. On the sortie that found this, the two readings of one
+    // attempt's `read_file` output differed by 291.
+    let outputs = [
+        Some("crates/abcc-tui/src/line.rs · lines 1-444 of 444"),
+        Some(""),
+        None,
+    ];
+    for output in outputs {
+        log.after(
+            5,
+            Event::ToolCallStarted {
+                attempt,
+                tool: "read_file".to_owned(),
+                tier: "read".to_owned(),
+            },
+        );
+        log.after(
+            5,
+            Event::ToolCallEnded {
+                attempt,
+                tool: "read_file".to_owned(),
+                exit: Some(0),
+                elapsed_ms: 5,
+                unmeasured: None,
+                arguments: None,
+                output: output.map(|o| Secrets::default().scrub(o).text),
+            },
+        );
+    }
+
+    let replay = Replay::over(&log.events);
+    let tool = &replay.tasks[0].attempts[0].tools[0];
+    assert_eq!(tool.calls, 3);
+    assert_eq!(
+        tool.output_bytes, 49,
+        "the tally is not in bytes — 48 means somebody counted characters"
+    );
+    assert_eq!(
+        tool.output_unrecorded, 1,
+        "a call nobody recorded was folded in as a tool that returned nothing"
     );
 }

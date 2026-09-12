@@ -369,9 +369,13 @@ pub enum Event {
         /// carries its refusal text like any other result: the model is told, in
         /// its own transcript, and *what the model was told* is the question.
         ///
-        /// ⚠ **Not rendered on the feed** — F501, one event is one line, and
-        /// this one can be a whole file. [`Scrubbed`] rather than `String` for
-        /// the same reason `arguments` is: this is the field that puts a tool's
+        /// ⚠ **The body is not rendered on the feed** — F501, one event is
+        /// one line, and this one can be a whole file. 🆕 **F718 renders its
+        /// size**, which is `BriefRecorded`'s settlement of the same tension and
+        /// the only honest one-line summary of a document: F717 measured a tool
+        /// result at 244 tokens median and 984 mean, so *how much* is the
+        /// question an operator has. [`Scrubbed`] rather than `String` for the
+        /// same reason `arguments` is: this is the field that puts a tool's
         /// output on disk verbatim.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<Scrubbed>,

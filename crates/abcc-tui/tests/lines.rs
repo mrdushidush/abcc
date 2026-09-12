@@ -169,3 +169,159 @@ fn a_recorded_brief_is_a_document_and_it_still_takes_one_line() {
         "the feed does not say a brief was recorded or how big it was: {text}"
     );
 }
+
+/// 🚨 **F718: a field written and no reader is the same defect F708 was.**
+///
+/// F715 put the sampler's seed on `ModelCallStarted` because five identical
+/// requests to the champion had been five distinct answers and nothing on the
+/// log could say which draw produced which. The feed then rendered the model,
+/// the head and the budget — all three of which are *constant across a phase* —
+/// so two consecutive calls printed the same line, and the one value that
+/// distinguishes them, the one a re-flight needs, was on the record and on no
+/// screen.
+///
+/// ⚠ The assertion is on the seed's own digits rather than on the word `seed`:
+/// a line that said `seed` and interpolated something else would pass the
+/// weaker test, and *which* seed is the entire content of the field.
+#[test]
+fn a_model_call_line_names_its_seed() {
+    let text = line_for(Event::ModelCallStarted {
+        attempt: AttemptId::at(Seq::new(8)),
+        provider: "openai-compat".to_owned(),
+        model: "qwen3.6-35b-a3b-mtp@iq3_s".to_owned(),
+        head: "builders".to_owned(),
+        head_digest: "9d491d116cf78300".to_owned(),
+        ceiling: "exec".to_owned(),
+        budget: 16_384,
+        seed: 2_859_510_835,
+    });
+    assert_one_line(&text);
+    assert!(
+        text.contains("2859510835"),
+        "the seed is on the log and not on the screen: {text}"
+    );
+
+    // The negative control, and it is the reason this test is two calls rather
+    // than one: everything else on the line is frozen per phase (ADR-0011 freezes
+    // the head; the budget is a compile-time constant), so a renderer that
+    // dropped the seed would still produce two *identical* lines here and a
+    // test asserting only "contains seed" would not notice.
+    let next = line_for(Event::ModelCallStarted {
+        attempt: AttemptId::at(Seq::new(8)),
+        provider: "openai-compat".to_owned(),
+        model: "qwen3.6-35b-a3b-mtp@iq3_s".to_owned(),
+        head: "builders".to_owned(),
+        head_digest: "9d491d116cf78300".to_owned(),
+        ceiling: "exec".to_owned(),
+        budget: 16_384,
+        seed: 1_612_451_988,
+    });
+    assert_ne!(
+        text, next,
+        "two calls of one phase render identically, so the feed cannot tell \
+         a retry from its parent"
+    );
+}
+
+/// 🚨 **F718's other half, and `None` is the case that earns the test.**
+///
+/// F713 put a tool's output on `ToolCallEnded`; F717 then measured what it
+/// weighs — 244 tokens at the median, 984 at the mean — so the size is the one
+/// thing a one-line feed can honestly say about it. ⚠ But `output` is
+/// `#[serde(default)]`, so all **2,147** tool calls this project logged before
+/// F713 replay as `None`, and rendering those as `0 chars` would put *the tool
+/// returned nothing* on two thousand rows whose truth is that nobody wrote it
+/// down. That is F494's rule — absent, never zero — and here it is load-bearing
+/// rather than pedantic, because the archive is three orders of magnitude
+/// larger than the recorded part.
+#[test]
+fn a_tool_line_sizes_its_output_and_says_when_nobody_recorded_one() {
+    let body = "src/\nsrc/main.rs\nsrc/cli.rs";
+    let sized = line_for(Event::ToolCallEnded {
+        attempt: AttemptId::at(Seq::new(8)),
+        tool: "list_files".to_owned(),
+        exit: Some(0),
+        elapsed_ms: 40,
+        unmeasured: None,
+        arguments: None,
+        output: Some(Secrets::default().scrub(body).text),
+    });
+    assert_one_line(&sized);
+    assert!(
+        sized.contains(&body.len().to_string()),
+        "the feed does not say what the tool handed the model: {sized}"
+    );
+
+    let archived = line_for(Event::ToolCallEnded {
+        attempt: AttemptId::at(Seq::new(8)),
+        tool: "list_files".to_owned(),
+        exit: Some(0),
+        elapsed_ms: 40,
+        unmeasured: None,
+        arguments: None,
+        output: None,
+    });
+    assert_one_line(&archived);
+    assert!(
+        !archived.contains('0') || !archived.contains("0 chars"),
+        "a call nobody recorded reads as a tool that returned nothing: {archived}"
+    );
+    assert!(
+        archived.contains("not recorded"),
+        "the feed cannot tell an unrecorded output from an empty one: {archived}"
+    );
+
+    // And an output that really was empty is the third state, distinct from both.
+    let empty = line_for(Event::ToolCallEnded {
+        attempt: AttemptId::at(Seq::new(8)),
+        tool: "bash".to_owned(),
+        exit: Some(0),
+        elapsed_ms: 12,
+        unmeasured: None,
+        arguments: None,
+        output: Some(Secrets::default().scrub("").text),
+    });
+    assert_one_line(&empty);
+    assert_ne!(
+        empty.replace("bash", "list_files"),
+        archived,
+        "a tool that said nothing and a call nobody recorded render the same"
+    );
+}
+
+/// 🚨 **The size is deliberately absent when the call had no measurable ending,
+/// and this test is the record of that trade.**
+///
+/// F501's bar is `CLIP * 2` = 112 characters, and the unmeasured arm was already
+/// spending 103 of them: the tool, the sentence `no measurable ending:`, a
+/// `CLIP`-clipped [`Why`] and the elapsed time. Appending a size pushed the real
+/// log's worst row to **120** and the overflow came off the *end*, which is where
+/// the size would have been — so on that path the operator would have paid the
+/// tail of the error sentence for a number that then fell off the frame anyway.
+///
+/// ⚠ This is a trade and not a tidy-up: 156 of the 2,156 tool calls on this
+/// project's log are unmeasured, so **7.2% of rows carry no size on the feed**.
+/// They keep it on the log, and `abcc replay` tallies their characters per tool.
+#[test]
+fn an_unmeasured_call_spends_its_line_on_the_reason_instead() {
+    let text = line_for(Event::ToolCallEnded {
+        attempt: AttemptId::at(Seq::new(8)),
+        tool: "write_file".to_owned(),
+        exit: None,
+        elapsed_ms: 0,
+        unmeasured: Some(Why::EngineError {
+            detail: REAL_500.to_owned(),
+        }),
+        arguments: None,
+        output: Some(Secrets::default().scrub(REAL_500).text),
+    });
+    assert_one_line(&text);
+    assert!(
+        !text.contains("bytes back"),
+        "the size crowded out the reason the call could not be measured: {text}"
+    );
+    assert!(
+        text.contains("no measurable ending"),
+        "the one thing this row exists to say is missing: {text}"
+    );
+}
