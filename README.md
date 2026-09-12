@@ -64,9 +64,13 @@ and `--home` moves it. `abcc run` needs an OpenAI-compatible server on
 It **refuses to run against a model it cannot confirm the server is holding** —
 LM Studio answers a request naming a model it does not have by using whichever
 model *is* loaded, so set `ABCC_MODEL_FINGERPRINT` to a substring of the id the
-server reports if the two do not match exactly. And it **never says
-`Accomplished`**: there is no gate before the Gate milestone, so a working
-attempt ends `Uncertain` and asks a person, which is what `abcc accept` answers.
+server reports if the two do not match exactly. And **only a measurement says
+`Accomplished`** — never the model. The driver runs the gate over the
+before/after snapshot pair and reads a headline that is `Green` and nothing
+else: every declared rung measured, none of them red. What the model says about
+its own work is a `Claim`, and there is no function anywhere that turns one into
+an outcome. An attempt no rung could measure ends `Uncertain` and asks a person,
+which is what `abcc accept` answers.
 
 ## Relationship to ABCC v1
 
@@ -81,8 +85,10 @@ configuration and a 575-line CONTRIBUTING that do not apply to it.
 read as a specification and as a test corpus, their catalogued defects became
 test cases, and the code was written fresh. That is why it ships
 `MIT OR Apache-2.0` with no inherited-code caveat. The art, the audio and the
-identity are David's own and are carried across unchanged. See
-[`CREDITS.md`](CREDITS.md).
+identity are David's own. ⚠ **They are not in this repository**: the sprite
+corpus lives outside it and `abcc paint` is told where by `--sprites` or
+`ABCC_SPRITES`, so a fresh clone builds and runs but cannot draw the
+battlefield until it is pointed at a corpus. See [`CREDITS.md`](CREDITS.md).
 
 **There is no migration path from v1's database, and that is deliberate**: its
 task rows carry no tokens, no cost and no labels. The corpora that were worth
@@ -92,7 +98,7 @@ keeping were extracted and are already running in 2.0's measurement harness.
 
 The architecture was not designed in this repository. It came out of a research
 phase that produced thirteen workstream documents, two acceptance sweeps, a
-signed-off summary and fourteen ADRs, against 488 numbered findings — all of it
+signed-off summary and fourteen ADRs, against 713 numbered findings — all of it
 in the ABCC 2.0 research repository, which is where every claim in the source
 comments can be checked.
 

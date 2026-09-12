@@ -35,9 +35,15 @@ because it is deserved, not because it is owed.
 ## Assets
 
 The 96 voice lines, the sprite art and the identity are David's own work,
-generated or drawn for v1 and carried into 2.0 unchanged. The voice packs are
-`tactical`, `mission-control` and `field-command`; no franchise naming from the
-original pull request survives, and none is used.
+generated or drawn for v1. ⚠ **None of it is in this repository.** The sprite
+corpus is 35 MB, of which 34.3 MB is the four animations that are the only art
+the field will draw, and embedding those would put binary assets permanently
+into this history for art that is expected to be replaced; `abcc paint` is
+pointed at the corpus with `--sprites` or `ABCC_SPRITES` instead. So *carried
+into 2.0 unchanged* describes the provenance and not the packaging.
+
+The voice packs are `tactical`, `mission-control` and `field-command`; no
+franchise naming from the original pull request survives, and none is used.
 
 ## Upstream
 
