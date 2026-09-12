@@ -385,3 +385,97 @@ fn a_task_with_no_attempt_says_so() {
         "{page}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W13's ladder, on the page
+// ---------------------------------------------------------------------------
+
+/// ⚠ **An empty ladder is printed as an absence**, not as a zero.
+///
+/// This is F721's shape at the report layer: `0.0 min / 0` is a reading, and a
+/// reading is what a person quotes. *Nothing recorded* is the true statement,
+/// and the page has to be the thing that says it.
+#[test]
+fn the_board_says_the_ladder_is_empty_rather_than_reporting_zero_minutes() {
+    let subject = subject();
+    {
+        let mut store = subject.store();
+        store
+            .append(Event::MissionCreated {
+                title: "m".to_owned(),
+            })
+            .expect("mission");
+        a_truncated_attempt(&mut store, "smoke one");
+    }
+
+    let page = subject.run(Command::Replay { task: None }).expect("replay");
+    assert!(
+        page.contains("W13's ladder"),
+        "the archive names the measurement even when it has none of it:\n{page}"
+    );
+    assert!(page.contains("nothing recorded"), "{page}");
+    assert!(
+        !page.contains("0.0 min"),
+        "🚨 an absence rendered as a zero is a measurement nobody took:\n{page}"
+    );
+}
+
+/// 🚨 **The ladder on the page: per change, with the passes beside it and the
+/// denominator it does not have said out loud.**
+///
+/// Three recordings over two changes. The page has to report **two**, because
+/// the ladder is minutes per *merged change* — counting the events would show
+/// the burden falling as a reward for reviewing more.
+#[test]
+fn the_board_prints_the_ladder_per_change_and_admits_it_has_no_denominator() {
+    let subject = subject();
+    for (change, seconds, by, boundary) in [
+        ("223ae3a", 600, Some("david"), true),
+        // The same change, read again by somebody else, with the flag left off.
+        ("223ae3a", 300, None, false),
+        ("d6c60e0", 120, Some("david"), false),
+    ] {
+        subject
+            .run(Command::Review {
+                change: change.to_owned(),
+                seconds,
+                by: by.map(str::to_owned),
+                crossed_boundary: boundary,
+            })
+            .expect("review");
+    }
+
+    let page = subject.run(Command::Replay { task: None }).expect("replay");
+    assert!(
+        page.contains("2 change(s) · 3 recording(s)"),
+        "🚨 two changes read three times, and both numbers are on the page:\n{page}"
+    );
+    assert!(
+        !page.contains("3 change(s)"),
+        "🚨 a second pass over one change is not a second change:\n{page}"
+    );
+    assert!(
+        page.contains("17.0 min total"),
+        "the minutes sum across every recording:\n{page}"
+    );
+    assert!(
+        page.contains("8.5 min median"),
+        "and the median is per change — 15.0 and 2.0 — never per recording:\n{page}"
+    );
+    assert!(
+        page.contains("1 crossed a module boundary"),
+        "M3 counts those, so the board does:\n{page}"
+    );
+    assert!(
+        page.contains("2 passes"),
+        "the row says the change was read twice:\n{page}"
+    );
+    assert!(
+        page.contains("david, operator") || page.contains("operator, operator"),
+        "and by whom, distinct and in order:\n{page}"
+    );
+    assert!(
+        page.contains("no denominator"),
+        "🚨 the one reading this number invites is the one it cannot support:\n{page}"
+    );
+}

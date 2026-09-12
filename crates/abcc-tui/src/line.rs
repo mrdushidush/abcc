@@ -261,7 +261,7 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
         } => format!(
             "review · {} · {} · {by}{}",
             clip(change),
-            minutes(*seconds),
+            minutes(u64::from(*seconds)),
             if *crossed_boundary {
                 " · crosses a module boundary"
             } else {
@@ -334,8 +334,13 @@ pub fn clip(text: &str) -> String {
 /// W13's ladder is measured in minutes and the log stores **seconds**, because a
 /// float in a record whose whole purpose is to be summed over months stops
 /// summing exactly. The conversion belongs here, at the screen, and nowhere else.
+///
+/// ⚠ `u64` rather than the event's `u32`: one review fits in a `u32` and a
+/// ladder's **sum** is the quantity being summed over months, so the widening
+/// happens where the two meet rather than at whichever call site overflows
+/// first.
 #[must_use]
-pub fn minutes(seconds: u32) -> String {
+pub fn minutes(seconds: u64) -> String {
     format!("{}.{} min", seconds / 60, (seconds % 60) * 10 / 60)
 }
 

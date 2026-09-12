@@ -379,7 +379,8 @@ fn review_minutes_are_summed_from_the_log() {
     // starting the measurement later leaves it with no baseline. Nothing writes
     // this event yet; an empty ladder reads as zero of zero, which is honest.
     let empty = View::new(Theme::Command);
-    assert_eq!(empty.review(), (0, 0));
+    assert_eq!(empty.ladder().changes.len(), 0);
+    assert_eq!(empty.ladder().total_seconds(), 0);
 
     let mut log = Replay::new();
     log.push(Event::ReviewRecorded {
@@ -396,7 +397,10 @@ fn review_minutes_are_summed_from_the_log() {
     });
     let mut reader = Reader::new(Theme::Command);
     reader.pump(&log);
-    assert_eq!(reader.view().review(), (840, 2));
+    let ladder = reader.view().ladder();
+    assert_eq!(ladder.total_seconds(), 840);
+    assert_eq!(ladder.changes.len(), 2, "two changes, because they are two");
+    assert_eq!(ladder.recordings, 2);
     assert!(
         reader.view().feed()[0]
             .text
@@ -424,4 +428,51 @@ fn a_log_that_cannot_be_read_is_shown_and_never_swallowed() {
     let run = a_skeleton_run();
     reader.pump(&run.log);
     assert!(reader.error().is_none());
+}
+
+#[test]
+fn one_change_reviewed_twice_is_one_change_and_not_two() {
+    // 🚨 The ladder's unit is the **change**, and this is the negative control
+    // for it. `abcc review` takes a `--by` precisely so two people can read one
+    // change, and a second pass over a hard one is ordinary — so counting the
+    // *events* would report two changes at half the minutes each, which is the
+    // ladder improving as a reward for reviewing more. Nothing had ever written
+    // one of these events, so no screen could have shown the difference.
+    let mut log = Replay::new();
+    log.push(Event::ReviewRecorded {
+        change: "f3ce25c".to_string(),
+        seconds: 600,
+        by: "david".to_string(),
+        crossed_boundary: true,
+    });
+    log.advance(1).push(Event::ReviewRecorded {
+        change: "f3ce25c".to_string(),
+        seconds: 300,
+        by: "operator".to_string(),
+        crossed_boundary: false,
+    });
+    let mut reader = Reader::new(Theme::Command);
+    reader.pump(&log);
+    let ladder = reader.view().ladder();
+
+    assert_eq!(
+        ladder.changes.len(),
+        1,
+        "two recordings of one change are one change"
+    );
+    assert_eq!(ladder.recordings, 2, "and the passes are still countable");
+    assert_eq!(
+        ladder.total_seconds(),
+        900,
+        "the minutes sum onto the change"
+    );
+    assert_eq!(
+        ladder.changes[0].by,
+        vec!["david".to_string(), "operator".to_string()],
+        "both readers are named, in the order they read it"
+    );
+    // Sticky, and only in the true direction: whether a change crossed a module
+    // boundary is a property of its diff, and the second reviewer leaving the
+    // flag off does not make it stop being true.
+    assert!(ladder.changes[0].crossed_boundary);
 }

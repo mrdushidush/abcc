@@ -29,6 +29,16 @@
 //! here takes `&mut`, and that is the property, not an accident of the current
 //! call sites.
 //!
+//! # The one thing folded here that is not a task
+//!
+//! [`Ladder`] — W13's measurement, which is **human review minutes per merged
+//! change**. A review names a *change*, which lives in the version control and
+//! not in the lifecycle, so it belongs to no task and no attempt and is folded
+//! beside them. It is here rather than on a screen because the archive is what
+//! this project reaches for when it wants a number about its own history, and
+//! for eleven thousand events it could not state the one measurement the
+//! milestone is judged on.
+//!
 //! # The two things a fold cannot recover, said here rather than discovered
 //!
 //! 1. 🚨 **A gap needs an event on both sides**, which is [`crate::fun`]'s first
@@ -70,6 +80,11 @@ pub struct Replay {
     pub tasks: Vec<TaskTrace>,
     /// How many events the fold walked, so a report can say what it read.
     pub events: usize,
+    /// 🚨 **W13's ladder**, which is the one measurement `PLAN.md` §5 requires
+    /// from the first milestone — and the one thing on this log that belongs to
+    /// no task. A review names a **change**, not an attempt, so it folds here
+    /// beside the tasks rather than under one.
+    pub ladder: Ladder,
 }
 
 impl Replay {
@@ -95,6 +110,7 @@ impl Replay {
         Self {
             tasks,
             events: log.len(),
+            ladder: fold.ladder,
         }
     }
 
@@ -159,6 +175,7 @@ impl Replay {
 #[derive(Default)]
 struct Fold {
     tasks: Vec<TaskTrace>,
+    ladder: Ladder,
     by_task: Vec<(TaskId, usize)>,
     /// `(attempt, task position, attempt position within that task)`.
     by_attempt: Vec<(AttemptId, usize, usize)>,
@@ -233,6 +250,15 @@ impl Fold {
                     a.answer = Some(answer.clone());
                 }
             }
+            // 🚨 The one event here that names no task and no attempt. A review
+            // is about a *change*, which is a thing in the version control and
+            // not a thing in the lifecycle, so it folds beside the tasks.
+            Event::ReviewRecorded {
+                change,
+                seconds,
+                by,
+                crossed_boundary,
+            } => self.ladder.record(change, *seconds, by, *crossed_boundary),
             other => self.absorb(other, seq, at),
         }
     }
@@ -307,6 +333,130 @@ impl Fold {
             attempt.absorb(seq, at_ms, event);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// W13's ladder
+// ---------------------------------------------------------------------------
+
+/// 🚨 **Human review minutes per merged change** — W13's ladder, and the one
+/// measurement `PLAN.md` §5 requires from the first milestone rather than from
+/// Self-Host, because a ladder whose baseline starts at the finish is
+/// unfalsifiable.
+///
+/// 🚨 **The unit is the change, and a change reviewed twice is one change.**
+/// `abcc review` takes a `--by`, so two people reading one change is ordinary
+/// use and so is a second pass over it. Counting the *events* would report two
+/// changes at half the minutes each — the ladder moving in its good direction
+/// as a reward for reviewing more. So rows are keyed on the change, and
+/// [`Ladder::recordings`] is kept beside [`Ladder::changes`] for the same reason
+/// `seeds` is kept apart from `seeded_calls` (F722): the gap between the two is
+/// the second pass, and only a reading that keeps both can say so.
+///
+/// ⚠ **The denominator is not on this log.** These are the changes somebody
+/// recorded a review of. A change that was merged and never reviewed writes no
+/// event at all, so no coverage figure can be derived here — and none is
+/// offered, because *reviewed 5 of 5* would be true of this fold and false of
+/// the repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ladder {
+    /// One row per distinct change, in the order the log first reviewed each.
+    pub changes: Vec<Reviewed>,
+    /// How many [`Event::ReviewRecorded`] events the fold walked — passes, not
+    /// changes.
+    pub recordings: u32,
+}
+
+impl Ladder {
+    /// Every minute anybody recorded, in seconds.
+    #[must_use]
+    pub fn total_seconds(&self) -> u64 {
+        self.changes.iter().map(|c| c.seconds).sum()
+    }
+
+    /// The median change's seconds, which is the figure a trend is read off.
+    ///
+    /// ⚠ The median **per change**, never per recording: a change reviewed
+    /// twice contributes its total once, because that is what the ladder's unit
+    /// means. `None` for an empty ladder — an absence rather than a zero, since
+    /// zero is also a legal median.
+    #[must_use]
+    pub fn median_seconds(&self) -> Option<u64> {
+        if self.changes.is_empty() {
+            return None;
+        }
+        let mut all: Vec<u64> = self.changes.iter().map(|c| c.seconds).collect();
+        all.sort_unstable();
+        let mid = all.len() / 2;
+        Some(if all.len().is_multiple_of(2) {
+            u64::midpoint(all[mid - 1], all[mid])
+        } else {
+            all[mid]
+        })
+    }
+
+    /// How many changes crossed a module boundary — M3 counts ten consecutive
+    /// of those, so it is the count that milestone is read against.
+    #[must_use]
+    pub fn crossed(&self) -> usize {
+        self.changes.iter().filter(|c| c.crossed_boundary).count()
+    }
+
+    /// Take one recording.
+    ///
+    /// 🚨 **Public because it is the one place the ladder's unit is decided**,
+    /// and there are two readers of it: this crate's after-action fold and
+    /// `abcc-tui`'s live status bar. When each kept its own tally they could
+    /// disagree about the denominator without either being visibly wrong — and
+    /// for the whole life of the project neither had ever seen a row, so nothing
+    /// would have shown it.
+    pub fn record(&mut self, change: &str, seconds: u32, by: &str, crossed_boundary: bool) {
+        self.recordings += 1;
+        let at = self
+            .changes
+            .iter()
+            .position(|c| c.change == change)
+            .unwrap_or_else(|| {
+                self.changes.push(Reviewed {
+                    change: change.to_owned(),
+                    seconds: 0,
+                    by: Vec::new(),
+                    crossed_boundary: false,
+                    recordings: 0,
+                });
+                self.changes.len() - 1
+            });
+        let row = &mut self.changes[at];
+        row.seconds += u64::from(seconds);
+        row.recordings += 1;
+        // 🚨 Sticky, and only in the true direction: whether a change crossed a
+        // module boundary is a property of its diff. One reviewer noticing it
+        // does not stop being true because the next one left the flag off.
+        row.crossed_boundary |= crossed_boundary;
+        if !row.by.iter().any(|w| w == by) {
+            row.by.push(by.to_owned());
+        }
+    }
+}
+
+/// One change, and every review anybody recorded against it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reviewed {
+    /// Whatever the operator named it — a sha, a task id, a tag. ⚠ **The fold
+    /// does not resolve it**: two spellings of one commit are two rows, because
+    /// the log holds the string and nothing here can ask the version control
+    /// what it meant.
+    pub change: String,
+    /// Summed over every recording of this change. Seconds, because the record's
+    /// unit is seconds — the minutes a person types are converted once, at the
+    /// argument edge.
+    pub seconds: u64,
+    /// Who recorded a review of it, distinct, in first-recording order.
+    pub by: Vec<String>,
+    /// True if **any** recording said so. See [`Ladder::record`].
+    pub crossed_boundary: bool,
+    /// How many passes those minutes were.
+    pub recordings: u32,
 }
 
 /// One final state, and the attempt endings that reached it.

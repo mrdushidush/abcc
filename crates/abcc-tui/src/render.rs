@@ -64,8 +64,15 @@ fn header_line(reader: &Reader, now_ms: i64) -> TextLine<'static> {
     if let Some(ms) = view.silence_ms(now_ms) {
         parts.push(format!("quiet {}", human_ms(ms)));
     }
-    let (seconds, changes) = view.review();
-    parts.push(format!("review {} / {changes}", minutes(seconds)));
+    // 🚨 `changes`, and the word is load-bearing: the ladder's unit is the
+    // change and not the recording, so two passes over one change are one
+    // change here. `Ladder` owns that rule for both readers of it.
+    let ladder = view.ladder();
+    parts.push(format!(
+        "review {} / {}",
+        minutes(ladder.total_seconds()),
+        ladder.changes.len()
+    ));
     TextLine::from(parts.join(" · ")).style(Style::new().add_modifier(Modifier::BOLD))
 }
 

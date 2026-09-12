@@ -29,6 +29,7 @@ use abcc_core::outcome::Outcome;
 use abcc_core::replay::{AttemptTrace, Quiet, Replay, TaskTrace};
 use abcc_core::seq::TaskId;
 use abcc_tui::Theme;
+use abcc_tui::line::minutes;
 
 use crate::cli::TaskRef;
 use crate::fun::read_all;
@@ -118,11 +119,99 @@ fn board(replay: &Replay, out: &mut impl Write) -> Result<(), AppError> {
         writeln!(out)?;
     }
 
+    ladder(replay, out)?;
+
     writeln!(
         out,
         "an ending is the attempt's, and a state is the task's — they are \
          different facts.\n`abcc replay t42` for one task, end to end."
     )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// W13's ladder
+// ---------------------------------------------------------------------------
+
+/// 🚨 **The one measurement `PLAN.md` §5 requires from the first milestone —
+/// and the fold a person opens to ask what the whole log says was silent about
+/// it.**
+///
+/// `abcc review` has written [`abcc_core::event::Event::ReviewRecorded`] since
+/// Skeleton, and `abcc-tui` renders one as a feed line and keeps a status-bar
+/// total. Those are a *live run's* screen. The archive — the instrument this
+/// project reaches for when it wants a number about its own history — could not
+/// say what the ladder was at, and W13's whole claim is that a self-hosting
+/// project fails on **review burden** before it fails on anything else. A
+/// measurement with a writer, a line and no reading is F718 one layer up.
+fn ladder(replay: &Replay, out: &mut impl Write) -> Result<(), AppError> {
+    let ladder = &replay.ladder;
+    writeln!(out, "W13's ladder — human review minutes per merged change")?;
+    if ladder.changes.is_empty() {
+        writeln!(
+            out,
+            "  nothing recorded: none of these {} event(s) is a review, so the ladder has no",
+            replay.events
+        )?;
+        writeln!(
+            out,
+            "  baseline — and a ladder whose baseline starts at Self-Host is unfalsifiable."
+        )?;
+        writeln!(
+            out,
+            "  `abcc review <change> <minutes>` writes one. The minutes it records are a person's."
+        )?;
+        writeln!(out)?;
+        return Ok(());
+    }
+    // 🚨 Changes and recordings are two numbers on purpose. They are equal until
+    // somebody reviews one change twice — a second pass, or a second reviewer —
+    // and the gap between them is the only thing on the page that can say so.
+    let mut head = vec![
+        format!("{} change(s)", ladder.changes.len()),
+        format!("{} recording(s)", ladder.recordings),
+        format!("{} total", minutes(ladder.total_seconds())),
+    ];
+    if let Some(median) = ladder.median_seconds() {
+        head.push(format!("{} median", minutes(median)));
+    }
+    let crossed = ladder.crossed();
+    if crossed > 0 {
+        head.push(format!("{crossed} crossed a module boundary"));
+    }
+    writeln!(out, "  {}", head.join(" · "))?;
+    for row in &ladder.changes {
+        let mut notes = Vec::new();
+        if row.crossed_boundary {
+            notes.push("crosses a module boundary".to_owned());
+        }
+        if row.recordings > 1 {
+            notes.push(format!("{} passes", row.recordings));
+        }
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!("  · {}", notes.join(" · "))
+        };
+        writeln!(
+            out,
+            "    {:<14} {:>9}  {}{notes}",
+            one_line(&row.change, 14),
+            minutes(row.seconds),
+            row.by.join(", ")
+        )?;
+    }
+    // ⚠ The sentence that keeps the number honest, printed every time the
+    // number is, because the reading it invites is the one it cannot support.
+    writeln!(
+        out,
+        "  ⚠ changes somebody recorded a review of — never changes that were merged."
+    )?;
+    writeln!(
+        out,
+        "    A merge nobody reviewed writes no event, so this fold has no denominator."
+    )?;
+    writeln!(out)?;
     Ok(())
 }
 

@@ -27,6 +27,11 @@
 //! minutes, and until `abcc review` there was nobody to write one. W13's ladder
 //! is measured in human review minutes per merged change, and a ladder whose
 //! baseline starts at Self-Host is unfalsifiable.
+//!
+//! ⚠ And a writer and a live screen were still not a reading. [`replay`] prints
+//! the ladder because the archive is the instrument a person opens to ask what
+//! the whole log says — it had folded every review to nothing, which nobody
+//! could see while the count was zero.
 
 use std::io::Write;
 

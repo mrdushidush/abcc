@@ -823,3 +823,128 @@ fn a_tools_output_is_tallied_and_an_unrecorded_one_is_not_a_zero() {
         "a call nobody recorded was folded in as a tool that returned nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W13's ladder
+// ---------------------------------------------------------------------------
+
+/// 🚨 **The archive could not state the one measurement the milestone is judged
+/// on**, and this is the fold that fixes it.
+///
+/// `abcc review` has written the event since Skeleton and the live screen has
+/// rendered it, but `abcc replay` — the instrument this project reaches for when
+/// it wants a number about its own history — folded it to nothing. Read the
+/// claims below rather than the arithmetic: each one is a decision about what a
+/// review *means*, and each would go wrong quietly.
+#[test]
+fn the_ladder_folds_reviews_onto_the_change_and_not_onto_the_event() {
+    let mut log = Log::new();
+    log.after(
+        0,
+        Event::ReviewRecorded {
+            change: "223ae3a".to_owned(),
+            seconds: 600,
+            by: "david".to_owned(),
+            crossed_boundary: true,
+        },
+    );
+    // The same change, read again by somebody else, with the boundary flag left
+    // off — which is the ordinary shape, because `--by` exists for exactly this.
+    log.after(
+        60_000,
+        Event::ReviewRecorded {
+            change: "223ae3a".to_owned(),
+            seconds: 300,
+            by: "operator".to_owned(),
+            crossed_boundary: false,
+        },
+    );
+    log.after(
+        60_000,
+        Event::ReviewRecorded {
+            change: "d6c60e0".to_owned(),
+            seconds: 120,
+            by: "david".to_owned(),
+            crossed_boundary: false,
+        },
+    );
+
+    let ladder = Replay::over(&log.events).ladder;
+
+    // 🚨 The claim. Two changes, three recordings — and the two numbers are kept
+    // apart precisely because they differ here.
+    assert_eq!(ladder.changes.len(), 2, "the unit is the change");
+    assert_eq!(ladder.recordings, 3, "the passes stay countable");
+
+    let first = &ladder.changes[0];
+    assert_eq!(
+        first.change, "223ae3a",
+        "in the order the log first read them"
+    );
+    assert_eq!(first.seconds, 900, "the minutes sum onto the change");
+    assert_eq!(first.recordings, 2);
+    assert_eq!(
+        first.by,
+        vec!["david".to_owned(), "operator".to_owned()],
+        "both readers, distinct, in first-recording order"
+    );
+    // Sticky, and only in the true direction: whether a change crossed a module
+    // boundary is a property of its diff. One reviewer noticing it does not stop
+    // being true because the next one left the flag off.
+    assert!(first.crossed_boundary);
+    assert!(!ladder.changes[1].crossed_boundary);
+
+    assert_eq!(ladder.total_seconds(), 1020);
+    assert_eq!(ladder.crossed(), 1, "M3 counts the boundary-crossing ones");
+    // The median is per change and never per recording: 900 and 120, so 510.
+    assert_eq!(ladder.median_seconds(), Some(510));
+}
+
+/// ⚠ An empty ladder is an **absence**, and says so as one.
+///
+/// F721's trap in its own words: a `0` where a type has no vacant value reads as
+/// a measurement. The median of no changes is `None` rather than `0`, because
+/// zero is also a legal median — a change somebody looked at for under thirty
+/// seconds rounds to it.
+#[test]
+fn an_empty_ladder_is_an_absence_and_not_a_zero() {
+    let mut log = Log::new();
+    log.a_task_under_attempt("a task with no review anywhere near it");
+    let ladder = Replay::over(&log.events).ladder;
+
+    assert!(ladder.changes.is_empty());
+    assert_eq!(ladder.recordings, 0);
+    assert_eq!(ladder.total_seconds(), 0);
+    assert_eq!(
+        ladder.median_seconds(),
+        None,
+        "no changes is not zero minutes"
+    );
+    assert_eq!(ladder.crossed(), 0);
+}
+
+/// ⚠ **The fold does not resolve a change name**, and this pins it rather than
+/// leaving it to be discovered.
+///
+/// The operator types the string: a short sha, a long sha, a task id, a tag.
+/// Nothing here can ask the version control whether two of them are one commit,
+/// so two spellings are two rows — and a ladder that silently merged them would
+/// be claiming a resolution it never performed.
+#[test]
+fn two_spellings_of_one_commit_are_two_rows_because_the_log_cannot_tell() {
+    let mut log = Log::new();
+    for change in ["f3ce25c", "f3ce25c0d9f2"] {
+        log.after(
+            0,
+            Event::ReviewRecorded {
+                change: change.to_owned(),
+                seconds: 60,
+                by: "david".to_owned(),
+                crossed_boundary: false,
+            },
+        );
+    }
+    let ladder = Replay::over(&log.events).ladder;
+    assert_eq!(ladder.changes.len(), 2);
+    assert_eq!(ladder.recordings, 2);
+}

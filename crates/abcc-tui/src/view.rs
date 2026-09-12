@@ -23,6 +23,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use abcc_core::event::{Event, Logged};
+use abcc_core::replay::Ladder;
 use abcc_core::run::Mode;
 use abcc_core::seq::{AttemptId, MissionId, Seq, TaskId, UnitId};
 use abcc_core::task::{Liveness, TaskState};
@@ -138,8 +139,12 @@ pub struct View {
     feed: VecDeque<Line>,
     first_at_ms: Option<i64>,
     last_at_ms: Option<i64>,
-    review_seconds: u32,
-    reviews: usize,
+    /// 🚨 W13's ladder, folded by `abcc-core` rather than here. This crate used
+    /// to keep its own running total and its own count, and the count was of
+    /// *events* while the ladder's unit is *changes* — a change reviewed twice
+    /// would have read as two changes at half the minutes each. One fold, two
+    /// readers.
+    ladder: Ladder,
 }
 
 impl View {
@@ -158,8 +163,7 @@ impl View {
             feed: VecDeque::new(),
             first_at_ms: None,
             last_at_ms: None,
-            review_seconds: 0,
-            reviews: 0,
+            ladder: Ladder::default(),
         }
     }
 
@@ -235,10 +239,12 @@ impl View {
                 let task = *task;
                 self.card(task, logged).question = None;
             }
-            Event::ReviewRecorded { seconds, .. } => {
-                self.review_seconds += seconds;
-                self.reviews += 1;
-            }
+            Event::ReviewRecorded {
+                change,
+                seconds,
+                by,
+                crossed_boundary,
+            } => self.ladder.record(change, *seconds, by, *crossed_boundary),
             _ => {}
         }
         // The heartbeat, for anything that names a task directly or names one of
@@ -353,13 +359,13 @@ impl View {
         self.last_at_ms
     }
 
-    /// Review minutes and the number of changes they were spent on — W13's
-    /// ladder, which is measured in human review minutes and never in
-    /// agent-authored commits. Shown from the first milestone so the ladder has a
-    /// baseline; nothing writes it yet, and an empty ladder says so honestly.
+    /// W13's ladder — human review minutes per merged change, which is measured
+    /// in what a person spent and never in agent-authored commits. Shown from
+    /// the first milestone so the ladder has a baseline, and an empty one says
+    /// so honestly.
     #[must_use]
-    pub fn review(&self) -> (u32, usize) {
-        (self.review_seconds, self.reviews)
+    pub fn ladder(&self) -> &Ladder {
+        &self.ladder
     }
 
     /// How long the whole run has been silent, against `now`.

@@ -345,8 +345,18 @@ fn the_reader_shows_a_real_run_from_the_log_alone() {
         view.version(),
         view.pid()
     );
-    let (minutes, changes) = view.review();
-    println!("review {minutes} min over {changes} change(s)");
+    // ⚠ This line used to read `view.review()` into a binding called `minutes`
+    // and print it as minutes. The accessor returned **seconds**, so the one
+    // diagnostic that reads a real log would have reported the ladder sixty
+    // times too high the first time anybody recorded a review — F723's shape,
+    // in a test.
+    let ladder = view.ladder();
+    println!(
+        "review {} over {} change(s) in {} recording(s)",
+        abcc_tui::line::minutes(ladder.total_seconds()),
+        ladder.changes.len(),
+        ladder.recordings
+    );
     for card in view.cards() {
         println!(
             "  {:<6} {:<22} attempts {} last seq {}  {}",
