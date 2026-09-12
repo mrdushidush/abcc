@@ -342,3 +342,67 @@ fn a_model_call_written_before_the_head_was_digested_still_replays() {
         "a head nobody digested came back claiming one: {head_digest}"
     );
 }
+/// ⚠ **The same half for F713**, and here the distinction the `Option` carries
+/// is worth the field: a `tool_call_ended` written before this existed reads
+/// back as `None` — *nobody recorded what the tool said* — which is not the
+/// empty string, and the empty string is a real answer a tool can give.
+///
+/// 🚨 All 11,311 events on this project's log are of that older shape, so every
+/// funnel query and every replay has to keep working across the boundary. It
+/// is the query that reads the field which has to say *from here on*.
+#[test]
+fn a_tool_call_written_before_its_output_was_recorded_still_replays() {
+    // A `tool_call_ended` exactly as the live log holds it.
+    let old = r#"{
+        "kind": "tool_call_ended",
+        "attempt": 645,
+        "tool": "apply_patch",
+        "exit": null,
+        "elapsed_ms": 12,
+        "unmeasured": {"why": "failed_before_running", "detail": "no such file"}
+    }"#;
+
+    let event: Event = serde_json::from_str(old).expect("an old event must still replay");
+    let Event::ToolCallEnded {
+        tool,
+        output,
+        arguments,
+        ..
+    } = &event
+    else {
+        panic!("wrong variant: {event:?}");
+    };
+    assert_eq!(tool, "apply_patch");
+    assert!(
+        output.is_none(),
+        "a tool nobody recorded came back having spoken: {output:?}"
+    );
+    assert!(arguments.is_none());
+}
+
+/// The readback shape itself, pinned the way `brief_recorded`'s is: a tool's
+/// output is **one string at `$.output`**. Wrap it in a struct for a `bytes`
+/// count or a `truncated` flag later and every query written against it starts
+/// answering null with nothing failing.
+#[test]
+fn a_tools_output_reads_back_as_one_string() {
+    const SAID: &str = "error[E0308]: mismatched types\n  --> src/lib.rs:12:9";
+    let written = serde_json::to_string(&Event::ToolCallEnded {
+        attempt: AttemptId::at(Seq::new(645)),
+        tool: "bash".to_owned(),
+        exit: Some(101),
+        elapsed_ms: 900,
+        unmeasured: None,
+        arguments: None,
+        output: Some(Secrets::default().scrub(SAID).text),
+    })
+    .expect("serializable");
+    let json: serde_json::Value = serde_json::from_str(&written).expect("valid json");
+
+    assert_eq!(json["kind"], "tool_call_ended");
+    assert_eq!(
+        json["output"], SAID,
+        "a tool's output is no longer one string at $.output, so every readback \
+         query over it now answers null: {written}"
+    );
+}

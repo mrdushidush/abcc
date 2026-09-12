@@ -640,11 +640,23 @@ impl<'a> TurnLoop<'a> {
                         unmeasured: result.unmeasured.clone(),
                         // F505: what was refused, kept only when it was.
                         arguments: result.unmeasured.is_some().then_some(asked.text),
+                        // 🚨 **F713, and the clone is the point.** The log
+                        // and the context are fed from one binding, two lines
+                        // apart, so *what the record says the model was shown*
+                        // and *what the model was shown* cannot drift. Recording
+                        // a re-scrub, or a rendering, would be a field true of
+                        // itself.
+                        output: Some(output.text.clone()),
                     });
                     body.append(Message::tool_result(&call.id, output.text));
                 }
                 Err(denied) => {
                     report.denials += 1;
+                    // ⚠ Scrubbed like any other result even though the text is
+                    // ours: the type is what makes *every* path to the context
+                    // go through the boundary, and an exemption for the strings
+                    // we wrote is the first of the exemptions.
+                    let refusal = self.secrets.scrub(denied.to_string()).text;
                     journal.record(Event::ToolCallEnded {
                         attempt,
                         tool: call.tool.clone(),
@@ -662,18 +674,17 @@ impl<'a> TurnLoop<'a> {
                         // even parsed. Recording them here would invite exactly
                         // the argument-level reasoning W7 ruled against.
                         arguments: None,
+                        // ⚠ A denial's text is a result like any other and is
+                        // recorded like one (F713). `Why::Denied` already carries
+                        // the role, the tool and the ceiling — but *the class was
+                        // denied* and *this is the sentence the model read* are
+                        // different facts, and the second one is the prompt
+                        // surface. Deriving it from the first is what F708 was.
+                        output: Some(refusal.clone()),
                     });
                     // The model is told, in its own transcript. A refusal it
                     // cannot see is a refusal it asks for again.
-                    //
-                    // ⚠ Scrubbed like any other result even though the text is
-                    // ours: the type is what makes *every* path to the context
-                    // go through the boundary, and an exemption for the strings
-                    // we wrote is the first of the exemptions.
-                    body.append(Message::tool_result(
-                        &call.id,
-                        self.secrets.scrub(denied.to_string()).text,
-                    ));
+                    body.append(Message::tool_result(&call.id, refusal));
                 }
             }
         }

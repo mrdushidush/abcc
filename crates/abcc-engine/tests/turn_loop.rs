@@ -1389,6 +1389,168 @@ fn a_turn_that_is_used_does_not_copy_its_arguments() {
 }
 
 // ---------------------------------------------------------------------------
+// F713 — a tool's output reaches the log, and it is the text the model read
+// ---------------------------------------------------------------------------
+
+/// The `Role::Tool` message the **provider** was handed on the next call.
+///
+/// 🚨 **The oracle is the provider and never `secrets.scrub`.** Re-deriving the
+/// expectation from the function under test is an oracle comparing a thing with
+/// itself: it agrees however wrong both halves are. What makes this field worth
+/// having is that it equals what went out on the wire, so that is what it is
+/// compared against.
+fn tool_message_the_provider_received(provider: &Scripted, call: usize) -> String {
+    provider.seen()[call]
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .unwrap_or_else(|| panic!("no tool result reached the provider on call {call}"))
+        .content
+        .clone()
+}
+
+fn outputs(log: &[Event]) -> Vec<String> {
+    log.iter()
+        .filter_map(|e| match e {
+            Event::ToolCallEnded {
+                output: Some(o), ..
+            } => Some(o.as_str().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 🚨 **F713.** A tool's output text is a prompt surface — it enters the model's
+/// context and steers the next turn — and for every attempt this project has
+/// flown, the log kept the exit code and threw the words away. A successful
+/// call's *effect* is in the tree; its *words* were nowhere, so *what did the
+/// lint actually print* and *was the model shown the file it asked for* could
+/// only be answered by making the model produce it again.
+#[test]
+fn a_tools_output_is_on_the_log_as_the_model_read_it() {
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "read_file", r#"{"path":"src/lib.rs"}"#),
+        Script::says("read it"),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("go");
+    let mut log: Vec<Event> = Vec::new();
+
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let logged = outputs(&log);
+    assert_eq!(logged.len(), 1, "the call's output is not on the log");
+    // Non-trivial, so two empty strings cannot agree their way to a pass.
+    assert!(
+        logged[0].contains("read_file"),
+        "the recorded output is not the tool's: {:?}",
+        logged[0]
+    );
+    assert_eq!(
+        logged[0],
+        tool_message_the_provider_received(&provider, 1),
+        "the log's output is not the text the model was sent"
+    );
+}
+
+/// ⚠ **A denial's refusal text is a result like any other.** `Why::Denied`
+/// already carries the role, the tool and the ceiling — but *the class was
+/// denied* and *this is the sentence the model read* are different facts, and
+/// the second one is the prompt surface. Deriving the second from the first is
+/// exactly what F708 was.
+#[test]
+fn a_refusal_the_model_was_shown_is_on_the_log_too() {
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "bash", r#"{"command":"cargo test"}"#),
+        Script::says("understood"),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("check whether the tests pass");
+    let mut log: Vec<Event> = Vec::new();
+
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    let logged = outputs(&log);
+    assert_eq!(logged.len(), 1, "the refusal is not on the log");
+    assert!(
+        logged[0].contains("bash"),
+        "the recorded refusal names nothing: {:?}",
+        logged[0]
+    );
+    assert_eq!(
+        logged[0],
+        tool_message_the_provider_received(&provider, 1),
+        "the log's refusal is not the sentence the model read"
+    );
+}
+
+/// 🚨 **The new field is the third disk sink, and it goes through the same one
+/// boundary.** F713 puts a tool's whole output on the log verbatim, which is the
+/// arrangement ADR-0014 §5 exists to make safe: the scrub happens once, above
+/// the fork, so the log and the context take the *same bytes*. A field scrubbed
+/// again on its way to the log would be a second denylist that agrees with the
+/// first until the day one of them is edited.
+#[test]
+fn a_secret_in_a_tools_output_is_scrubbed_once_for_both_sinks() {
+    const KEY: &str = "lm-studio-0123456789abcdef";
+    let tools = Leaks {
+        text: format!("the key is {KEY} by the way"),
+        refuse: false,
+    };
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "bash", r#"{"command":"cat .env"}"#),
+        Script::says("read it"),
+    ]);
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find the configuration");
+    let mut log: Vec<Event> = Vec::new();
+
+    TurnLoop::new(&provider, &tools, MODEL)
+        .secrets(Secrets::default().with_literal(KEY))
+        .run(
+            // Builders, because `bash` is the exec tier and Commandos is capped
+            // at no-tools — the denial is ADR-0014's control and it is not what
+            // this test is about.
+            Head::Builders,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+
+    let logged = outputs(&log);
+    assert_eq!(logged.len(), 1);
+    assert!(
+        !logged[0].contains(KEY),
+        "F713 put the key on the log: {:?}",
+        logged[0]
+    );
+    assert!(logged[0].contains(MARKER), "{:?}", logged[0]);
+    assert_eq!(
+        logged[0],
+        tool_message_the_provider_received(&provider, 1),
+        "the log and the context were scrubbed separately"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // F513 — the phase's accounting reaches the log
 // ---------------------------------------------------------------------------
 

@@ -314,6 +314,38 @@ pub enum Event {
         /// it is the field that may not take text nobody scrubbed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arguments: Option<Scrubbed>,
+        /// 🚨 **F713: what the tool said, and always.**
+        ///
+        /// The mirror of `arguments` and deliberately the opposite rule, because
+        /// the two have opposite second copies. A successful tool's *effect* is
+        /// in the tree, so its arguments are recoverable and the log declines to
+        /// be a second workspace. Its **words** are not: they went into the
+        /// model's context and the log kept an exit code. So *did the patch
+        /// refusal say why*, *what did the lint actually print*, *was the model
+        /// shown the file it asked for* were unanswerable from the record — for
+        /// every attempt this project has ever flown.
+        ///
+        /// ▶ **It is byte-identical to the `Role::Tool` message appended to the
+        /// body**, and that is the whole of the claim: it is written from the
+        /// same binding, at the one place both sinks are fed (ADR-0014 §5). A
+        /// field recording *some rendering of* the output would be true of the
+        /// renderer and not of the prompt — F708 again, one layer down.
+        ///
+        /// ⚠ Bounded before it gets here, not by this field: `MAX_READ_BYTES`
+        /// is 64 KiB and `MAX_STREAM_BYTES` 16 KiB, so the cap is the one the
+        /// model is already held to. Truncating here instead would put a
+        /// *different* text on the log to the one that was sent.
+        ///
+        /// ⚠ `None` only on a log written before this field existed. A denial
+        /// carries its refusal text like any other result: the model is told, in
+        /// its own transcript, and *what the model was told* is the question.
+        ///
+        /// ⚠ **Not rendered on the feed** — F501, one event is one line, and
+        /// this one can be a whole file. [`Scrubbed`] rather than `String` for
+        /// the same reason `arguments` is: this is the field that puts a tool's
+        /// output on disk verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<Scrubbed>,
     },
 
     // -- the gate ----------------------------------------------------------

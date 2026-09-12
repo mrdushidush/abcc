@@ -4,6 +4,7 @@
 use abcc_core::attempt::{AttemptOutcome, Cause};
 use abcc_core::event::{CallShape, Composition, Event, Finish, Logged, Usage};
 use abcc_core::outcome::Why;
+use abcc_core::redact::Secrets;
 use abcc_core::run::{AttemptPhase, Mode};
 use abcc_core::seq::{AttemptId, MissionId, PromptId, Seq, TaskId, UnitId};
 use abcc_core::task::{Command, TaskState};
@@ -133,6 +134,15 @@ fn the_attempt_runs(log: &mut Replay, task: TaskId, attempt: AttemptId, engaged:
         elapsed_ms: 40,
         unmeasured: None,
         arguments: None,
+        output: Some(
+            Secrets::default()
+                .scrub(
+                    "src/
+src/main.rs
+src/cli.rs",
+                )
+                .text,
+        ),
     });
     log.advance(165).push(Event::CheckpointTaken {
         task,

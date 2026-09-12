@@ -86,6 +86,10 @@ fn a_tools_unmeasured_ending_and_a_rung_are_clipped_too() {
         // F505 keeps the refused arguments on the log; F501 keeps them off the
         // feed. A whole diff here must not widen the line.
         arguments: Some(Secrets::default().scrub(REAL_500).text),
+        // ▶ And F713 puts the tool's *output* on the log beside them, which
+        // is the bigger of the two — `MAX_READ_BYTES` is 64 KiB. Same rule, and
+        // it is asserted here rather than assumed: one event is one line.
+        output: Some(Secrets::default().scrub(REAL_500).text),
     });
     assert_one_line(&tool);
 
