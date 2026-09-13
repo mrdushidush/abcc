@@ -1959,9 +1959,11 @@ fn a_retry_that_adds_nothing_to_the_tree_it_inherited_is_refused_by_the_free_run
 /// `abcc release`.
 ///
 /// ⚠ **That detour is the finding underneath the test.** A refusal lands
-/// `AwaitingOrders`, whose only way back to a slot is `Command::OrdersGiven` —
-/// and **nothing in the workspace sends it**. So the retry this very ending
-/// *recommends* is reachable only by taking the task over and handing it back.
+/// `AwaitingOrders`, and **there is no way back to a slot from there**: the one
+/// the table used to declare, `Command::OrdersGiven`, had no sender (F703) and
+/// no transition on the archive ever took it, so it was removed (F732). The
+/// retry this very ending *recommends* is reachable only by taking the task
+/// over and handing it back.
 fn refused_then_back_on_the_board(
     subject: &Subject,
     store: &mut Store,
@@ -2140,8 +2142,8 @@ fn a_replay_is_not_told_what_refused_a_tree_it_is_not_standing_on() {
 /// operator has been in it — and it then says nothing about the refusal.**
 ///
 /// `abcc take` then `abcc release` is the only route a refused task has back onto
-/// the board: `AwaitingOrders`'s one edge to a slot is `Command::OrdersGiven`, and
-/// nothing in the workspace sends it. `hand_back` snapshots the taken-over
+/// the board: `AwaitingOrders` has no edge to a slot at all since F732 removed
+/// the one nothing sent. `hand_back` snapshots the taken-over
 /// worktree as `"operator"`, *after* the attempt's `AttemptEnded` — so a
 /// span-bounded read of *the parent attempt's closing checkpoint* would step over
 /// it and throw a person's own edits away. That is F701's class of loss and a

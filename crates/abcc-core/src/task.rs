@@ -45,6 +45,23 @@ pub enum TaskState {
     /// is kept. The clock is a human one and there is **no timeout**: the watchdog
     /// distinguishes *no human yet* from *no progress*, which is the distinction
     /// F91's forty silent minutes taught the harness.
+    ///
+    /// 🚨 **Every exit from here is an operator's, and that is now what
+    /// the table says** (F732). It used to declare a `Command::OrdersGiven` edge
+    /// straight back onto a slot. Nothing in the workspace ever sent it (F703)
+    /// and **no transition on the archive ever took it** — 333 transitions,
+    /// 44 arrivals in this state, 41 `Abort` and 2 `Commandeer` out of it — so
+    /// it is gone rather than standing as a route a reader could plan around.
+    /// What exists is `abcc take` then `abcc release`, which puts the task back
+    /// in `Queued` where [`crate::task::TaskState::Queued`]'s contract —
+    /// *eligible for admission* — is what a fleet reads, and `abcc accept` /
+    /// `abcc reject`, which end it.
+    ///
+    /// ⏸ The `Hold` arm out of this state has no sender either and is
+    /// deliberately **left standing** (F733): unlike `OrdersGiven` it is a live
+    /// command whose arm here would become reachable the day `pause` learns to
+    /// address a waiting task, and whether it should is a decision, not a
+    /// clean-up.
     AwaitingOrders {
         attempt: AttemptId,
         prompt: PromptId,
@@ -322,17 +339,6 @@ pub enum Command {
         attempt: AttemptId,
         prompt: PromptId,
     },
-    /// The operator answered and a slot is free again.
-    /// `AwaitingOrders -> Deployed`.
-    ///
-    /// The slot is named here because `AwaitingOrders` gave one up: a human clock
-    /// has no timeout, and a slot held overnight by a sleeping operator is half
-    /// the fleet (N=2, ADR-0003). Re-acquiring it is therefore an explicit act
-    /// rather than a pretence that it was never released.
-    OrdersGiven {
-        attempt: AttemptId,
-        unit: UnitId,
-    },
     /// Stop but keep the work, at a checkpoint. `-> Holding`.
     Hold {
         checkpoint: CheckpointId,
@@ -372,7 +378,6 @@ impl Command {
             Command::Deploy { .. } => "Deploy",
             Command::Engage { .. } => "Engage",
             Command::RequestOrders { .. } => "RequestOrders",
-            Command::OrdersGiven { .. } => "OrdersGiven",
             Command::Hold { .. } => "Hold",
             Command::Resume { .. } => "Resume",
             Command::Commandeer => "Commandeer",
@@ -498,12 +503,6 @@ impl TaskState {
             }
             (TaskState::Engaged { .. }, Command::Requeue { .. }) => Ok(TaskState::Queued),
 
-            (TaskState::AwaitingOrders { .. }, Command::OrdersGiven { unit, .. }) => {
-                Ok(TaskState::Deployed {
-                    unit: *unit,
-                    since: at,
-                })
-            }
             (TaskState::AwaitingOrders { .. }, Command::Hold { checkpoint }) => {
                 Ok(TaskState::Holding {
                     checkpoint: *checkpoint,
@@ -530,7 +529,6 @@ impl Command {
         match self {
             Command::Engage { attempt }
             | Command::RequestOrders { attempt, .. }
-            | Command::OrdersGiven { attempt, .. }
             | Command::Accomplish { attempt }
             | Command::Fail { attempt } => Some(*attempt),
             _ => None,

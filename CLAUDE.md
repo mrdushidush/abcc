@@ -277,10 +277,16 @@ do not reformat around it.
   reaches the model's context and `ToolCallEnded` keeps only its exit and its
   arguments-when-refused, so `apply_patch`'s F649 sentence is a prompt surface
   the log still cannot read back.
-- ⚠ **`Command::OrdersGiven` has no sender** (F703). `AwaitingOrders`'s only
-  named edge back to a slot is driven by nothing but a lifecycle test, so a
-  refused task returns to the board through `abcc take` + `abcc release`, or not
-  at all. The transition table is not evidence that a transition happens.
+- ⚠ **`AwaitingOrders` has no edge back to a slot, and that is the table
+  telling the truth** (F703, answered by F732). It used to declare
+  `Command::OrdersGiven`; nothing in the workspace sent it, its only caller was
+  a lifecycle test, and **no transition on the archive ever took it** — so it
+  was removed rather than left as a route a reader could plan around. A refused
+  task returns to the board through `abcc take` + `abcc release`, or not at all.
+  **The transition table is not evidence that a transition happens**: of its 12
+  arms, 333 real transitions have taken 7, and `Hold` and `Resume` have senders
+  (F646) that have never once fired on a log. ⏸ `(AwaitingOrders, Hold)` is
+  the other arm with no sender and is deliberately left standing (F733).
 - **A tool below the exec tier may not start a child process — including to do
   its own job.** `apply_patch` applies diffs in-process and `list_files` reads
   ignore rules in-process, rather than either of them calling git, because the

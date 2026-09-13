@@ -353,7 +353,6 @@ fn command_text(command: &Command) -> String {
         Command::Deploy { unit } => format!("deploy to {unit}"),
         Command::Engage { attempt } => format!("engage as {attempt}"),
         Command::RequestOrders { .. } => "request orders".to_string(),
-        Command::OrdersGiven { unit, .. } => format!("orders given, back on {unit}"),
         Command::Hold { checkpoint } => format!("hold at {checkpoint}"),
         Command::Resume { unit } => format!("resume on {unit}"),
         Command::Commandeer => "commandeer".to_string(),

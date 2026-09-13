@@ -326,10 +326,18 @@ fn one_task_runs_from_queued_to_accomplished() {
     assert!(!s.contract().holds_slot);
 }
 
-/// The intervention path, including the slot being handed back on the way out
-/// and asked for again on the way in.
+/// The intervention path, the slot handed back on the way out — and
+/// 🚨 **nothing that puts the task straight back on one.**
+///
+/// This test used to end by applying `Command::OrdersGiven` and asserting
+/// `Deployed`, and **it was that command's only caller anywhere** (F703), which
+/// is how an edge nothing drives survived a passing suite for a whole phase.
+/// The command is gone (F732); what is asserted instead is the route a refused
+/// task really takes back onto the board, which is the one
+/// `abcc-drive/tests/attempt.rs` flies: the operator takes the keyboard and
+/// hands it back, and the task re-enters through `Queued` like everything else.
 #[test]
-fn an_attempt_can_ask_for_orders_and_carry_on() {
+fn an_attempt_that_asks_for_orders_comes_back_through_the_operator() {
     let a = attempt(201);
     let p = PromptId::at(seq(210));
     let s = TaskState::Queued
@@ -347,22 +355,38 @@ fn an_attempt_can_ask_for_orders_and_carry_on() {
         .expect("request orders");
     assert!(!s.contract().holds_slot, "the slot was not released");
 
-    let s = s
-        .apply(
-            &Command::OrdersGiven {
-                attempt: a,
-                unit: UnitId(1),
-            },
-            seq(300),
-        )
-        .expect("orders given");
+    // No command reaches a slot from here. `Engage` names the attempt that is
+    // still in flight, so it gets past the wrong-attempt guard and is refused
+    // by the table itself rather than by the guard — which is the assertion
+    // worth having.
+    for command in [
+        Command::Deploy { unit: UnitId(1) },
+        Command::Engage { attempt: a },
+        Command::Resume { unit: UnitId(1) },
+        Command::Requeue {
+            why: RequeueReason::AttemptRetryable { of: a },
+        },
+    ] {
+        assert!(
+            matches!(
+                s.apply(&command, seq(300)),
+                Err(Refused::NotLegalHere { .. })
+            ),
+            "{} put an intervention-required task back on a slot",
+            command.name()
+        );
+    }
+
+    // The route that exists, and the one the archive has actually taken.
+    let taken = s.apply(&Command::Commandeer, seq(300)).expect("commandeer");
     assert_eq!(
-        s,
-        TaskState::Deployed {
-            unit: UnitId(1),
-            since: seq(300)
+        taken,
+        TaskState::Commandeered {
+            operator_since: seq(300)
         }
     );
+    let back = taken.apply(&Command::Release, seq(301)).expect("release");
+    assert_eq!(back, TaskState::Queued, "release returns it to the board");
 }
 
 /// Stop-but-keep-the-work is a transition to a state, and coming back off hold
