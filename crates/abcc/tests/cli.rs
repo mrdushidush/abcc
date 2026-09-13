@@ -335,7 +335,7 @@ fn take_and_release_each_name_one_task_and_take_no_flags() {
 /// environment. A parser that read `ABCC_SPRITES` would make this test depend on
 /// the machine it runs on.
 #[test]
-fn paint_defaults_to_a_hundred_and_fifty_pixel_sprite_on_a_640_by_360_field() {
+fn paint_defaults_to_a_hundred_and_twenty_pixel_sprite_on_a_640_by_360_field() {
     let Command::Paint(Paint {
         sprites,
         px,
@@ -349,14 +349,20 @@ fn paint_defaults_to_a_hundred_and_fifty_pixel_sprite_on_a_640_by_360_field() {
     };
     assert_eq!(sprites, None);
     assert_eq!(play, None, "the default is one frame, not an animation");
-    assert_eq!(cell, 20, "the assumed cell height moved");
+    assert_eq!(
+        cell, 16,
+        "the assumed cell height moved. It is short on purpose (F730): a cell \
+         taller than the terminal's real rows reserves too few of them and the \
+         picture is clipped in silence, which is the failure nobody can see"
+    );
     assert!(
         !corpus,
         "the default is the fleet; the art is behind --corpus"
     );
     assert_eq!(
-        px, 150,
-        "150 is David's judgement over the art that is actually drawn (F565),          which is not the art F143's 75-120 band was judged on"
+        px, 120,
+        "120 is David's judgement over the art that is actually drawn (F565), \
+         and unlike the 150 it replaces it is inside F143's measured 75-120 band"
     );
     assert_eq!(size, (640, 360));
 

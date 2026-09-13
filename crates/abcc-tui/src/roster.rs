@@ -50,8 +50,11 @@ use crate::view::View;
 /// A picture that stops being readable is worse than a picture that says *and
 /// six more*, which is what [`Roster::crowded`] is for.
 ///
-/// Six, because six coders at the default `--px 150` span 475 px of a 640 px
-/// field — the width the tile clamp starts biting at.
+/// Six, because six coders at `--px 150` span 475 px of a 640 px field — the
+/// width the tile clamp starts biting at. ⚠ **150 was the default when that
+/// was measured and is not the default now** (it is 120). The span moves with
+/// `--px`; the number kept here is the one that was actually looked at, not a
+/// claim about whatever the default happens to be.
 pub const RANK: usize = 6;
 
 /// Where a thing stands on the field, and why it stands there.

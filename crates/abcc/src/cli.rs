@@ -137,8 +137,8 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paint {
     pub sprites: Option<String>,
-    /// Sprite height in pixels. 75-120 is the band David judged reads as
-    /// C&C at arm's length (F143).
+    /// Sprite height in pixels, defaulting to 120. 75-120 is the band David
+    /// judged reads as C&C at arm's length (F143), and 120 is the top of it.
     pub px: u32,
     /// Field size in pixels.
     pub size: (u32, u32),
@@ -153,6 +153,11 @@ pub struct Paint {
     /// the alternative is a DA-style probe, which this command refuses to
     /// do for the reason `paint.rs` gives — a probe that waits for an answer
     /// can hang, and the operator can already see whether a picture arrived.
+    ///
+    /// ⚠ **The operator can see a gap; they cannot see a clipped frame**
+    /// (F730), so the default is short rather than accurate. Both the number
+    /// and the argument for it live at `paint::CELL`, beside the arithmetic
+    /// that spends them.
     pub cell: u32,
 }
 
@@ -231,7 +236,7 @@ run and fleet:
 
 paint:
   --sprites <dir>   the sprite corpus (default: $ABCC_SPRITES)
-  --px <n>          sprite height in pixels (default: 150)
+  --px <n>          sprite height in pixels (default: 120)
   --size <WxH>      the field, in pixels (default: 640x360)
   --corpus          draw the art itself, not the fleet -- every distinct image
                     fit to stand on a field. The diagnostic for when the picture
@@ -241,11 +246,13 @@ paint:
                     the corpus can draw are animations; a still shows none of
                     it. The roster is read once -- this plays the ART, not the
                     log.
-  --cell <px>       how tall one terminal cell is (default: 20), which is all
+  --cell <px>       how tall one terminal cell is (default: 16), which is all
                     that decides how many rows the picture is given. Windows
                     reports no pixel size and this command does not probe for
-                    one, so if the picture overwrites the lines under it, say
-                    what your cell height is.
+                    one, so the default is deliberately short: too short leaves
+                    a gap under the picture, too tall makes the terminal cut the
+                    bottom off it without saying so. If you see a gap, say what
+                    your rows really are.
 
   The field is one building per mission and one unit per live task, ranked back
   to front: base, reserve, the line (positioned by slot), and the tasks waiting
@@ -575,15 +582,18 @@ fn paint_args(args: &mut Vec<String>) -> Result<Command, CliError> {
         Some(v) => v
             .parse()
             .map_err(|_| CliError::Usage(format!("--px takes a number of pixels, not {v:?}")))?,
-        // 🚨 **150, and the number is a judgement rather than a measurement.**
+        // 🚨 **120, and the number is a judgement rather than a measurement.**
         // The W5 spike put the C&C band at 75-120 (F143) and David first chose
         // 100 from it — while looking at the `cto` poses, which are 161 px
         // across at that height. Those turned out to be unusable art (F565) and
         // the four that replaced them are 67 px across at the same setting, so
         // the same number drew a huddle in an empty field. Re-judged at the
-        // corpus that is actually drawn: 200 too big, 100 too small, **150**
-        // (2026-08-31). ▶ It moves again when the art does.
-        None => 150,
+        // corpus that is actually drawn: 200 too big, 100 too small — and the
+        // 150 that came out of that pair was itself never looked at against
+        // either of them. **120** is between the two the eye did reject and
+        // inside the only measured band there is. ▶ It moves again when the
+        // art does, and it is still a judgement.
+        None => 120,
     };
     let size = match take_flag(args, "--size")? {
         Some(v) => {
@@ -615,12 +625,15 @@ fn paint_args(args: &mut Vec<String>) -> Result<Command, CliError> {
         Some(v) => v.parse().map_err(|_| {
             CliError::Usage(format!("--cell takes a cell height in pixels, not {v:?}"))
         })?,
-        // Windows Terminal at 100% scale with its default font. It is a
-        // *guess*, and the only thing it decides is how many rows the picture
-        // is given — too small and the text below it is overdrawn, too large
-        // and there is a gap. Both are visible, which is why a guess is
-        // allowed to stand here and a probe that could hang is not.
-        None => 20,
+        // 🚨 **Short on purpose, and `paint::CELL` owns both the number
+        // and the argument.** The guess used to be 20 — Windows Terminal at
+        // 100% scale with its default font — described here as failing
+        // visibly whichever way it was wrong. It does not: at David's 19 px
+        // rows it reserved one row too few and the terminal clipped 18 px off
+        // every frame in silence (F730). A guess is allowed to stand where a
+        // probe that could hang is not, but only while the way it fails is the
+        // one the operator can see.
+        None => crate::paint::CELL,
     };
     if cell == 0 {
         return Err(CliError::Usage(

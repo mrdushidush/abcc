@@ -239,6 +239,40 @@ impl Staged {
 // the field, playing — and the number that costs
 // ---------------------------------------------------------------------------
 
+/// How tall one terminal row is assumed to be, in pixels, when the operator has
+/// not said — and **deliberately shorter than any row we expect to meet.**
+/// [`rows_for`] is where the argument for that is; it is the whole reason this
+/// is 16 and not the 20 that shipped.
+pub(crate) const CELL: u32 = 16;
+
+/// How many rows a picture `height` px tall is given, at `cell` px a row.
+///
+/// 🚨 **The two ways of being wrong are not symmetric, and the comment
+/// that stood here had them backwards** (F730). `cell` is *told*, never
+/// measured — Windows reports no pixel size and this command will not probe
+/// for one (F644) — so the told value and the terminal's real row pitch can
+/// disagree in either direction, and the directions are not alike:
+///
+/// * **told shorter than real** — more rows are reserved than the picture
+///   fills, and a **gap** opens under it. Visible, and nothing is lost.
+/// * **told taller than real** — fewer rows are reserved than the picture
+///   fills, and Windows Terminal **clips the image and says nothing about it**.
+///   Measured on David's screen, whose rows are 19 px: the shipped default of
+///   20 reserved 18 rows for a picture that needed 19, and the sixel drew
+///   **342 px of the 360 it encoded**, the same at every one of six columns.
+///   The bottom of every frame never appeared.
+///
+/// ⚠ **The report under the picture survives either way**, which is what
+/// makes the clipping the dangerous one: the caller reserves `rows` newlines
+/// *and* the `writeln!` it already owed, so the text below is never overdrawn.
+/// Nothing else on the screen looks wrong, so there is nothing to notice.
+///
+/// ▶ Hence [`CELL`] errs short: every terminal whose rows are at least that
+/// tall gets the shruggable failure, and none of them gets the invisible one.
+const fn rows_for(height: u32, cell: u32) -> u32 {
+    height.div_ceil(cell)
+}
+
 /// 🚨 **Play the field for `run_for`, then say what rate it actually reached.**
 ///
 /// Every picture this corpus can draw is an animation (F642) and [`the_field`]
@@ -304,10 +338,10 @@ fn play_the_field(
     }
 
     // Reserve the rows the picture needs, then walk back up into them. `cell` is
-    // told rather than measured, so this is where a wrong cell height shows: too
-    // small and the picture overwrites the report under it, too large and there
-    // is a gap. Both are visible and neither is fatal.
-    let rows = size.1.div_ceil(cell);
+    // told rather than measured, so this is where a wrong cell height shows —
+    // and `rows_for` carries which way it shows, because being wrong downwards
+    // and being wrong upwards are not the same kind of wrong.
+    let rows = rows_for(size.1, cell);
     for _ in 0..rows {
         writeln!(out)?;
     }
@@ -866,7 +900,7 @@ fn stock(root: &Path, px: u32) -> Result<Stock, AppError> {
 mod tests {
     use std::time::Duration;
 
-    use super::{FALLBACK_TICK, cells, geometry, next_slot, played};
+    use super::{CELL, FALLBACK_TICK, cells, geometry, next_slot, played, rows_for};
 
     /// The corpus at the sizes the review used: `(px, width, height)` of the
     /// widest pose, `292x181` scaled to `px` tall, nine of them.
@@ -1158,5 +1192,72 @@ mod tests {
             "no frame was drawn.
 "
         );
+    }
+
+    /// 🚨 **The reservation the whole picture hangs on — and TWO
+    /// assertions about it that cannot fail, one of which looks exactly like
+    /// the test** (F731).
+    ///
+    /// 1. `rows * cell >= height` is [`u32::div_ceil`]'s own postcondition. It
+    ///    holds for **every** `cell`, the 20 that clipped 18 px off every frame
+    ///    on a 19 px screen included.
+    /// 2. Sweeping *real* pitches from [`CELL`] upward and asserting the
+    ///    reservation covers them is `div_ceil`'s **monotonicity**: the floor
+    ///    is derived from the very number under test, so it is satisfied by
+    ///    construction at 16, at 20 and at 200.
+    ///
+    /// ▶ **The floor has to come from the world.** The only terminal pitch
+    /// this project has ever measured is David's, at 19 px, so that is where
+    /// the sweep starts. Both tautologies are kept below, labelled, because a
+    /// reader who deletes them writes one of them back as the test.
+    ///
+    /// ⚠ **`CELL` being 16 rather than 19 is a judgement, not a
+    /// measurement** — 19 is one screen, not a floor — and nothing here
+    /// pins it. What is pinned is the direction: never above the one pitch
+    /// anybody has measured.
+    #[test]
+    fn the_default_cell_never_under_reserves() {
+        /// The one terminal row pitch this project has measured, David's
+        /// screen (F730). Not derived from `CELL`; that is the whole point.
+        const MEASURED: u32 = 19;
+
+        let height = 360;
+        // Tautology 1, kept and labelled so nobody re-derives it as the test.
+        for cell in 1..=64 {
+            assert!(
+                rows_for(height, cell) * cell >= height,
+                "div_ceil stopped rounding up at a cell of {cell} px"
+            );
+        }
+        // Tautology 2, the near miss: this same sweep from `CELL` instead of
+        // `MEASURED` passes at every default there is.
+        for real in CELL..=64 {
+            assert!(rows_for(height, CELL) >= rows_for(height, real));
+        }
+
+        // The sweep that can fail, and does at the default that shipped. ⚠ It
+        // is deliberately NOT `CELL <= MEASURED`: clippy refuses that as an
+        // assertion with a constant value, and it is the wrong statement
+        // anyway — what has to hold is that the reservation covers the rows
+        // the picture FILLS, and two pitches a pixel apart often round to the
+        // same row count. The rows are the unit; the pixels are not.
+        let given = rows_for(height, CELL);
+        for real in MEASURED..=64 {
+            assert!(
+                given >= rows_for(height, real),
+                "at a real pitch of {real} px the picture fills {} rows and only \
+                 {given} are reserved — the terminal clips it and says nothing",
+                rows_for(height, real)
+            );
+        }
+    }
+
+    /// What erring short costs, stated rather than left to be met: at David's
+    /// 19 px rows a 360 px field is given 23 rows for the 19 it fills. Four
+    /// blank rows, and they are the price of never clipping.
+    #[test]
+    fn the_short_default_costs_four_blank_rows_at_19_px() {
+        assert_eq!(rows_for(360, CELL), 23);
+        assert_eq!(rows_for(360, 19), 19);
     }
 }
