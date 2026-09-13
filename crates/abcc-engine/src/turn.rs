@@ -263,6 +263,14 @@ pub struct PhaseReport {
     /// next to an answer either way.
     pub trace: TraceSignal,
     pub elapsed_ms: u64,
+    /// The highest `prompt_tokens` any turn of this phase has reported.
+    ///
+    /// 🚨 **The phase is the unit, and that is the whole of why this lives here**
+    /// (F748). The body is reset by `Body::opening` at every phase and appended to
+    /// within one, so *monotone* is a property of a phase and not of an attempt —
+    /// a high water carried across a phase boundary would report the next phase's
+    /// opening brief as a 38,006-token cut, which is the reading F750 corrects.
+    pub prompt_high_water: u32,
 }
 
 impl Default for PhaseReport {
@@ -276,14 +284,25 @@ impl Default for PhaseReport {
             reasoning_tokens: None,
             trace: TraceSignal::Absent,
             elapsed_ms: 0,
+            prompt_high_water: 0,
         }
     }
 }
 
 impl PhaseReport {
-    /// Fold one turn's cost in. `reasoning_tokens` stays `None` until a provider
-    /// reports one, because none reported is not the same as none spent.
-    fn count(&mut self, turn: &Turn) {
+    /// Fold one turn's cost in, and answer whether the server cut its prompt.
+    ///
+    /// `reasoning_tokens` stays `None` until a provider reports one, because none
+    /// reported is not the same as none spent.
+    ///
+    /// 🚨 **The detection is returned from the fold rather than left to the
+    /// caller** (F748). The high water it compares against is updated in the same
+    /// three lines, so there is no ordering in which the loop can read a stale
+    /// one — and the loop cannot forget to ask, because the answer arrives with
+    /// the count it already takes. `Some(high_water)` means *this turn's prompt
+    /// was measured smaller than an earlier turn of this phase*, which a body
+    /// that only grows cannot do.
+    fn count(&mut self, turn: &Turn) -> Option<u32> {
         self.turns += 1;
         self.prompt_tokens = self.prompt_tokens.saturating_add(turn.usage.prompt_tokens);
         self.completion_tokens = self
@@ -295,6 +314,10 @@ impl PhaseReport {
         if concern(turn.trace) > concern(self.trace) {
             self.trace = turn.trace;
         }
+        let cut =
+            (turn.usage.prompt_tokens < self.prompt_high_water).then_some(self.prompt_high_water);
+        self.prompt_high_water = self.prompt_high_water.max(turn.usage.prompt_tokens);
+        cut
     }
 }
 
@@ -467,7 +490,19 @@ impl<'a> TurnLoop<'a> {
                 Ok(turn) => turn,
                 Err(ending) => return ending.into_phase(report, started),
             };
-            report.count(&turn);
+            // 🚨 **F748: the server cut the prompt and said nothing.** Recorded
+            // here because this is the only scope that has the phase's *sequence*
+            // of calls — `Turn::uncertain` sees one turn and the silent cut is
+            // invisible inside one (F751) — and recorded *before* the endings
+            // below, because it is evidence about the call that just happened
+            // whether or not this round is the phase's last.
+            if let Some(high_water) = report.count(&turn) {
+                journal.record(Event::PromptCut {
+                    attempt,
+                    reported: turn.usage.prompt_tokens,
+                    high_water,
+                });
+            }
 
             // 🚨 Asked before the text is read, because a payload that is not
             // there is an absence rather than a short answer.

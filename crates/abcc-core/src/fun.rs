@@ -495,6 +495,9 @@ pub const fn in_flight(event: &Event) -> bool {
         | Event::BriefRecorded { .. }
         | Event::ModelCallStarted { .. }
         | Event::ModelCallEnded { .. }
+        // Written by the turn loop, from the phase's own sequence of calls —
+        // which is the only place the fall is visible (F751).
+        | Event::PromptCut { .. }
         | Event::PhaseEnded { .. }
         | Event::ToolCallStarted { .. }
         | Event::ToolCallEnded { .. }

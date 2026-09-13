@@ -325,3 +325,25 @@ fn an_unmeasured_call_spends_its_line_on_the_reason_instead() {
         "the one thing this row exists to say is missing: {text}"
     );
 }
+
+/// 🚨 **F748: the one line that says the model was not shown what it was sent.**
+///
+/// The `model_call_ended` line above it reads perfectly normally — `200`, a
+/// finish reason of `tool_calls`, and a smaller token count than one the operator
+/// scrolled past several screens ago. Nothing about a cut prompt is visible in a
+/// single call, so the feed has to say it in its own line or not at all.
+#[test]
+fn a_cut_prompt_says_so_and_names_both_numbers() {
+    let text = line_for(Event::PromptCut {
+        attempt: AttemptId::at(Seq::new(8)),
+        reported: 19_181,
+        high_water: 36_737,
+    });
+    assert_one_line(&text);
+    for want in ["19181", "36737", "17556"] {
+        assert!(
+            text.contains(want),
+            "a cut prompt's line is missing {want}: {text}"
+        );
+    }
+}

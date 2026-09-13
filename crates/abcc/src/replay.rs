@@ -436,6 +436,24 @@ fn spent(attempt: &AttemptTrace, out: &mut impl Write) -> Result<(), AppError> {
         writeln!(out, "  sampler  {seeds}")?;
     }
 
+    // 🚨🚨 **F744/F748: what the model was actually shown.** The complaint F744
+    // ended with was that `abcc replay` could not say this had happened, and on
+    // this project's archive it happened to 74 calls over 12 attempts without one
+    // line anywhere saying so — every call a `200 OK` with an ordinary finish
+    // reason.
+    //
+    // ⚠ Printed only when there is one, and that asymmetry is deliberate:
+    // silence here means *no cut was recorded*, which over an attempt flown
+    // before the detector existed means nobody was looking. A line reading
+    // `0 cuts` would turn that into a measurement it is not.
+    if attempt.spend.prompt_cuts > 0 {
+        writeln!(
+            out,
+            "  🚨 prompt  {} call(s) were shown a CUT prompt — at least {} tokens gone at the worst              of them, and the server answered 200 every time",
+            attempt.spend.prompt_cuts, attempt.spend.prompt_cut_worst
+        )?;
+    }
+
     // 🚨 F511: a token total says how big a completion was, never where it went.
     if attempt.made.counted > 0 {
         let share = attempt

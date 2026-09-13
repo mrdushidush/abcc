@@ -150,6 +150,19 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
             let _ = write!(s, " · {}", finish_text(finish));
             s
         }
+        // 🚨 **F748. The one line on this screen that says the model was not
+        // shown what it was sent** — and it has to be its own line, because the
+        // call above it looks completely ordinary: `200 OK`, a finish reason of
+        // `tool_calls`, and a token count that is simply smaller than one an
+        // operator saw several screens ago.
+        Event::PromptCut {
+            reported,
+            high_water,
+            ..
+        } => format!(
+            "🚨 prompt CUT by the server · {reported} in, {high_water} earlier this phase · at least {} tokens gone, at 200 OK",
+            high_water.saturating_sub(*reported)
+        ),
         Event::ToolCallStarted { tool, tier, .. } => format!("tool {tool} · admitted at {tier}"),
         Event::ToolCallEnded {
             tool,

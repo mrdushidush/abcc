@@ -1994,3 +1994,146 @@ fn an_ordinary_tool_result_passes_through_the_boundary_untouched() {
         kinds(&log)
     );
 }
+
+// ---------------------------------------------------------------------------
+// F748 — the prompt the server cut
+// ---------------------------------------------------------------------------
+
+/// Every `PromptCut` in a log, as `(reported, high_water)`.
+fn cuts(log: &[Event]) -> Vec<(u32, u32)> {
+    log.iter()
+        .filter_map(|e| match e {
+            Event::PromptCut {
+                reported,
+                high_water,
+                ..
+            } => Some((*reported, *high_water)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 🚨 **F748: a body that only grows reported a smaller prompt, and until now
+/// nothing said so.**
+///
+/// The loop appends and never removes — `Body` has no `insert`, no `prepend` and
+/// no indexed write — so `prompt_tokens` cannot fall inside one phase. When it
+/// does, the server measured its own cut of the prompt, and F745 measured that
+/// happening from outside the program: past the window the reported figure stops
+/// tracking the input and falls to roughly half of it, at `200 OK`, with no
+/// header and no field saying anything was dropped.
+///
+/// ⚠ Note what the turn itself says: `tool_calls`, no error, nothing uncertain.
+/// That is why `Turn::uncertain` cannot find this and the phase's sequence can.
+#[test]
+fn a_prompt_the_server_cut_is_recorded_against_the_phases_high_water() {
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "read_file", r#"{"path":"src/cli.rs"}"#).with_prompt_tokens(1_520),
+        Script::calls("c2", "read_file", r#"{"path":"src/run.rs"}"#).with_prompt_tokens(36_737),
+        // The call a11598 made: the window filled and the server answered over
+        // ~19k of a body that had grown past 36k.
+        Script::calls("c3", "read_file", r#"{"path":"src/cli.rs"}"#).with_prompt_tokens(19_181),
+        Script::says("found it").with_prompt_tokens(19_261),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find where the trailing comma is dropped");
+    let mut log: Vec<Event> = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    assert!(matches!(ended, PhaseEnded::Answered { .. }));
+    // 🚨 Both later calls, not only the fall. After the first cut the body keeps
+    // growing and the window does not, so the fourth call is *also* working from
+    // a prompt the server cut — and its count is **higher** than the third's, so
+    // a detector that compared each call with the one before it would report one
+    // cut here and the archive's 74 as 23.
+    assert_eq!(cuts(&log), [(19_181, 36_737), (19_261, 36_737)]);
+    assert!(
+        kinds(&log).contains(&"prompt_cut"),
+        "the cut is not on the log: {:?}",
+        kinds(&log)
+    );
+}
+
+/// The negative control, and it is the one that makes the detector worth having:
+/// a phase that fits reports nothing at all.
+#[test]
+fn a_prompt_that_only_grows_is_never_reported_as_cut() {
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "read_file", r#"{"path":"src/cli.rs"}"#).with_prompt_tokens(1_520),
+        Script::calls("c2", "search", r#"{"pattern":"comma"}"#).with_prompt_tokens(3_230),
+        Script::says("src/parser.rs:88").with_prompt_tokens(3_283),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find it");
+    let mut log: Vec<Event> = Vec::new();
+
+    TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    assert_eq!(cuts(&log), [], "a growing prompt was read as a cut one");
+}
+
+/// 🚨 **The phase is the unit of monotonicity, and F750 is what happens when it
+/// is not.**
+///
+/// `abcc-drive` builds a fresh `Body::opening` for every phase, so a new phase's
+/// first call reports the head and one brief — a fall of tens of thousands of
+/// tokens that is the design working. Keyed on the *attempt*, this project's
+/// archive reported 117 such falls and **103 of them were phase boundaries**,
+/// including the largest, which was quoted as a 38,006-token truncation and is a
+/// `change` → `judge` body reset. The loop cannot make that mistake, because the
+/// high water lives on the phase's own report and a new phase starts a new one —
+/// and this test is what says so.
+#[test]
+fn a_new_phase_starts_its_own_high_water_and_reports_no_cut() {
+    let localize = Scripted::new(vec![
+        Script::calls("c1", "read_file", r#"{"path":"src/run.rs"}"#).with_prompt_tokens(18_264),
+        Script::says("it is in run.rs").with_prompt_tokens(18_995),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut first = Body::opening("localize the defect");
+    let mut log: Vec<Event> = Vec::new();
+    TurnLoop::new(&localize, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut first,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    // The next phase, as the driver runs it: its own body, its own loop.
+    let change = Scripted::new(vec![Script::says("changed it").with_prompt_tokens(3_056)]);
+    let mut second = Body::opening("make the change");
+    TurnLoop::new(&change, &tools, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut second,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    assert_eq!(
+        cuts(&log),
+        [],
+        "a phase boundary was filed as a truncation, which is the reading F750 corrects"
+    );
+}

@@ -210,6 +210,23 @@ impl Script {
         }
         self
     }
+
+    /// Report `n` prompt tokens on this turn.
+    ///
+    /// 🚨 **Scriptable because the server's count is the only witness to F748.**
+    /// A body that only grows cannot report a smaller prompt than it did earlier
+    /// in the same phase, so a *falling* sequence here is the whole of what a
+    /// silently truncating server looks like from inside the loop — 200 OK, an
+    /// ordinary finish reason, and a number that went down.
+    #[must_use]
+    pub fn with_prompt_tokens(mut self, n: u32) -> Script {
+        for delta in &mut self.0 {
+            if let Ok(Delta::Closed { usage, .. }) = delta {
+                usage.prompt_tokens = n;
+            }
+        }
+        self
+    }
 }
 
 #[must_use]

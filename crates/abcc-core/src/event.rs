@@ -274,6 +274,55 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         composition: Option<Composition>,
     },
+    /// 🚨🚨 **F748/F751: the server cut this call's prompt and answered
+    /// `200 OK`.**
+    ///
+    /// The engine's `Body` is append-only — there is no `insert`, no `prepend`,
+    /// no indexed write — and a phase sends the same body, growing, every round.
+    /// So `prompt_tokens` **cannot fall inside one phase**, and a call that
+    /// reports less than an earlier call of the same phase reported was measured
+    /// by the server over something smaller than what it was sent. That is the
+    /// whole proof, and it needs no estimate of anything: two numbers the server
+    /// itself produced, and a type that cannot shrink.
+    ///
+    /// 🚨 **Nothing in this workspace could say it before.** Both existing window
+    /// detectors — [`Why::ContextOverflow`] via F498, and the `HTTP 400` F747
+    /// measured — are functions of **one** turn, because the loud path announces
+    /// itself in that turn's own numbers. The silent path leaves no mark inside a
+    /// turn at all: `finish` is `tool_calls`, the status is 200, no header and no
+    /// field says anything was dropped, and the only witness is the *sequence*.
+    /// A detector that sees one call can never find it.
+    ///
+    /// ⚠ **`high_water`, not the previous call.** After the first cut the body
+    /// keeps growing and the window does not, so every later call in the phase is
+    /// cut too while its reported count climbs again. Comparing against the
+    /// previous call counts the **transitions** (23 on this project's log) and
+    /// comparing against the phase's peak counts the **calls actually shown a cut
+    /// prompt** (74 of 1,977, F749) — which is the quantity the work is spent on.
+    ///
+    /// ⚠ **`high_water - reported` is a floor and never the amount.** Everything
+    /// appended since the high-water call is missing from this prompt too, and
+    /// that part is not measured here. F745 measured the rest from outside: a
+    /// byte-identical resend reports the same count, so a fall is not a cache
+    /// discount, and past the window the reported figure stops tracking the input
+    /// and falls to roughly half of it.
+    ///
+    /// ▶ **Recorded and not acted on**, for the same reason [`TraceSignal`] is:
+    /// what to *do* about a cut prompt — a larger window bought with VRAM, a cap
+    /// on what may enter the body, or ending the phase — is a trade the operator
+    /// rules on, and the population that would price it is what recording
+    /// produces.
+    ///
+    /// [`Why::ContextOverflow`]: crate::outcome::Why::ContextOverflow
+    PromptCut {
+        attempt: AttemptId,
+        /// What the server reported for this call.
+        reported: u32,
+        /// The highest `prompt_tokens` any earlier call **of this phase**
+        /// reported. The body has only grown since, so this is a floor under what
+        /// this call really contained.
+        high_water: u32,
+    },
     /// 🚨 **F513: the phase's own accounting, which used to exist only on a
     /// terminal.**
     ///
@@ -712,6 +761,7 @@ impl Event {
             | Event::BriefRecorded { attempt, .. }
             | Event::ModelCallStarted { attempt, .. }
             | Event::ModelCallEnded { attempt, .. }
+            | Event::PromptCut { attempt, .. }
             | Event::ToolCallStarted { attempt, .. }
             | Event::ToolCallEnded { attempt, .. }
             | Event::RungRecorded { attempt, .. }
@@ -744,6 +794,7 @@ impl Event {
             Event::BriefRecorded { .. } => "brief_recorded",
             Event::ModelCallStarted { .. } => "model_call_started",
             Event::ModelCallEnded { .. } => "model_call_ended",
+            Event::PromptCut { .. } => "prompt_cut",
             Event::ToolCallStarted { .. } => "tool_call_started",
             Event::ToolCallEnded { .. } => "tool_call_ended",
             Event::RungRecorded { .. } => "rung_recorded",

@@ -948,3 +948,58 @@ fn two_spellings_of_one_commit_are_two_rows_because_the_log_cannot_tell() {
     assert_eq!(ladder.changes.len(), 2);
     assert_eq!(ladder.recordings, 2);
 }
+
+// ---------------------------------------------------------------------------
+// F748 — a cut prompt reaches the after-action view
+// ---------------------------------------------------------------------------
+
+/// 🚨 **F744's complaint was that `abcc replay` could not say this happened.**
+///
+/// Two cuts against one high water, and the projection keeps the count and the
+/// deepest of them. ⚠ The worst is `high_water - reported` and is a **floor**:
+/// everything appended since the high-water call is missing from that prompt too,
+/// and nothing on the log measures that part.
+#[test]
+fn a_cut_prompt_is_counted_and_its_worst_kept() {
+    let mut log = Log::new();
+    let (_, attempt) = log.a_task_under_attempt("cut");
+    for (reported, high_water) in [(19_181_u32, 36_737_u32), (9_965, 36_737)] {
+        log.after(
+            0,
+            Event::PromptCut {
+                attempt,
+                reported,
+                high_water,
+            },
+        );
+    }
+
+    let a = &Replay::over(&log.events).tasks[0].attempts[0];
+    assert_eq!(a.spend.prompt_cuts, 2);
+    assert_eq!(a.spend.prompt_cut_worst, 26_772);
+}
+
+/// The reading the field needs, and the reason it is documented rather than
+/// merely present: **zero is *no cut recorded*, not *no cut*.** Every one of this
+/// project's 1,977 logged model calls predates the detector, 74 of them were
+/// shown a cut prompt (F749), and all 98 attempts replay as zero here.
+#[test]
+fn an_attempt_from_before_the_detector_counts_no_cuts() {
+    let mut log = Log::new();
+    let (_, attempt) = log.a_task_under_attempt("older");
+    log.after(
+        0,
+        Event::ModelCallEnded {
+            attempt,
+            usage: usage(96, None),
+            finish: Finish::ToolCalls,
+            ttfb_ms: 100,
+            elapsed_ms: 200,
+            composition: None,
+        },
+    );
+
+    let a = &Replay::over(&log.events).tasks[0].attempts[0];
+    assert_eq!(a.spend.calls, 0, "no call was started, only ended");
+    assert_eq!(a.spend.prompt_cuts, 0);
+}

@@ -672,6 +672,17 @@ impl AttemptTrace {
                 }
             }
             Event::ModelCallEnded { .. } => self.close_call(event),
+            Event::PromptCut {
+                reported,
+                high_water,
+                ..
+            } => {
+                self.spend.prompt_cuts += 1;
+                self.spend.prompt_cut_worst = self
+                    .spend
+                    .prompt_cut_worst
+                    .max(high_water.saturating_sub(*reported));
+            }
             Event::ToolCallStarted { tool, tier, .. } => {
                 if let Some(t) = self.tools.iter_mut().find(|t| t.tool == *tool) {
                     t.calls += 1;
@@ -887,6 +898,21 @@ pub struct Spend {
     /// value — and an attempt flown *unseeded* is the state every rate this
     /// project has published was measured in.
     pub seeded_calls: u32,
+    /// 🚨 **F748: how many of this attempt's calls the server cut the prompt
+    /// of**, folded from [`Event::PromptCut`].
+    ///
+    /// ⚠ **Zero means no cut was *recorded*, which over an old attempt means
+    /// nobody was looking** — the same reading [`Spend::seeded_calls`] needs, and
+    /// for the same reason. The detector arrived with F748; on the 1,977 model
+    /// calls logged before it, **74 were shown a cut prompt** (F749) and not one
+    /// of them can say so.
+    pub prompt_cuts: u32,
+    /// The deepest single cut: the largest `high_water - reported` seen.
+    ///
+    /// ⚠ **A floor, never the amount.** Everything appended to the body since the
+    /// high-water call is missing from that prompt too, and nothing measures that
+    /// part.
+    pub prompt_cut_worst: u32,
 }
 
 /// 🚨 **F511: where the completion went**, which a token total cannot say.
@@ -1004,6 +1030,7 @@ const fn attempt_of(event: &Event) -> Option<AttemptId> {
         | Event::BriefRecorded { attempt, .. }
         | Event::ModelCallStarted { attempt, .. }
         | Event::ModelCallEnded { attempt, .. }
+        | Event::PromptCut { attempt, .. }
         | Event::PhaseEnded { attempt, .. }
         | Event::ToolCallStarted { attempt, .. }
         | Event::ToolCallEnded { attempt, .. }

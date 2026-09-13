@@ -479,3 +479,58 @@ fn the_board_prints_the_ladder_per_change_and_admits_it_has_no_denominator() {
         "🚨 the one reading this number invites is the one it cannot support:\n{page}"
     );
 }
+
+/// 🚨🚨 **F744's own closing complaint, answered: `abcc replay` can say it.**
+///
+/// The archive's 74 cut calls sit on 12 attempts and every one of them replays
+/// today without a word about it, because the only witness — a prompt count that
+/// fell inside one phase — was never read. ⚠ And the negative half is the half
+/// that keeps the line honest: an attempt with nothing recorded prints
+/// **nothing** rather than `0 cuts`, because over this archive zero means
+/// *nobody was looking*.
+#[test]
+fn a_cut_prompt_is_printed_and_an_attempt_with_none_recorded_says_nothing() {
+    let subject = subject();
+    let (task, clean) = {
+        let mut store = subject.store();
+        store
+            .append(Event::MissionCreated {
+                title: "m".to_owned(),
+            })
+            .expect("mission");
+        let (task, attempt) = a_truncated_attempt(&mut store, "abcc --version");
+        store
+            .append(Event::PromptCut {
+                attempt,
+                reported: 19_181,
+                high_water: 36_737,
+            })
+            .expect("prompt cut");
+        let clean = a_truncated_attempt(&mut store, "abcc replay").0;
+        (task, clean)
+    };
+
+    let page = subject
+        .run(Command::Replay {
+            task: Some(TaskRef(task.born().get())),
+        })
+        .expect("replay");
+    assert!(
+        page.contains("1 call(s) were shown a CUT prompt"),
+        "the cut is not on the page:\n{page}"
+    );
+    assert!(
+        page.contains("17556"),
+        "and the floor under what went with it:\n{page}"
+    );
+
+    let quiet = subject
+        .run(Command::Replay {
+            task: Some(TaskRef(clean.born().get())),
+        })
+        .expect("replay");
+    assert!(
+        !quiet.contains("CUT prompt"),
+        "an attempt with nothing recorded printed a reading anyway:\n{quiet}"
+    );
+}
