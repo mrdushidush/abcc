@@ -648,6 +648,87 @@ fn a_refusal_that_is_not_the_swap_window_is_not_retried() {
     assert_eq!(stub.requests().len(), 1);
 }
 
+/// 🚨🚨 **F752: the window refusal is not a fault in this engine, and it used to
+/// be recorded as one.**
+///
+/// The body is this server's, verbatim off the wire (measured 2026-09-13 at two
+/// sizes). ⚠ **Note the nesting** — the outer `error` is a *string* holding a
+/// second JSON document, so `body["error"]["type"]` reads nothing and the naive
+/// structured parse finds no fields at all. That is the whole reason the scan is
+/// a substring search.
+///
+/// Three claims, and the third is the one with a cost attached: the numbers are
+/// read rather than estimated, the `Why` is an **absence** and not a
+/// `HardFailure`, and the request is **not retried** — re-sending a prompt that
+/// does not fit produces the identical refusal.
+#[test]
+fn a_window_refusal_is_read_as_an_overflow_and_not_as_an_engine_fault() {
+    let stub = Stub::new(vec![Reply::json(
+        400,
+        concat!(
+            r#"{"error":"Engine protocol predict request returned 400: "#,
+            r#"{\"error\":{\"code\":400,\"message\":\"request (44477 tokens) exceeds the "#,
+            r#"available context size (40960 tokens), try increasing it\","#,
+            r#"\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":44477,"#,
+            r#"\"n_ctx\":40960}}"}"#
+        ),
+    )]);
+    let provider = stub.provider();
+    let body = Body::opening("go");
+    let deltas = drain(&provider, &request(Head::Recon, &body, BUDGET));
+
+    let error = only_error(&deltas);
+    match error {
+        ProviderError::ContextOverflow {
+            window,
+            prompt_tokens,
+        } => {
+            assert_eq!(*window, 40_960);
+            assert_eq!(*prompt_tokens, 44_477);
+        }
+        other => panic!("expected ContextOverflow, got {other:?}"),
+    }
+    assert_eq!(
+        error.why(),
+        Why::ContextOverflow {
+            window: 40_960,
+            prompt_tokens: 44_477
+        },
+        "🚨 an overflow recorded as EngineError is a HardFailure, which asserts \
+         another attempt would repeat this unchanged -- the one thing that is not \
+         true of it (F496)"
+    );
+    assert_eq!(
+        stub.requests().len(),
+        1,
+        "a prompt that does not fit was re-sent"
+    );
+}
+
+/// The control for the classifier, and it is not a formality: a 400 that is not
+/// the window must keep today's classification. **Both numbers or nothing** --
+/// inventing a window for a body whose fields have been renamed would put a
+/// fabricated measurement on the log, which is worse than the wrong class.
+#[test]
+fn a_400_that_is_not_the_window_is_still_a_status() {
+    for body in [
+        r#"{"error":"'response_format.type' must be 'json_schema' or 'text'"}"#,
+        // The marker with no numbers beside it: the shape a server rename
+        // produces.
+        r#"{"error":{"type":"exceed_context_size_error","message":"too big"}}"#,
+    ] {
+        let stub = Stub::new(vec![Reply::json(400, body)]);
+        let provider = stub.provider();
+        let opening = Body::opening("go");
+        let deltas = drain(&provider, &request(Head::Recon, &opening, BUDGET));
+        assert!(
+            matches!(only_error(&deltas), ProviderError::Status { code: 400, .. }),
+            "{body} was reclassified: {:?}",
+            only_error(&deltas)
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // What goes out on the wire
 // ---------------------------------------------------------------------------

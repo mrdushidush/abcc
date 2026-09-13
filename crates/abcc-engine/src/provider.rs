@@ -482,6 +482,27 @@ pub enum ProviderError {
     /// The run's frozen egress policy refused the payload. A normal outcome.
     #[error("egress denied by {rule}")]
     EgressDenied { rule: String },
+    /// 🚨🚨 **F752: the loud half of the same limit, and it used to arrive as a
+    /// fault in this engine.**
+    ///
+    /// The server refuses a request it cannot fit — `HTTP 400`,
+    /// `exceed_context_size_error`, naming the prompt, the window and the fix —
+    /// and F747 measured that this happens for a **single oversized message**,
+    /// where a rolling window has nothing to drop. A 45k-token `read_file` result
+    /// appended to a body is exactly that shape, so this is reachable today.
+    ///
+    /// ⚠ **It is a member rather than a [`Status`] with a special body**, because
+    /// `Status` maps to [`Why::EngineError`] and therefore to `HardFailure`, which
+    /// asserts *another attempt would repeat this unchanged* — the one thing that
+    /// is not true of a window overflow. F496 made exactly that correction for
+    /// the other door, where a `length` finish below our own cap was being called
+    /// an engine fault; this is the same defect re-entering through the status
+    /// code. The body is also the only place the two numbers exist, and they are
+    /// the two [`Why::ContextOverflow`] wants.
+    ///
+    /// [`Status`]: ProviderError::Status
+    #[error("the prompt of {prompt_tokens} tokens does not fit the {window}-token window")]
+    ContextOverflow { window: u32, prompt_tokens: u32 },
 }
 
 impl ProviderError {
@@ -494,6 +515,13 @@ impl ProviderError {
             },
             ProviderError::EgressDenied { rule } => Why::BudgetExhausted {
                 which: format!("egress: {rule}"),
+            },
+            ProviderError::ContextOverflow {
+                window,
+                prompt_tokens,
+            } => Why::ContextOverflow {
+                window: *window,
+                prompt_tokens: *prompt_tokens,
             },
             other => Why::EngineError {
                 detail: other.to_string(),

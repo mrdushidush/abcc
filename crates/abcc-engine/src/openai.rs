@@ -464,6 +464,16 @@ impl Sending {
             return Ok(response);
         }
         let body = response.text().unwrap_or_else(|e| e.to_string());
+        // 🚨 F752. Classified here rather than left to the caller, because this is
+        // the only place the body exists: `ProviderError::Status` carries it as
+        // text and every reader downstream would have to re-parse it to learn
+        // that the refusal was a window and not a fault.
+        if let Some((window, prompt_tokens)) = overflow_in(&body) {
+            return Err(ProviderError::ContextOverflow {
+                window,
+                prompt_tokens,
+            });
+        }
         Err(ProviderError::Status {
             provider: self.provider.clone(),
             code: status.as_u16(),
@@ -520,7 +530,56 @@ impl Sending {
     }
 }
 
+/// 🚨🚨 **F752: the window refusal, read out of a body that carries it twice.**
+///
+/// The server answers an unfittable request with `HTTP 400` and names everything
+/// needed to classify it. ⚠ **And the document is nested inside a string**, which
+/// is the trap: `{"error": "Engine protocol predict request returned 400:
+/// {\"error\":{...,\"type\":\"exceed_context_size_error\",
+/// \"n_prompt_tokens\":44477,\"n_ctx\":40960}}"}` — the outer `error` is a
+/// **string**, so the obvious `body["error"]["type"]` reads nothing at all and a
+/// structured parse of the whole body finds no fields. Measured off the wire
+/// 2026-09-13 at two sizes; the escaping is the server's, not a quoting accident
+/// on the way into this comment.
+///
+/// So the scan is deliberately naive: find the marker anywhere, then the first
+/// digits after each name. ▶ **Both numbers or nothing.** A server that renames a
+/// field gets today's classification — [`ProviderError::Status`], and so
+/// `HardFailure` — which is the wrong answer but the *safe* direction: inventing a
+/// window for [`Why::ContextOverflow`](abcc_core::outcome::Why::ContextOverflow)
+/// would put a fabricated measurement on the log, and F494's rule is absent
+/// rather than zero.
+fn overflow_in(body: &str) -> Option<(u32, u32)> {
+    if !body.contains("exceed_context_size_error") {
+        return None;
+    }
+    Some((
+        number_after(body, "n_ctx")?,
+        number_after(body, "n_prompt_tokens")?,
+    ))
+}
+
+/// The first run of digits after `name`, wherever `name` appears.
+///
+/// ⚠ Escape-blind on purpose: the field is `\"n_ctx\":40960` in the nested
+/// document and `"n_ctx":40960` if the server ever stops nesting it, and this
+/// reads both.
+fn number_after(body: &str, name: &str) -> Option<u32> {
+    let rest = &body[body.find(name)? + name.len()..];
+    let digits = rest
+        .char_indices()
+        .skip_while(|(_, c)| !c.is_ascii_digit())
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .map(|(i, _)| i);
+    let (first, last) = (digits.clone().next()?, digits.last()?);
+    rest[first..=last].parse().ok()
+}
+
 /// Whether a failure is the model-swap window rather than a real refusal.
+///
+/// ⚠ A window overflow can no longer reach this: it is its own variant (F752),
+/// and this reads [`ProviderError::Status`] only. That is the right way round —
+/// re-sending a prompt that does not fit produces the identical refusal.
 fn is_reloading(error: &ProviderError) -> bool {
     let ProviderError::Status { body, .. } = error else {
         return false;

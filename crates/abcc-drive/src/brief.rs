@@ -214,13 +214,23 @@ pub fn refused(rung: &str, detail: &str, artifact: &str) -> String {
 /// the one action that fixes this is loading a larger one and the operator
 /// should not have to work out how much larger. The window is measured rather
 /// than guessed (F498) — see [`abcc_core::Why::ContextOverflow`].
+///
+/// 🚨 **Two doors reach it now, and the sentence has to be true of both** (F752).
+/// F498's is a `length` finish below our own cap, where a reply had started and
+/// was cut; the other is the server refusing the request outright with `HTTP 400`,
+/// where nothing was generated at all and `prompt_tokens` is **larger than the
+/// window** rather than part of it. So it says *the prompt alone came to* rather
+/// than *of it was prompt*, and *nothing to measure* rather than *the reply was
+/// cut off part-way* — the earlier wording is false on the second door, and a
+/// prompt that tells the operator something that did not happen is the defect
+/// `Event::BriefRecorded` exists to end, one layer up.
 #[must_use]
 pub fn overflowed(window: u32, prompt_tokens: u32) -> String {
     format!(
-        "The conversation filled the server's {window}-token window — {prompt_tokens} of it \
-         was prompt, and the reply was cut off part-way. Nothing here failed and nothing \
-         measured the work: the same attempt runs unchanged against a server holding a \
-         larger window. Load one and retry, or say what should happen to the task."
+        "The conversation filled the server's {window}-token window — the prompt alone came \
+         to {prompt_tokens} tokens — and this turn produced nothing to measure. Nothing here \
+         failed: the same attempt runs unchanged against a server holding a larger window. \
+         Load one and retry, or say what should happen to the task."
     )
 }
 
