@@ -28,6 +28,7 @@
 //! theme is a label map over these fixed names rather than a rename of them.
 
 pub mod attempt;
+pub mod climb;
 pub mod event;
 pub mod fun;
 pub mod outcome;
@@ -38,6 +39,7 @@ pub mod seq;
 pub mod task;
 
 pub use attempt::{Attempt, AttemptOutcome, Cause, NextAction};
+pub use climb::{Climb, Direction, Slope, Trend};
 pub use event::{CallShape, Composition, Control, Event, Finish, Logged, TraceSignal, Usage};
 pub use fun::{Answer, Fun, Missing, Verdict};
 pub use outcome::{Claim, Counts, Headline, Measurement, Outcome, Report, Why};

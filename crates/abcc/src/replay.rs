@@ -24,9 +24,10 @@
 use std::io::Write;
 
 use abcc_core::attempt::{AttemptOutcome, Cause};
+use abcc_core::climb::{Climb, Trend};
 use abcc_core::event::TraceSignal;
 use abcc_core::outcome::Outcome;
-use abcc_core::replay::{AttemptTrace, Quiet, Replay, TaskTrace};
+use abcc_core::replay::{AttemptTrace, Ladder, Quiet, Replay, TaskTrace};
 use abcc_core::seq::TaskId;
 use abcc_tui::Theme;
 use abcc_tui::line::minutes;
@@ -161,6 +162,11 @@ fn ladder(replay: &Replay, out: &mut impl Write) -> Result<(), AppError> {
             out,
             "  `abcc review <change> <minutes>` writes one. The minutes it records are a person's."
         )?;
+        writeln!(
+            out,
+            "  M3 wants {} boundary-crossing changes, minutes flat or falling. There are none.",
+            Climb::WANT
+        )?;
         writeln!(out)?;
         return Ok(());
     }
@@ -212,7 +218,99 @@ fn ladder(replay: &Replay, out: &mut impl Write) -> Result<(), AppError> {
         "    A merge nobody reviewed writes no event, so this fold has no denominator."
     )?;
     writeln!(out)?;
+    climb(&replay.ladder, out)?;
+    writeln!(out)?;
     Ok(())
+}
+// ---------------------------------------------------------------------------
+// W13's rung
+// ---------------------------------------------------------------------------
+
+/// 🚨 **Which rung the ladder supports — the half of M3 that is arithmetic, and
+/// the half that is nobody's to state.**
+///
+/// `PLAN.md` names Self-Host's exit as W13's M3, and until this printed, M0–M3
+/// existed in prose only: `grep -rn consecutive crates/` found the word in doc
+/// comments and in no logic. [`Climb`] is the reading; this is the two screens
+/// of it, and the second one — [`Climb::cannot_say`] — is printed every time the
+/// first is, because *ten changes, falling* is exactly the sentence a reader
+/// would otherwise finish as *so M3 is reached*.
+fn climb(ladder: &Ladder, out: &mut impl Write) -> Result<(), AppError> {
+    let climb = ladder.climb();
+    writeln!(
+        out,
+        "  M3's countable half — {} consecutive boundary-crossing change(s), \
+         minutes flat or falling",
+        climb.want
+    )?;
+    let Some(trend) = climb.trend else {
+        writeln!(
+            out,
+            "    {} of {} on the ladder: no direction yet, and one review is not one.",
+            climb.crossing, climb.want
+        )?;
+        return Ok(());
+    };
+    let met = if climb.countable_half() {
+        "MET"
+    } else {
+        "not met"
+    };
+    writeln!(
+        out,
+        "    {met} — {} of {} crossing(s), {} at {} per change",
+        climb.have(),
+        climb.want,
+        trend.direction().name(),
+        per_change(&trend),
+    )?;
+    writeln!(
+        out,
+        "    Mann–Kendall S {}{}",
+        trend.s,
+        match trend.p_milli() {
+            // ⚠ The p is a caution about how much ten rows support, never the
+            // criterion: M3's test is the descriptive one, and a reading that
+            // gated on significance would be rewriting the milestone.
+            Some(0) => " · exact two-sided p < 0.001".to_owned(),
+            Some(milli) => format!(
+                " · exact two-sided p = {}.{:03}",
+                milli / 1000,
+                milli % 1000
+            ),
+            None => " · window too wide for an exact p".to_owned(),
+        }
+    )?;
+    if trend.tied_pairs > 0 {
+        writeln!(
+            out,
+            "    ⚠ {} tied pair(s): the exact p assumes distinct values, so it is the \
+             conservative one.",
+            trend.tied_pairs
+        )?;
+    }
+    if climb.interleaved > 0 {
+        writeln!(
+            out,
+            "    ⚠ {} change(s) between them crossed no boundary. They are not M2 tasks so \
+             they do not\n      break the run — but the stricter reading of *consecutive* \
+             would refuse it.",
+            climb.interleaved
+        )?;
+    }
+    writeln!(out, "    ▶ two of M3's four clauses. This fold cannot say:")?;
+    for missing in Climb::cannot_say() {
+        writeln!(out, "      · {missing}")?;
+    }
+    Ok(())
+}
+
+/// A slope rendered in seconds per change, from the exact milliseconds.
+fn per_change(trend: &Trend) -> String {
+    let ms = trend.slope.per_change_ms();
+    let sign = if ms < 0 { "-" } else { "" };
+    let abs = ms.unsigned_abs();
+    format!("{sign}{}.{:03} s", abs / 1000, abs % 1000)
 }
 
 // ---------------------------------------------------------------------------

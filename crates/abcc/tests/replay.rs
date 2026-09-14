@@ -534,3 +534,116 @@ fn a_cut_prompt_is_printed_and_an_attempt_with_none_recorded_says_nothing() {
         "an attempt with nothing recorded printed a reading anyway:\n{quiet}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W13's rung, on the page
+// ---------------------------------------------------------------------------
+
+/// 🚨 **The archive answers *which rung is this project on?* even when the
+/// answer is "none of them".**
+///
+/// This is A3's whole point. `PLAN.md` puts Self-Host's exit at W13's M3, and
+/// for eleven thousand events the only instrument that reads the whole log
+/// could not name the criterion, let alone measure it.
+#[test]
+fn an_empty_ladder_still_names_what_the_rung_would_take() {
+    let subject = subject();
+    {
+        let mut store = subject.store();
+        store
+            .append(Event::MissionCreated {
+                title: "m".to_owned(),
+            })
+            .expect("mission");
+        a_truncated_attempt(&mut store, "smoke one");
+    }
+
+    let page = subject.run(Command::Replay { task: None }).expect("replay");
+    assert!(
+        page.contains(
+            "M3 wants 10 boundary-crossing changes, minutes flat or falling. \
+             There are none.",
+        ),
+        "the criterion is on the page before any row is, as one sentence:\n{page}"
+    );
+}
+
+/// 🚨 **Ten falling crossings print MET — and print the two clauses of M3 that
+/// nothing in this workspace writes, in the same breath.**
+///
+/// *Ten changes, falling* is exactly the sentence a reader finishes as *so M3
+/// is reached*. Clause 3 (no human edit to the agent's diff) and clause 4
+/// (defect survival at 30 and 90 days, OQ-W13-3) have no writer, so the page
+/// that states the half has to state the half it is.
+#[test]
+fn the_countable_half_is_printed_with_the_half_it_is_not() {
+    let subject = subject();
+    for (i, seconds) in (1..=10).map(|i| (i, 1100 - i * 100)) {
+        subject
+            .run(Command::Review {
+                change: format!("sha{i}"),
+                seconds,
+                by: Some("david".to_owned()),
+                crossed_boundary: true,
+            })
+            .expect("review");
+    }
+
+    let page = subject.run(Command::Replay { task: None }).expect("replay");
+    assert!(
+        page.contains("MET — 10 of 10 crossing(s), falling at -100.000 s per change"),
+        "the exact slope, because the arithmetic is exact:\n{page}"
+    );
+    assert!(
+        page.contains("Mann–Kendall S -45 · exact two-sided p < 0.001"),
+        "the strength beside the direction, never in place of it:\n{page}"
+    );
+    assert!(
+        page.contains(
+            "M3's countable half — 10 consecutive boundary-crossing change(s), \
+             minutes flat or falling",
+        ),
+        "the heading names the criterion in full:\n{page}"
+    );
+    assert!(
+        page.contains("two of M3's four clauses"),
+        "🚨 the countable half must never print as the milestone:\n{page}"
+    );
+    assert!(
+        page.contains("whether a human edited the agent's diff"),
+        "{page}"
+    );
+    assert!(page.contains("30 and 90 days"), "{page}");
+}
+
+/// ⚠ A change nobody called a boundary crossing does not break the run, and the
+/// page hands the reader the count that the stricter reading would turn on.
+#[test]
+fn the_page_reports_what_the_stricter_reading_of_consecutive_would_refuse() {
+    let subject = subject();
+    for (i, seconds, crossed) in [
+        (1, 900, true),
+        (2, 60, false),
+        (3, 300, true),
+        (4, 100, true),
+    ] {
+        subject
+            .run(Command::Review {
+                change: format!("sha{i}"),
+                seconds,
+                by: Some("david".to_owned()),
+                crossed_boundary: crossed,
+            })
+            .expect("review");
+    }
+
+    let page = subject.run(Command::Replay { task: None }).expect("replay");
+    assert!(page.contains("not met — 3 of 10 crossing(s)"), "{page}");
+    assert!(
+        page.contains(
+            "1 change(s) between them crossed no boundary. They are not M2 tasks \
+             so they do not",
+        ),
+        "the input to the other reading, handed over rather than resolved:\n{page}"
+    );
+}
