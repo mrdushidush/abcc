@@ -60,6 +60,16 @@ pub enum VcsError {
     },
     #[error("{path} is not inside a git repository")]
     NotARepo { path: String },
+    /// A scratch file this crate writes for git to read could not be placed. It
+    /// is its own variant rather than an `Io` catch-all because there is exactly
+    /// one thing it can be about, and a caller that sees it has a full disk or a
+    /// read-only git directory rather than a repository problem.
+    #[error("writing {path}: {source}")]
+    Scratch {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("`git {args}` printed something this code cannot read: {got}")]
     Unreadable { args: String, got: String },
 }
@@ -229,10 +239,10 @@ impl Repo {
     /// Fails if any of the five commands fails, or if the scratch index cannot be
     /// placed.
     pub fn checkpoint(&self, ref_name: &str, message: &str) -> Result<Sha> {
-        let scratch = self.scratch_index_path()?;
+        let scratch = self.scratch_path("snapshot", "index")?;
         // The scratch index must not be inside the working tree: `git add -A`
         // would otherwise be asked to stage the file it is writing.
-        let index = ScratchIndex(scratch);
+        let index = ScratchFile(scratch);
 
         let head = self.head()?;
         run_with_index(&self.root, index.path(), ["read-tree", "HEAD"])?;
@@ -355,6 +365,105 @@ impl Repo {
         Ok(())
     }
 
+    /// Whether the working tree and index hold nothing of their own.
+    ///
+    /// 🚨 **This is the one place the crate asks `git status` anything, and it is
+    /// the one question `status` can answer soundly.** F328 is that *clean* is
+    /// not a claim about content — 241 of 539 tracked files in the v1 donor
+    /// differed from their blobs while it said clean, because it answers from a
+    /// stat cache. That makes it useless for *has this file changed* and exactly
+    /// right for *is there anything here I would destroy*: the question is about
+    /// the operator's uncommitted work, and a stale cache errs toward refusing.
+    ///
+    /// `--untracked-files=normal` is passed explicitly so that somebody's
+    /// `status.showUntrackedFiles` cannot quietly widen what counts as clean.
+    ///
+    /// # Errors
+    ///
+    /// Fails if git will not answer.
+    pub fn is_clean(&self) -> Result<bool> {
+        let out = run(
+            &self.root,
+            ["status", "--porcelain", "--untracked-files=normal"],
+        )?;
+        Ok(out.trim().is_empty())
+    }
+
+    /// Apply a patch to the working tree **and the index**, three-way where the
+    /// context has moved.
+    ///
+    /// 🚨 **`--3way` is what lets an old attempt land at all.** A checkpoint pair
+    /// is parented on the HEAD its attempt forked from, which may be a long way
+    /// behind the branch by the time anybody lands it — the oldest green pair on
+    /// this project's own log is 58 commits back. A plain apply fails on the
+    /// first moved line; a three-way apply reconstructs the pre-image from the
+    /// blobs, and those blobs are in the object store precisely because
+    /// [`Repo::checkpoint`] wrote a ref (F330).
+    ///
+    /// 🚨 **A conflict is NOT all-or-nothing here, and the caller must undo it.**
+    /// The plain applier stages nothing unless the whole patch applies; the
+    /// three-way fallback is a *merge*, so a hunk it cannot reconcile is written
+    /// into the file with conflict markers and left as an unmerged index entry —
+    /// `Applied patch to 'x.rs' with conflicts. U x.rs`, exit 1. This function
+    /// reports that as an error and **deliberately does not clean up**: the undo
+    /// is a reset to `HEAD`, which is only safe for a caller that established the
+    /// tree was clean first, and this crate cannot know that. See
+    /// `abcc::land`, which asks [`Repo::is_clean`] and then resets.
+    ///
+    /// 🚨 **The patch goes through a file, and that is load-bearing rather than
+    /// convenient.** `git apply --3way` tries a direct apply first and *re-reads
+    /// the patch* to fall back, so a patch arriving on **stdin cannot be fallen
+    /// back to** — the fallback silently does not happen and git reports the
+    /// direct apply's conflict. Measured on this repository's own five green
+    /// checkpoint pairs, whose parents are 16 to 58 commits behind `main`: piped
+    /// on stdin, **5 of 5 report `patch failed`**; written to a file, **5 of 5
+    /// apply clean**. Same patches, same tree, same flags. ⚠ So a future
+    /// refactor that "simplifies" this into a pipe turns every landing of an
+    /// older attempt into a conflict that is not there — and the tests would
+    /// still pass, because a patch taken minutes ago applies directly.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the scratch file cannot be placed, or if git will not apply the
+    /// patch — every conflict included.
+    pub fn apply(&self, patch: &str) -> Result<()> {
+        let scratch = ScratchFile(self.scratch_path("landing", "patch")?);
+        std::fs::write(scratch.path(), patch).map_err(|source| VcsError::Scratch {
+            path: scratch.path().to_path_buf(),
+            source,
+        })?;
+        run(
+            &self.root,
+            [
+                OsStr::new("apply"),
+                OsStr::new("--index"),
+                OsStr::new("--3way"),
+                scratch.path().as_os_str(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Commit whatever is staged, and answer with the sha it made.
+    ///
+    /// ⚠ **This is the only function in the crate that moves a branch.**
+    /// Everything else writes under [`CHECKPOINT_REFS`] or into a detached
+    /// worktree, exactly so that a running attempt can never touch the
+    /// operator's history. This is reached from an operator verb and from
+    /// nothing else.
+    ///
+    /// `--no-verify` is deliberately **not** passed: if the repository has a
+    /// pre-commit hook, a landing is the moment it should run.
+    ///
+    /// # Errors
+    ///
+    /// Fails if git will not commit — including the two ordinary reasons, an
+    /// unconfigured `user.email` and an empty index.
+    pub fn commit(&self, message: &str) -> Result<Sha> {
+        run(&self.root, ["commit", "-m", message])?;
+        self.head()
+    }
+
     /// Create an isolated worktree at `sha`. Measured at **0.25 s**.
     ///
     /// `path` must be outside this repository's working tree. A detached
@@ -407,14 +516,19 @@ impl Repo {
         }
     }
 
-    /// A scratch index path outside the working tree, so `git add -A` is never
-    /// asked to stage the file it is writing.
-    fn scratch_index_path(&self) -> Result<PathBuf> {
+    /// A scratch path outside the working tree, so `git add -A` is never asked to
+    /// stage the file it is writing — and, for a patch, so the tree a patch
+    /// describes never contains the patch.
+    ///
+    /// The common dir rather than the worktree's own `.git`: a linked worktree's
+    /// `.git` is a file, and both callers want somewhere that exists for every
+    /// shape of checkout.
+    fn scratch_path(&self, what: &str, ext: &str) -> Result<PathBuf> {
         let dir = self.common_dir()?;
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        Ok(dir.join(format!("abcc-snapshot-{unique}.index")))
+        Ok(dir.join(format!("abcc-{what}-{unique}.{ext}")))
     }
 }
 
@@ -476,18 +590,19 @@ impl Worktree {
 /// A temp index that deletes itself. The snapshot is only cheap because it never
 /// touches the real index, and leaving these behind in `.git/` would be the same
 /// accumulating-metadata defect BCF has with worktrees.
-struct ScratchIndex(PathBuf);
+struct ScratchFile(PathBuf);
 
-impl ScratchIndex {
+impl ScratchFile {
     fn path(&self) -> &Path {
         &self.0
     }
 }
 
-impl Drop for ScratchIndex {
+impl Drop for ScratchFile {
     fn drop(&mut self) {
-        // Best effort: a leftover scratch index is inert, and failing a
-        // checkpoint because a temp file would not delete would be worse.
+        // Best effort: a leftover scratch file is inert, and failing a
+        // checkpoint or a landing because a temp file would not delete would be
+        // worse than the file.
         let _ = std::fs::remove_file(&self.0);
     }
 }

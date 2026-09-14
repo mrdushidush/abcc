@@ -259,6 +259,30 @@ impl Fold {
                 by,
                 crossed_boundary,
             } => self.ladder.record(change, *seconds, by, *crossed_boundary),
+            // Filed under both, for `OperatorPrompted`'s reason: the landing is
+            // a fact about a *change*, which is where the ladder reads it, and
+            // it is also the one thing that ever happened to the attempt after
+            // it ended, which is where the after-action view wants it.
+            Event::ChangeLanded {
+                task,
+                attempt,
+                change,
+                from,
+                to,
+                rungs,
+            } => {
+                self.ladder.record_landing(Landed {
+                    change: change.clone(),
+                    task: *task,
+                    attempt: *attempt,
+                    from: from.clone(),
+                    to: to.clone(),
+                    rungs: *rungs,
+                    seq,
+                    at_ms: at,
+                });
+                self.absorb(&logged.event, seq, at);
+            }
             other => self.absorb(other, seq, at),
         }
     }
@@ -316,6 +340,7 @@ impl Fold {
             quiet: None,
             over_bar: 0,
             open_phase: None,
+            landed: None,
         });
     }
 
@@ -365,6 +390,15 @@ pub struct Ladder {
     /// How many [`Event::ReviewRecorded`] events the fold walked — passes, not
     /// changes.
     pub recordings: u32,
+    /// 🚨 **The denominator, for the changes that came through `abcc land`.**
+    /// One row per landing, in log order.
+    ///
+    /// ⚠ It does **not** repair F727 in general — a change merged by hand still
+    /// writes nothing, so this is *of the changes abcc landed* and never *of the
+    /// repository*. What it does make answerable is the narrower question that
+    /// was previously unaskable: of the work this tool put on the branch, how
+    /// much has a person actually read.
+    pub landings: Vec<Landed>,
 }
 
 impl Ladder {
@@ -400,6 +434,32 @@ impl Ladder {
     #[must_use]
     pub fn crossed(&self) -> usize {
         self.changes.iter().filter(|c| c.crossed_boundary).count()
+    }
+
+    /// The landings nobody has recorded a review of yet.
+    ///
+    /// 🚨 **This is the one coverage figure the ladder may state**, and it is
+    /// stated in the only direction that is sound: a landing is on the log, a
+    /// review of it either is or is not, so *these have not been reviewed* is a
+    /// fact about rows rather than an estimate about the repository. The inverse
+    /// — *what fraction of merges were reviewed* — stays unanswerable for
+    /// F727's reason, and asking this function for it would be reading a
+    /// denominator that is not here.
+    ///
+    /// The match is on the recorded string and nothing resolves it, for
+    /// [`Reviewed::change`]'s reason: two spellings of one commit are two
+    /// things, because the log holds a string and this crate cannot ask git.
+    #[must_use]
+    pub fn unreviewed(&self) -> Vec<&Landed> {
+        self.landings
+            .iter()
+            .filter(|l| !self.changes.iter().any(|c| c.change == l.change))
+            .collect()
+    }
+
+    /// Take one landing.
+    pub fn record_landing(&mut self, landed: Landed) {
+        self.landings.push(landed);
     }
 
     /// Take one recording.
@@ -457,6 +517,26 @@ pub struct Reviewed {
     pub crossed_boundary: bool,
     /// How many passes those minutes were.
     pub recordings: u32,
+}
+
+/// One change that left a worktree and became a commit on the branch — W13's
+/// M1, which is the rung the whole ladder starts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Landed {
+    /// The commit `abcc land` made. ⚠ Compared with [`Reviewed::change`] as a
+    /// string, so an operator who reviews a landing must name it the way the
+    /// landing printed it.
+    pub change: String,
+    pub task: TaskId,
+    /// The attempt whose gate entitled it to land.
+    pub attempt: AttemptId,
+    /// The checkpoint pair the change was taken between.
+    pub from: String,
+    pub to: String,
+    /// How many rungs were green when it was measured.
+    pub rungs: usize,
+    pub seq: Seq,
+    pub at_ms: i64,
 }
 
 /// One final state, and the attempt endings that reached it.
@@ -607,6 +687,10 @@ pub struct AttemptTrace {
     pub over_bar: usize,
     /// A phase entered and never ended — where the attempt was when it stopped.
     pub open_phase: Option<AttemptPhase>,
+    /// The commit this attempt's work became, if anybody landed it. 🚨 The one
+    /// field here written after the attempt ended, and the only evidence on the
+    /// log that a green tree was ever taken up.
+    pub landed: Option<String>,
 }
 
 impl AttemptTrace {
@@ -725,6 +809,7 @@ impl AttemptTrace {
                     }
                 }
             }
+            Event::ChangeLanded { change, .. } => self.landed = Some(change.clone()),
             Event::RungRecorded { outcome, .. } => self.rungs.push(outcome.clone()),
             Event::ClaimRecorded { .. } => self.claims += 1,
             Event::PhaseNudged { .. } => self.nudges += 1,
@@ -1038,7 +1123,14 @@ const fn attempt_of(event: &Event) -> Option<AttemptId> {
         | Event::ClaimRecorded { attempt, .. }
         | Event::LivenessMark { attempt, .. }
         | Event::PhaseNudged { attempt, .. }
-        | Event::OperatorPrompted { attempt, .. } => Some(*attempt),
+        | Event::OperatorPrompted { attempt, .. }
+        // ⚠ **After the attempt's span, and deliberately still filed under it.**
+        // Every other event here happened between `AttemptStarted` and
+        // `AttemptEnded`; a landing happens whenever a person gets to it. It is
+        // listed because the question this function answers is *which attempt is
+        // this about*, and the answer is not `None` — a reading that wants only
+        // the flight has `AttemptTrace::ended` to bound it with.
+        | Event::ChangeLanded { attempt, .. } => Some(*attempt),
         Event::RunStarted { .. }
         | Event::ModeDowngraded { .. }
         | Event::MissionCreated { .. }

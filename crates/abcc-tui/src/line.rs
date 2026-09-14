@@ -281,6 +281,16 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
                 ""
             }
         ),
+        // 🚨 **The line M1 is read off.** It leads with the change rather than
+        // the task because that is the string `abcc review` takes next, and it
+        // names the rung count because the entitlement to be on this line at all
+        // is `Headline::Green { rungs }` and nothing else.
+        Event::ChangeLanded {
+            task,
+            change,
+            rungs,
+            ..
+        } => format!("landed · {} · {task} · {rungs} rung(s) green", clip(change)),
         // 🚨 The one line in the feed that can say the model is not the model.
         // `Changed` leads with the word rather than burying it after the id,
         // because it is the only arm an operator has to act on — and the two

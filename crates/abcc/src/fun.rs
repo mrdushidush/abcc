@@ -237,7 +237,12 @@ const fn mark(verdict: Verdict) -> &'static str {
 /// Paged rather than read at once because that is the only read the store
 /// offers, and because the cursor it takes is the same integer the console
 /// scrubs with (ADR-0012).
-pub(crate) fn read_all(store: &Store) -> Result<Vec<Logged>, AppError> {
+///
+/// # Errors
+///
+/// [`AppError::Store`] if the log will not read, or holds an event this build
+/// cannot deserialize.
+pub fn read_all(store: &Store) -> Result<Vec<Logged>, AppError> {
     let mut all = Vec::new();
     let mut since = Seq::ORIGIN;
     loop {

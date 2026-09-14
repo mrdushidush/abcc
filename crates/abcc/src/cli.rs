@@ -106,6 +106,14 @@ pub enum Command {
     Accept { task: TaskRef, note: Option<String> },
     /// The operator has read the work and stops the task.
     Reject { task: TaskRef, note: Option<String> },
+    /// 🚨 **W13's M1: the work leaves the worktree and becomes a commit.**
+    ///
+    /// The one act M1 leaves to the human, and until it existed there was none —
+    /// `Accept` is `Aborted { CompletedByOperator }`, which says a person
+    /// finished the work by hand and is deliberately not a merge. See
+    /// [`crate::land`] for the entitlement, which is `Headline::Green` and is
+    /// asked of the gate's own function rather than recomputed.
+    Land { task: TaskRef },
     /// 🚨 ADR-0012 §4's eighth verb: the operator takes the keyboard **and a
     /// tree to use it in**.
     ///
@@ -214,6 +222,8 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc weights [--model M] [--verify] [--repin]
                                       which bytes are behind the model; --verify
                                       re-reads the whole file (~52 s)
+  abcc land <task>                    a green attempt becomes a commit on this branch,
+                                      and prints the sha `abcc review` takes
   abcc accept <task> [--note N]       the work is good; you take responsibility
   abcc reject <task> [--note N]       stop the task
   abcc take <task>                    take the keyboard: a worktree of your own, and the
@@ -384,7 +394,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
                 repin,
             }
         }
-        "accept" | "reject" | "take" | "release" => operator_verb(&verb, &mut args)?,
+        "accept" | "reject" | "take" | "release" | "land" => operator_verb(&verb, &mut args)?,
         other => {
             return Err(CliError::Usage(format!("{other:?} is not a command")));
         }
@@ -415,6 +425,7 @@ fn operator_verb(verb: &str, args: &mut Vec<String>) -> Result<Command, CliError
     Ok(match verb {
         "accept" => Command::Accept { task, note },
         "reject" => Command::Reject { task, note },
+        "land" => Command::Land { task },
         "take" => Command::Take { task },
         _ => Command::Release { task },
     })

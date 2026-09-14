@@ -521,6 +521,8 @@ pub const fn in_flight(event: &Event) -> bool {
         | Event::CommandRefused { .. }
         | Event::OperatorAnswered { .. }
         | Event::ReviewRecorded { .. }
+        // An operator verb, typed long after the sortie it lands work from.
+        | Event::ChangeLanded { .. }
         // Written at the start of a run, and also by the standalone `abcc
         // weights` verb outside one — both sides, so `false`, which is the same
         // answer `Note` gets for the same reason.

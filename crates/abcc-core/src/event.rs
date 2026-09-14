@@ -529,6 +529,42 @@ pub enum Event {
         /// occupies M0 with 15 of 471 commits, none architectural.
         crossed_boundary: bool,
     },
+    /// 🚨 **W13's M1, in one event: the work left the worktree and became a
+    /// commit on the operator's branch.**
+    ///
+    /// M1 is *the pipeline runs end to end unattended, with the human's only act
+    /// being merge*, and until this existed there was no act to record — an
+    /// attempt could go green and neither the log nor git distinguished a tree
+    /// somebody landed from a tree nobody looked at.
+    ///
+    /// 🚨 **It is also the denominator F727 says the ladder does not have.**
+    /// [`Event::ReviewRecorded`] can only ever report the changes somebody
+    /// reviewed, so *reviewed 5 of 5* is true of the fold and false of the
+    /// repository. With this row, `landed` and `reviewed` count one population
+    /// and the gap between them is readable. ⚠ **Only for changes landed through
+    /// the verb** — a change merged by hand still writes nothing, so the honest
+    /// reading is *of the changes abcc landed*, never *of the repository*, and
+    /// F727's caution survives in that narrower form.
+    ChangeLanded {
+        task: TaskId,
+        /// The attempt whose gate went green — the entitlement to be here.
+        attempt: AttemptId,
+        /// The commit this made on the operator's branch: **the string
+        /// [`Event::ReviewRecorded`]'s `change` takes**, which is the only reason
+        /// a landing has to name a sha at all.
+        change: String,
+        /// The checkpoint the attempt opened on.
+        from: String,
+        /// The checkpoint it closed on, and the sha every rung was measured at.
+        /// 🚨 The pair is recorded and the patch is not: a patch is derivable
+        /// from two shas that are on refs, and a patch on the log would be a
+        /// second copy of a tree that can disagree with git.
+        to: String,
+        /// How many rungs were green. `Headline::Green { rungs }` carries this
+        /// number and it is the whole of the entitlement, so it is kept beside
+        /// the act rather than left to be re-derived.
+        rungs: usize,
+    },
     /// 🚨 **The one control no donor in the family has** (ADR-0014 §6, F420).
     ///
     /// The weights are the ungated input: every other dependency passes a
@@ -747,7 +783,8 @@ impl Event {
             | Event::OperatorPrompted { task, .. }
             | Event::OperatorAnswered { task, .. }
             | Event::ControlRequested { task, .. }
-            | Event::ControlApplied { task, .. } => Some(*task),
+            | Event::ControlApplied { task, .. }
+            | Event::ChangeLanded { task, .. } => Some(*task),
             _ => None,
         }
     }
@@ -769,6 +806,7 @@ impl Event {
             | Event::PhaseNudged { attempt, .. }
             | Event::PhaseEnded { attempt, .. }
             | Event::OperatorPrompted { attempt, .. }
+            | Event::ChangeLanded { attempt, .. }
             | Event::LivenessMark { attempt, .. } => Some(*attempt),
             _ => None,
         }
@@ -810,6 +848,7 @@ impl Event {
             Event::PhaseNudged { .. } => "phase_nudged",
             Event::PhaseEnded { .. } => "phase_ended",
             Event::ReviewRecorded { .. } => "review_recorded",
+            Event::ChangeLanded { .. } => "change_landed",
             Event::WeightsChecked { .. } => "weights_checked",
             Event::Note { .. } => "note",
         }
