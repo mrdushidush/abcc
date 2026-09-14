@@ -777,8 +777,14 @@ impl<'a> Driver<'a> {
             // `BudgetExhausted` and `TruncatedAtCap` are *the model was still
             // working when the clock ran out*, and DEBUG-P4 measured what that
             // costs: across five sorties on one subject, **six of ten attempts
-            // changed the tree and the gate was asked about one**, while two of
-            // the five it skipped passed all 544 tests when rebuilt by hand.
+            // changed the tree and the gate was asked about one**, while one of
+            // the five it skipped passed all 544 tests when rebuilt by hand
+            // (`a5878`, F656).
+            //
+            // ⚠ **One, not two**, and the slip is worth keeping because it is
+            // the easy one: DEBUG-P4 §6 has *two* trees at 544 passed, and the
+            // other is `a5738` — the one tree the gate WAS asked about. Two
+            // passed; one of the skipped ones did.
             //
             // ⚠ **It cannot cost a cold build on an unchanged tree**, which is
             // the objection this arm has to answer. It does not, and not by a
