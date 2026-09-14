@@ -545,11 +545,11 @@ pub struct StateEndings {
     /// The **first** task's state, kept whole so a caller can put it through a
     /// label map and print the word the board prints.
     ///
-    /// ð¨ Grouping is on [`TaskState::name`] and never on the value: every
+    /// 🚨 Grouping is on [`TaskState::name`] and never on the value: every
     /// variant but `Queued` carries a `since`, so two tasks in the same state
     /// are not equal and rows keyed by value would be one row per task.
     pub state: TaskState,
-    /// The tasks in this state, in log order â so a reader can go and replay one.
+    /// The tasks in this state, in log order — so a reader can go and replay one.
     pub tasks: Vec<TaskId>,
     /// `(ending, count)`, commonest first.
     pub endings: Vec<(String, usize)>,
@@ -558,14 +558,14 @@ pub struct StateEndings {
 impl StateEndings {
     /// How many attempts this row counted.
     ///
-    /// â  Not `tasks.len()`: a task may have run several attempts, and a task
+    /// ⚠ Not `tasks.len()`: a task may have run several attempts, and a task
     /// that never started one contributes none.
     #[must_use]
     pub fn attempts(&self) -> usize {
         self.endings.iter().map(|(_, n)| *n).sum()
     }
 
-    /// ð¨ **How many of those endings were [`AttemptOutcome::Uncertain`]** â
+    /// 🚨 **How many of those endings were [`AttemptOutcome::Uncertain`]** —
     /// the count that says how much of a one-word state is *the system could not
     /// tell* rather than *the work was wrong*.
     #[must_use]
