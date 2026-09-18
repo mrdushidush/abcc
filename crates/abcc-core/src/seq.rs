@@ -37,6 +37,12 @@ impl Seq {
     pub const fn get(self) -> i64 {
         self.0
     }
+
+    /// Returns true if this is [`Seq::ORIGIN`].
+    #[must_use]
+    pub const fn is_origin(self) -> bool {
+        self.0 == Seq::ORIGIN.get()
+    }
 }
 
 impl fmt::Display for Seq {

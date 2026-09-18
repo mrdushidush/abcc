@@ -471,3 +471,9 @@ fn only_a_retry_spends_the_retry_budget() {
     assert_eq!(Cause::Fresh.parent(), None);
     assert_eq!(Cause::Retry { of }.parent(), Some(of));
 }
+
+#[test]
+fn origin_is_origin() {
+    assert!(Seq::ORIGIN.is_origin());
+    assert!(!seq(1).is_origin());
+}
