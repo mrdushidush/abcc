@@ -99,7 +99,10 @@ impl AppError {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            AppError::Cli(cli::CliError::Help) => 0,
+            // Neither of these is a failure, and `main` prints both and
+            // exits zero. Merged because `clippy::match_same_arms` refuses
+            // two arms with one body -- the second seam the variant forces.
+            AppError::Cli(cli::CliError::Help | cli::CliError::Version(_)) => 0,
             AppError::Cli(cli::CliError::Usage(_)) => 2,
             _ => 1,
         }

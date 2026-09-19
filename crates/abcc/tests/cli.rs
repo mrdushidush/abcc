@@ -33,6 +33,18 @@ fn nothing_at_all_is_help_and_help_is_not_a_failure() {
 }
 
 #[test]
+fn the_version_flag_prints_and_exits_zero() {
+    let version = env!("CARGO_PKG_VERSION").to_owned();
+    assert_eq!(parse("--version"), Err(CliError::Version(version.clone())));
+    assert_eq!(parse("board --version"), Err(CliError::Version(version)));
+    let v = abcc::AppError::Cli(CliError::Version("0.0.0".to_owned()));
+    //   🚨 THE SEAM THE GATE CANNOT SEE. `exit_code` ends in `_ => 1`, so a
+    // variant nobody adds an arm for compiles, passes every other test and
+    // reports a failing status for something `main` exits 0 on.
+    assert_eq!(v.exit_code(), 0);
+}
+
+#[test]
 fn a_usage_error_exits_two_and_a_refusal_exits_one() {
     let usage = abcc::AppError::Cli(CliError::Usage("nope".to_owned()));
     assert_eq!(usage.exit_code(), 2);
@@ -284,7 +296,7 @@ fn every_verb_the_parser_accepts_is_in_the_usage_text() {
         // The verb is known to the parser: whatever else it complains about, it
         // never complains that this is not a command.
         let complaint = match parse(verb) {
-            Ok(_) | Err(CliError::Help) => String::new(),
+            Ok(_) | Err(CliError::Help | CliError::Version(_)) => String::new(),
             Err(CliError::Usage(said)) => said,
         };
         assert!(

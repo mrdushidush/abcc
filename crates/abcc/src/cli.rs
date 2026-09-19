@@ -203,6 +203,9 @@ pub enum CliError {
     Help,
     #[error("{0}\n\n{USAGE}")]
     Usage(String),
+    /// `--version`. Not a failure.
+    #[error("{0}")]
+    Version(String),
 }
 
 pub const USAGE: &str = "\
@@ -232,6 +235,7 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc paint [--sprites DIR]          the fleet on the battlefield, as a sixel
 
 Everywhere:
+  --version         the version of this binary
   --repo <path>     the checkout to work on (default: the working directory)
   --home <path>     where the log and worktrees live (default: outside the repo)
 
@@ -310,6 +314,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
     }
     if args.is_empty() {
         return Err(CliError::Help);
+    }
+    if args.iter().any(|a| a == "--version") {
+        return Err(CliError::Version(env!("CARGO_PKG_VERSION").to_owned()));
     }
 
     // The two global flags are pulled out first so they can appear anywhere,

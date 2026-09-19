@@ -20,6 +20,12 @@ fn main() -> ExitCode {
             let _ = write!(out, "{}", cli::USAGE);
             ExitCode::SUCCESS
         }
+        // `--version` is not a failure either, and it prints the
+        // `abcc <version>` shape the usage text opens with.
+        Err(AppError::Cli(cli::CliError::Version(version))) => {
+            let _ = writeln!(out, "abcc {version}");
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             let _ = out.flush();
             eprintln!("abcc: {e}");
