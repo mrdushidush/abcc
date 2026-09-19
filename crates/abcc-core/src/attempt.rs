@@ -50,6 +50,18 @@ impl Cause {
     pub fn spends_retry_budget(&self) -> bool {
         matches!(self, Cause::Retry { .. })
     }
+
+    /// Returns the bare variant name of this cause.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Cause::Fresh => "Fresh",
+            Cause::Retry { .. } => "Retry",
+            Cause::Rescope { .. } => "Rescope",
+            Cause::Edit { .. } => "Edit",
+            Cause::Replay { .. } => "Replay",
+        }
+    }
 }
 
 /// How an attempt ended. Four cases, and `Uncertain` is a real one rather than a
@@ -154,4 +166,19 @@ pub enum NextAction {
     /// A durable state, not a log line: the task waits for a human and is watched
     /// but never reaped.
     HandToOperator { question: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cause_name_all_variants() {
+        assert_eq!("Fresh", Cause::Fresh.name());
+        let aid = AttemptId::at(Seq::new(0));
+        assert_eq!("Retry", Cause::Retry { of: aid }.name());
+        assert_eq!("Rescope", Cause::Rescope { of: aid }.name());
+        assert_eq!("Edit", Cause::Edit { of: aid }.name());
+        assert_eq!("Replay", Cause::Replay { of: aid }.name());
+    }
 }
