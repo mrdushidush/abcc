@@ -384,12 +384,37 @@ fn a_terminal_task_cannot_be_ended_twice() {
 // review — the measurement W13's ladder is defined in
 // ---------------------------------------------------------------------------
 
+/// A sha no `git` here ever made, long enough to be one.
+const LANDED: &str = "a2c0ca3f1e2d3c4b5a69788796a5b4c3d2e1f009";
+
+/// Put one `ChangeLanded` on the log, because after F796 a review needs one.
+fn land_one(subject: &Subject, task: i64) {
+    subject
+        .store()
+        .append(Event::ChangeLanded {
+            task: TaskId::at(Seq::new(task)),
+            attempt: AttemptId::at(Seq::new(task + 1)),
+            change: LANDED.to_owned(),
+            from: "1".repeat(40),
+            to: "2".repeat(40),
+            rungs: 4,
+        })
+        .expect("land");
+}
+
 #[test]
 fn a_review_is_recorded_in_seconds_and_says_whether_it_crossed_a_boundary() {
     // 🚨 `PLAN.md` §5 wants this from Skeleton onward. Until this subcommand
     // there was nothing in the workspace that wrote one, and a ladder with no
     // baseline is unfalsifiable.
+    //
+    // 🚨 **And F796 is why it lands something first, and why it reviews the
+    // ABBREVIATION and asserts the full sha.** The ladder joins its two halves by
+    // exact string; this test used to name a change nothing had landed, which is
+    // precisely the shape that produced four reviews joining none of four
+    // landings on the live log.
     let subject = subject();
+    land_one(&subject, 1);
     subject
         .run(Command::Review {
             change: "a2c0ca3".to_owned(),
@@ -414,10 +439,51 @@ fn a_review_is_recorded_in_seconds_and_says_whether_it_crossed_a_boundary() {
             _ => None,
         })
         .expect("a review");
-    assert_eq!(
-        recorded,
-        ("a2c0ca3".to_owned(), 510, "david".to_owned(), true)
+    //   The FULL sha, not the seven characters that were typed: an abbreviation
+    // in this column is a row that joins nothing.
+    assert_eq!(recorded, (LANDED.to_owned(), 510, "david".to_owned(), true));
+}
+
+#[test]
+fn a_review_that_names_no_landed_change_is_refused_and_writes_nothing() {
+    //   The guard F796 asked for. A refusal that still wrote the row would be
+    // worse than no guard, so this asserts the log as well as the error.
+    let subject = subject();
+    land_one(&subject, 1);
+    let refused = subject
+        .run(Command::Review {
+            change: "a14025".to_owned(),
+            seconds: 60,
+            by: None,
+            crossed_boundary: false,
+        })
+        .expect_err("an attempt id is not a change");
+    assert!(refused.to_string().contains("no change"), "{refused}");
+    assert!(
+        !subject.kinds().contains(&"review_recorded"),
+        "a refused review still wrote a row"
     );
+}
+
+#[test]
+fn a_review_may_name_the_task_the_change_came_from() {
+    //   A fresh log per spelling, so neither can pass on the other's row.
+    for named in ["t7", "7"] {
+        let subject = subject();
+        land_one(&subject, 7);
+        subject
+            .run(Command::Review {
+                change: named.to_owned(),
+                seconds: 60,
+                by: None,
+                crossed_boundary: false,
+            })
+            .expect("review by task");
+        assert!(
+            subject.kinds().contains(&"review_recorded"),
+            "{named} did not record"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use abcc_core::event::Event;
 use abcc_core::redact::Secrets;
+use abcc_core::replay::Replay;
 use abcc_core::seq::{MissionId, Seq, TaskId};
 use abcc_core::task::{AbortReason, Command, TaskState};
 use abcc_engine::openai::{API_KEY_ENV, BASE_URL_ENV, DEFAULT_BASE_URL};
@@ -345,9 +346,10 @@ pub fn review(
 ) -> Result<(), AppError> {
     let ground = ground(invocation)?;
     let mut store = open_log(&ground.home)?;
+    let change = landed(&store, change)?;
     let by = by.map_or_else(operator, str::to_owned);
     store.append(Event::ReviewRecorded {
-        change: change.to_owned(),
+        change: change.clone(),
         seconds,
         by: by.clone(),
         crossed_boundary,
@@ -363,6 +365,63 @@ pub fn review(
         }
     )?;
     Ok(())
+}
+
+/// What the operator typed, resolved to the sha a landing actually made.
+///
+/// 🚨 **F796: the ladder's two halves join by exact string, and until this
+/// nothing enforced it.** [`Event::ChangeLanded`] writes the full forty-character
+/// sha; `review` wrote whatever it was handed. Four landings and four reviews
+/// produced **zero** joinable pairs -- three of the reviews named an *attempt*
+/// and one an abbreviation -- so both counters read four while the intersection
+/// was empty. [`abcc_core::replay::Landed::change`] already carried the warning
+/// that the two are compared as strings and that whoever reviews a landing must
+/// name it the way the landing printed it. **A comment is not a guard.**
+///
+/// ⚠ **A review may not name a change `abcc land` did not make**, and that is
+/// a ruling rather than an omission. F727: the ladder is *of the changes abcc
+/// landed* and never *of the repository*, so a commit merged by hand is outside
+/// it by construction. This refusal is how that stays true.
+///
+/// # Errors
+///
+/// [`AppError::Refused`] if nothing the log landed answers to `named`.
+fn landed(store: &Store, named: &str) -> Result<String, AppError> {
+    let log = crate::fun::read_all(store)?;
+    let landings = Replay::over(&log).ladder.landings;
+    let named = named.trim();
+
+    if let Some(hit) = landings.iter().find(|l| l.change == named) {
+        return Ok(hit.change.clone());
+    }
+    if let Some(hit) = task_named(named).and_then(|task| landings.iter().find(|l| l.task == task)) {
+        return Ok(hit.change.clone());
+    }
+    //   An abbreviation, but only an unambiguous one. Two landings sharing a
+    // prefix is a question this cannot answer, and guessing at it is the whole
+    // of what F796 is about. Four is git's own floor for a short sha.
+    if named.len() >= 4 {
+        let mut hits = landings.iter().filter(|l| l.change.starts_with(named));
+        if let (Some(hit), None) = (hits.next(), hits.next()) {
+            return Ok(hit.change.clone());
+        }
+    }
+    Err(AppError::Refused(format!(
+        "no change `abcc land` made here is called {named}. A review names the \
+         commit: its full sha, an unambiguous abbreviation of it, or the task it \
+         came from. The log holds {} landing(s).",
+        landings.len()
+    )))
+}
+
+/// `t42` or `42`, which is how every other operator verb spells a task.
+fn task_named(named: &str) -> Option<TaskId> {
+    named
+        .strip_prefix('t')
+        .unwrap_or(named)
+        .parse::<i64>()
+        .ok()
+        .map(|n| TaskId::at(Seq::new(n)))
 }
 
 // ---------------------------------------------------------------------------

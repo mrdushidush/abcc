@@ -423,21 +423,51 @@ fn the_board_says_the_ladder_is_empty_rather_than_reporting_zero_minutes() {
 /// 🚨 **The ladder on the page: per change, with the passes beside it and the
 /// denominator it does not have said out loud.**
 ///
+/// Land `change` so that a review of it is admissible, and answer the sha.
+///
+/// 🚨 **F796.** `review` now resolves its argument against the log's own
+/// landings and refuses anything else, because four landings and four reviews on
+/// the live log produced zero joinable pairs. The ladder tests below are about
+/// the ARITHMETIC of the ladder, so this puts the landing there and keeps them
+/// about that. The short name is padded to sha width rather than replaced, so
+/// each test still reads with the change names it was written with.
+fn land(subject: &Subject, n: i64, change: &str) -> String {
+    //   ⚠ Padded with `a` and NOT with `0`, and the ladder caught the
+    // difference: zero-padding makes `sha1` and `sha10` the SAME forty
+    // characters, so ten changes folded into nine and one grew a second pass.
+    // Any non-digit filler keeps the short names distinct.
+    let sha = format!("{change:a<40}");
+    subject
+        .store()
+        .append(Event::ChangeLanded {
+            task: TaskId::at(Seq::new(n)),
+            attempt: AttemptId::at(Seq::new(n + 1)),
+            change: sha.clone(),
+            from: "1".repeat(40),
+            to: "2".repeat(40),
+            rungs: 4,
+        })
+        .expect("land");
+    sha
+}
+
 /// Three recordings over two changes. The page has to report **two**, because
 /// the ladder is minutes per *merged change* — counting the events would show
 /// the burden falling as a reward for reviewing more.
 #[test]
 fn the_board_prints_the_ladder_per_change_and_admits_it_has_no_denominator() {
     let subject = subject();
+    let first = land(&subject, 1, "223ae3a");
+    let second = land(&subject, 3, "d6c60e0");
     for (change, seconds, by, boundary) in [
-        ("223ae3a", 600, Some("david"), true),
+        (&first, 600, Some("david"), true),
         // The same change, read again by somebody else, with the flag left off.
-        ("223ae3a", 300, None, false),
-        ("d6c60e0", 120, Some("david"), false),
+        (&first, 300, None, false),
+        (&second, 120, Some("david"), false),
     ] {
         subject
             .run(Command::Review {
-                change: change.to_owned(),
+                change: change.clone(),
                 seconds,
                 by: by.map(str::to_owned),
                 crossed_boundary: boundary,
@@ -579,9 +609,10 @@ fn an_empty_ladder_still_names_what_the_rung_would_take() {
 fn the_countable_half_is_printed_with_the_half_it_is_not() {
     let subject = subject();
     for (i, seconds) in (1..=10).map(|i| (i, 1100 - i * 100)) {
+        let sha = land(&subject, i64::from(i) * 2, &format!("sha{i}"));
         subject
             .run(Command::Review {
-                change: format!("sha{i}"),
+                change: sha,
                 seconds,
                 by: Some("david".to_owned()),
                 crossed_boundary: true,
@@ -627,9 +658,10 @@ fn the_page_reports_what_the_stricter_reading_of_consecutive_would_refuse() {
         (3, 300, true),
         (4, 100, true),
     ] {
+        let sha = land(&subject, i64::from(i) * 2, &format!("sha{i}"));
         subject
             .run(Command::Review {
-                change: format!("sha{i}"),
+                change: sha,
                 seconds,
                 by: Some("david".to_owned()),
                 crossed_boundary: crossed,
