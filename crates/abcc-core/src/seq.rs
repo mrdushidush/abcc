@@ -43,11 +43,57 @@ impl Seq {
     pub const fn is_origin(self) -> bool {
         self.0 == Seq::ORIGIN.get()
     }
+
+    /// Move this position backwards by `n`, saturating at [`Seq::ORIGIN`].
+    #[must_use]
+    pub fn back(self, n: u64) -> Seq {
+        let Ok(n) = i64::try_from(n) else {
+            return Seq::ORIGIN;
+        };
+        match self.0.checked_sub(n) {
+            Some(pos) if pos >= 0 => Seq(pos),
+            _ => Seq::ORIGIN,
+        }
+    }
 }
 
 impl fmt::Display for Seq {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn back_stays_at_origin() {
+        assert!(Seq::ORIGIN.back(10).is_origin());
+    }
+
+    #[test]
+    fn back_moves_backwards() {
+        let pos = Seq::new(5);
+        assert_eq!(pos.back(3), Seq::new(2));
+    }
+
+    #[test]
+    fn back_saturates_at_origin() {
+        let pos = Seq::new(2);
+        assert!(pos.back(10).is_origin());
+    }
+
+    #[test]
+    fn back_overflow_returns_origin() {
+        // u64::MAX as a subtraction count would overflow i64, so should return ORIGIN.
+        let pos = Seq::new(u64::MAX.cast_signed());
+        assert!(pos.back(u64::MAX).is_origin());
+    }
+
+    #[test]
+    fn back_exact() {
+        assert_eq!(Seq::new(10).back(10), Seq::ORIGIN);
     }
 }
 
