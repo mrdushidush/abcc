@@ -35,15 +35,23 @@ out of measurement rather than taste:
 
 ## Using it, as far as it goes
 
+**`USING.md` is the operator's runbook** — the five-word daily loop, what to do
+when a task stalls, and how to write a task that lands. This section is the verb
+list it rests on.
+
 ```
 abcc where                       where this repository's log and worktrees live
 abcc task "make one() return two"   put a task on the board
 abcc run --task t3               one attempt, Localize then Change
+abcc board                       the board, from the projection
+abcc land t3                     a green attempt becomes a commit on this branch
+abcc replay t3                   after-action: how a task got where it is
 abcc watch                       the reader, over the event log alone
 abcc accept t3 / abcc reject t3  the operator's two endings
 abcc take t3 / abcc release t3   take the keyboard, and hand it back
-abcc review <sha> <minutes>      the measurement W13's ladder is defined in
+abcc review t3 <minutes>         the measurement W13's ladder is defined in
 abcc weights [--verify]          which bytes are behind the model you asked for
+abcc --version                   the version of this binary
 ```
 
 `abcc take t3` is *take over manually*, and it hands over a directory as well as
