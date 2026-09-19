@@ -55,6 +55,18 @@ impl Seq {
             _ => Seq::ORIGIN,
         }
     }
+
+    /// Move this position forwards by `n`, saturating at [`i64::MAX`].
+    #[must_use]
+    pub fn forward(self, n: u64) -> Seq {
+        let Ok(n) = i64::try_from(n) else {
+            return Seq(i64::MAX);
+        };
+        match self.0.checked_add(n) {
+            Some(pos) => Seq(pos),
+            None => Seq(i64::MAX),
+        }
+    }
 }
 
 impl fmt::Display for Seq {
@@ -94,6 +106,21 @@ mod tests {
     #[test]
     fn back_exact() {
         assert_eq!(Seq::new(10).back(10), Seq::ORIGIN);
+    }
+
+    #[test]
+    fn forward_moves_forwards() {
+        assert_eq!(Seq::new(5).forward(3), Seq::new(8));
+    }
+
+    #[test]
+    fn forward_saturates_at_max() {
+        assert_eq!(Seq::new(i64::MAX).forward(1), Seq::new(i64::MAX));
+    }
+
+    #[test]
+    fn forward_large_n_returns_max() {
+        assert_eq!(Seq::new(0).forward(u64::MAX), Seq::new(i64::MAX));
     }
 }
 
