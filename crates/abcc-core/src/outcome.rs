@@ -251,6 +251,13 @@ impl Outcome {
         }
     }
 
+    /// Unmeasured means: a rung produced no measurement. Neither green nor red — it is the absence
+    /// of evidence, not their opposite.
+    #[must_use]
+    pub fn is_unmeasured(&self) -> bool {
+        matches!(self, Outcome::Unmeasured { .. })
+    }
+
     #[must_use]
     pub fn rung(&self) -> &str {
         match self {
@@ -734,5 +741,58 @@ fn counts_from(out: &str) -> Option<Counts> {
                 failed: bad,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_unmeasured_returns_true_for_unmeasured() {
+        let outcome = Outcome::Unmeasured {
+            rung: String::new(),
+            why: Why::NoCheckerForArtifact {
+                artifact: String::from("doc.md"),
+            },
+        };
+        assert!(outcome.is_unmeasured());
+    }
+
+    #[test]
+    fn is_unmeasured_returns_false_for_measured() {
+        let outcome = Outcome::Measured(Measurement {
+            rung: String::new(),
+            sha: String::from("abc123"),
+            exit: 0,
+            counts: None,
+            detail: String::new(),
+        });
+        assert!(!outcome.is_unmeasured());
+    }
+
+    #[test]
+    fn is_green_and_is_red_both_return_false_for_unmeasured() {
+        let outcome = Outcome::Unmeasured {
+            rung: String::new(),
+            why: Why::CheckerNotOnHost {
+                binary: String::from("cargo"),
+            },
+        };
+        assert!(!outcome.is_green());
+        assert!(!outcome.is_red());
+    }
+
+    #[test]
+    fn is_unmeasured_and_is_green_are_mutually_exclusive() {
+        let measured = Outcome::Measured(Measurement {
+            rung: String::new(),
+            sha: String::from("abc123"),
+            exit: 0,
+            counts: None,
+            detail: String::new(),
+        });
+        assert!(!measured.is_unmeasured());
+        assert!(measured.is_green());
     }
 }
