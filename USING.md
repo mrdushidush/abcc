@@ -9,17 +9,48 @@ from that checkout**, not from a parent directory — the log is keyed on the
 checkout path, so the wrong directory gets you a different, empty log and no
 error.
 
+The shell on this box is **PowerShell**, and every line below is written for it.
+`export VAR=value` is bash and PowerShell answers *the term 'export' is not
+recognized*; the spelling here is `$env:VAR = "value"`.
+
+## Once, ever
+
+Put `abcc` on PATH, so the loop below is five words rather than five paths:
+
+```powershell
+cargo install --path crates\abcc --locked
+```
+
+It lands in `~\.cargo\bin`, which is already on PATH. ⚠ **It is a copy, not
+a link**: after you land a change to abcc itself, re-run that line or you are
+driving with the binary from before the change. `abcc --version` does not tell
+you — the version string only moves when `Cargo.toml` does.
+
+Then name the model once, in the profile, so every shell you open already has it:
+
+```powershell
+if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Force $PROFILE }
+Add-Content $PROFILE '$env:ABCC_MODEL = "qwen3.6-35b-a3b-mtp@iq3_s"'
+```
+
 ## Once, at the start of a session
 
-```
+```powershell
 lms load qwen3.6-35b-a3b-mtp@iq3_s -c 40960 --parallel 1
-export ABCC_MODEL=qwen3.6-35b-a3b-mtp@iq3_s
 abcc check
 ```
 
 `abcc check` asks the server which model it is actually holding and stops if the
 answer is not the one you asked for. It is the whole of the pre-flight: if it
-passes, `run` will not refuse on the model.
+passes, `run` will not refuse on the model. What a pass looks like:
+
+```
+server      http://127.0.0.1:1234
+loaded      [qwen3.6-35b-a3b-mtp@iq3_s]
+model confirmed: asked qwen3.6-35b-a3b-mtp@iq3_s, the server reports it has
+loaded qwen3.6-35b-a3b-mtp@iq3_s, matched exactly
+pulse       1 token(s) in 260 ms — "Thinking", reasoning only
+```
 
 ⚠ **`lms ps` is the truth about whether a model is loaded**, and the answer
 changes without warning — the port and the API key move on every `lms load`. A
@@ -29,7 +60,7 @@ recorded load state is not evidence. Check it, do not remember it.
 
 Five words, in this order. Nothing else is needed on an ordinary day.
 
-```
+```powershell
 abcc task "<what to change>" --title "<short name>"    # put it on the board
 abcc run --task t42                                     # one attempt
 abcc board                                              # what happened
