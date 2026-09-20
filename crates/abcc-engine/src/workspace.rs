@@ -548,6 +548,19 @@ impl Workspace {
     /// ⚠ **All or nothing.** Every file is applied in memory first and nothing is
     /// written until all of them succeed, because a half-applied diff leaves a
     /// tree nobody chose and the model cannot see that it happened.
+    ///
+    /// 🚨 **A diff may name one path more than once, and each entry applies
+    /// to what the one before it made** — never to the file on disk. Repeating
+    /// the `---`/`+++` header before a second hunk is ordinary model output and
+    /// `git apply` takes it in its stride; this did not. Every entry read its
+    /// original with `fs::read` while the write loop was still to come, so a
+    /// second entry for one path re-derived the *unmodified* file and its write
+    /// **silently undid the first**. The tool then reported
+    /// `applied 2 hunks to 2 files` over a tree it had left exactly as it found
+    /// it: a success sentence for no change at all, which is the one thing a
+    /// tool may never say. The structural rung caught it — *the attempt changed
+    /// no file the repository tracks* — but only after a whole attempt was
+    /// spent, and only because this project grades trees rather than claims.
     fn apply_patch(&self, raw: &str) -> Result<String, String> {
         let args: PatchArgs = parse(raw, "apply_patch")?;
         let patch = Patch::parse(&args.diff).map_err(|e| format!("apply_patch: {e}"))?;
@@ -556,20 +569,34 @@ impl Workspace {
         let mut applied: Vec<(String, usize)> = Vec::new();
         for file in &patch.files {
             let target = self.resolve("apply_patch", &file.path)?;
-            let original = match fs::read(&target) {
-                Ok(bytes) => Some(String::from_utf8(bytes).map_err(|_| {
-                    format!(
-                        "apply_patch: {} is not UTF-8 and cannot be patched",
-                        file.path
-                    )
-                })?),
-                Err(_) => None,
+            //   Keyed on the resolved path rather than the spelling: `src/x.rs`
+            // and `./src/x.rs` are one file, and it is the file that can be
+            // overwritten twice.
+            let seen = staged.iter().position(|(path, _)| *path == target);
+            let original = match seen {
+                Some(at) => staged[at].1.clone(),
+                None => match fs::read(&target) {
+                    Ok(bytes) => Some(String::from_utf8(bytes).map_err(|_| {
+                        format!(
+                            "apply_patch: {} is not UTF-8 and cannot be patched",
+                            file.path
+                        )
+                    })?),
+                    Err(_) => None,
+                },
             };
             let new = file
                 .apply(original.as_deref())
                 .map_err(|e| format!("apply_patch: {e}"))?;
-            staged.push((target, new));
-            applied.push((file.path.clone(), file.hunk_count()));
+            // One write per path, carrying the last entry's result, so the
+            // all-or-nothing loop below cannot write one file twice.
+            if let Some(at) = seen {
+                staged[at].1 = new;
+                applied[at].1 += file.hunk_count();
+            } else {
+                staged.push((target, new));
+                applied.push((file.path.clone(), file.hunk_count()));
+            }
         }
 
         for (path, new) in &staged {

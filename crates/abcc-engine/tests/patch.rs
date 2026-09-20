@@ -446,3 +446,92 @@ fn markup_in_a_hunks_context_is_content_and_not_a_transcript() {
         "<tool_call>\nis what it emits\nand we refuse it\n"
     );
 }
+
+/// 🚨 **A diff that names one path twice applied both entries, and the
+/// second write undid the first.**
+///
+/// Not hypothetical: it is how `t14977` was spent on 2026-09-20. The model
+/// repeated the `---`/`+++` header before its second hunk — ordinary output
+/// that `git apply` takes in its stride — and `apply_patch` read every entry's
+/// original with `fs::read` while the write loop was still to come. Entry two
+/// therefore re-derived the *unmodified* file and wrote it back over entry one.
+/// The tool reported `applied 2 hunks to 2 files` and left the tree byte for
+/// byte as it found it, which is a success sentence for no change at all.
+///
+/// ⚠ The diff is built with `concat!` rather than a continued string
+/// literal, because `\` at the end of a line eats the next line's leading
+/// whitespace — including the single space that makes a context line a
+/// context line.
+#[test]
+fn one_path_named_twice_applies_both_entries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = Workspace::open(dir.path()).expect("open");
+    write(dir.path(), "src/lib.rs", "one\ntwo\nthree\n");
+
+    let diff = concat!(
+        "--- a/src/lib.rs\n",
+        "+++ b/src/lib.rs\n",
+        "@@ -1,1 +1,2 @@\n",
+        " one\n",
+        "+ONE AND A HALF\n",
+        "--- a/src/lib.rs\n",
+        "+++ b/src/lib.rs\n",
+        "@@ -3,1 +4,2 @@\n",
+        " three\n",
+        "+FOUR\n",
+    );
+
+    let result = apply(&workspace, diff);
+    assert!(
+        result.unmeasured.is_none(),
+        "the diff is well formed: {:?}",
+        result.unmeasured
+    );
+    assert_eq!(
+        read(dir.path(), "src/lib.rs"),
+        "one\nONE AND A HALF\ntwo\nthree\nFOUR\n"
+    );
+    //   One path is one file however many times the diff spells it, and the
+    // summary counts files rather than headers.
+    assert!(
+        result.text.contains("2 hunks to 1 file"),
+        "the summary should name one file: {}",
+        result.text
+    );
+}
+
+/// The same shape, and the half that matters most: whatever the summary says,
+/// the tree must not come out identical to how it went in.
+#[test]
+fn a_success_sentence_is_never_reported_over_an_unchanged_tree() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = Workspace::open(dir.path()).expect("open");
+    let before = "alpha\nbeta\n";
+    write(dir.path(), "src/lib.rs", before);
+
+    let diff = concat!(
+        "--- a/src/lib.rs\n",
+        "+++ b/src/lib.rs\n",
+        "@@ -1,1 +1,2 @@\n",
+        " alpha\n",
+        "+GAMMA\n",
+        "--- a/src/lib.rs\n",
+        "+++ b/src/lib.rs\n",
+        "@@ -2,1 +3,2 @@\n",
+        " beta\n",
+        "+DELTA\n",
+    );
+
+    let result = apply(&workspace, diff);
+    assert!(result.unmeasured.is_none(), "{:?}", result.unmeasured);
+    assert_ne!(
+        read(dir.path(), "src/lib.rs"),
+        before,
+        "apply_patch reported `{}` and changed nothing",
+        result.text
+    );
+    assert_eq!(
+        read(dir.path(), "src/lib.rs"),
+        "alpha\nGAMMA\nbeta\nDELTA\n"
+    );
+}
