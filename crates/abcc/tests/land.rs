@@ -469,3 +469,107 @@ fn a_landing_is_unreviewed_until_somebody_reviews_it() {
     assert_eq!(ladder.crossed(), 1);
     assert_eq!(ladder.median_seconds(), Some(600));
 }
+
+// ---------------------------------------------------------------------------
+// abcc diff — the reading this module's own doc said was missing
+// ---------------------------------------------------------------------------
+
+/// 🚨 **The property the verb exists for: what you read is what lands.**
+///
+/// Not *a diff of the same change* — the same bytes. `diff` and `land` take
+/// their pair from one function, and this asserts the patch the operator was
+/// shown is the patch git committed. A review is worth nothing if the thing
+/// reviewed and the thing merged are two derivations of one change, because
+/// then the minutes were spent on something that is not what shipped.
+#[test]
+fn what_diff_prints_is_what_land_commits() {
+    let subject = subject();
+    let (task, _) = a_green_task(&subject, TWO, &[("structural", 0), ("acceptance", 0)]);
+
+    let shown = subject
+        .run(Command::Diff {
+            task: TaskRef(task.born().get()),
+        })
+        .expect("diff");
+    assert!(shown.contains("would apply"), "{shown}");
+    assert!(shown.contains("pub fn one() -> u32 { 2 }"), "{shown}");
+
+    subject
+        .run(Command::Land {
+            task: TaskRef(task.born().get()),
+        })
+        .expect("land");
+    let committed = git(&subject.root, &["show", "HEAD", "--format=", "--unified=3"]);
+
+    let body = |patch: &str| {
+        patch
+            .lines()
+            .filter(|l| {
+                (l.starts_with('+') || l.starts_with('-'))
+                    && !l.starts_with("+++")
+                    && !l.starts_with("---")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        !body(&shown).is_empty(),
+        "the diff printed no hunks:\n{shown}"
+    );
+    assert_eq!(
+        body(&shown),
+        body(&committed),
+        "shown:\n{shown}\ncommitted:\n{committed}"
+    );
+}
+
+/// 🚨 **A red attempt is the case with the most to show, and the one `replay`
+/// cannot reach.** It says which rung stopped the attempt; it has never been
+/// able to say what the attempt had written when it stopped. 88 of 125 attempts
+/// on this project's own log never reached a gradeable artifact.
+#[test]
+fn a_red_attempt_still_shows_what_it_wrote() {
+    let subject = subject();
+    let (task, _) = a_green_task(&subject, TWO, &[("structural", 0), ("standard", 101)]);
+
+    subject
+        .run(Command::Land {
+            task: TaskRef(task.born().get()),
+        })
+        .expect_err("a red gate does not land");
+
+    let shown = subject
+        .run(Command::Diff {
+            task: TaskRef(task.born().get()),
+        })
+        .expect("diff reads a red attempt");
+    assert!(shown.contains("will not land"), "{shown}");
+    assert!(
+        shown.contains("pub fn one() -> u32 { 2 }"),
+        "the work is unreadable exactly when it matters:\n{shown}"
+    );
+}
+
+/// ⚠ **Read-only, and the fleet may call it.** Every neighbour in this module
+/// moves a state or appends a row; this one is a window. If it ever writes, it
+/// stops being safe to run mid-flight, which is when it is most useful.
+#[test]
+fn a_diff_writes_no_row_and_moves_no_state() {
+    let subject = subject();
+    let (task, _) = a_green_task(&subject, TWO, &[("structural", 0)]);
+    let before = subject.kinds();
+    let head = subject.repo().head().expect("head");
+
+    subject
+        .run(Command::Diff {
+            task: TaskRef(task.born().get()),
+        })
+        .expect("diff");
+
+    assert_eq!(subject.kinds(), before, "diff appended to the log");
+    assert_eq!(
+        subject.repo().head().expect("head"),
+        head,
+        "diff moved HEAD"
+    );
+}

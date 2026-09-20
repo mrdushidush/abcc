@@ -287,6 +287,145 @@ pub fn land(
     Ok(())
 }
 
+/// The checkpoint an attempt closed on, for the attempts a landing will not
+/// take.
+///
+/// 🚨 **This is the fallback and never the first answer.** A green attempt's
+/// `to` is the sha its rungs were *measured at*, which is what [`landing`]
+/// returns and what [`land`] applies. Reading a second answer off the
+/// checkpoints and showing *that* would be F392 exactly — two functions
+/// answering one question are two answers waiting to disagree, and the question
+/// here is *what would land*. This exists for the attempts [`landing`] refuses,
+/// where there are no measured rungs to read a sha off and the snapshot the run
+/// took on its way out is the only record of what the model wrote.
+///
+/// ⚠ Filtered by task as well as by span. Two slots overlap, and a seq range
+/// alone would hand back the neighbouring attempt's checkpoint.
+///
+/// ⚠ **An open upper bound is deliberate.** `ended` is `None` for an attempt
+/// still flying and for one a crash abandoned, and those are the two states an
+/// operator most wants to look inside. Requiring an ending would refuse them
+/// the one view that could say what happened.
+fn closing(
+    log: &[abcc_core::event::Logged],
+    attempt: &AttemptTrace,
+    task: TaskId,
+) -> Option<String> {
+    log.iter()
+        .filter(|l| l.seq > attempt.started && attempt.ended.is_none_or(|e| l.seq <= e))
+        .filter_map(|l| match &l.event {
+            Event::CheckpointTaken { task: t, sha, .. } if *t == task => Some(sha.clone()),
+            _ => None,
+        })
+        .next_back()
+}
+
+/// What an attempt wrote, as a patch.
+///
+/// 🚨 **The verb that makes `abcc review` mean something.** W13 scores this
+/// project in human review minutes per merged change, and until this existed
+/// the operator was asked for that number over a diff no command would print —
+/// so the five rows on the log claim 480 seconds of reading that the wall clock
+/// between each landing and its own review row leaves no room for. A metric
+/// nobody can perform is not a thin measurement, it is a fabricated one.
+///
+/// ⚠ **It shows red attempts too, and that is most of the value.** 88 of 125
+/// attempts on this log never reached a gradeable artifact; `abcc replay` says
+/// *which rung stopped it* and could never say *what it had written when it
+/// stopped*.
+///
+/// # Errors
+///
+/// [`AppError::Refused`] if the log never created the task, if it has never
+/// run, or if there is no checkpoint pair to take a diff between;
+/// [`AppError::Vcs`] if git will not produce the diff.
+pub fn diff(
+    invocation: &Invocation,
+    task: cli::TaskRef,
+    out: &mut impl Write,
+) -> Result<(), AppError> {
+    let ground = ops::ground(invocation)?;
+    let store = open_log(&ground.home)?;
+    let log = crate::fun::read_all(&store)?;
+    let replay = Replay::over(&log);
+    let id = TaskId::at(Seq::new(task.0));
+    let trace = replay.task(id).ok_or_else(|| {
+        AppError::Refused(format!(
+            "the log never created {id} — try `abcc board` for what it did create"
+        ))
+    })?;
+
+    let checkpoints = checkpoints(&log);
+    // 🚨 [`landing`] first, always. When it answers, what prints is the pair a
+    // landing would take — from the same function, so the operator is reading
+    // the bytes that will land rather than a second opinion about them.
+    let (from, to, standing) = match landing(trace, &checkpoints) {
+        Ok(l) => (
+            l.from,
+            l.to,
+            format!(
+                "{} — {} rung(s) green. This is exactly what `abcc land {id}` would apply.",
+                l.attempt, l.rungs
+            ),
+        ),
+        Err(why) => {
+            let attempt = trace
+                .attempts
+                .last()
+                .ok_or_else(|| AppError::Refused(why.clone()))?;
+            let from = opening(attempt, &checkpoints).ok_or_else(|| {
+                AppError::Refused(format!(
+                    "{} does not say which checkpoint it opened on, so there is no pair to take a \
+                     diff between",
+                    attempt.id
+                ))
+            })?;
+            let to = closing(&log, attempt, id).ok_or_else(|| {
+                AppError::Refused(format!(
+                    "{} took no checkpoint on its way out, so nothing recorded what it wrote",
+                    attempt.id
+                ))
+            })?;
+            (
+                from,
+                to,
+                format!(
+                    "{} — will not land: {}. This is what it wrote anyway.",
+                    attempt.id,
+                    first_line(&why)
+                ),
+            )
+        }
+    };
+
+    let patch = ground.repo.patch_between(&sha(&from)?, &sha(&to)?)?;
+
+    writeln!(out, "{}  {}", trace.id, trace.title)?;
+    writeln!(out, "{standing}")?;
+    writeln!(out, "checkpoints {}..{}", &from[..7], &to[..7])?;
+    writeln!(out)?;
+    if patch.trim().is_empty() {
+        // ⚠ Not "nothing to see". An empty pair is the structural rung's own
+        // finding — the attempt ran and touched nothing tracked — and a reader
+        // who mistakes it for a missing diff will go looking for a bug here.
+        writeln!(out, "the attempt changed no file the repository tracks")?;
+        return Ok(());
+    }
+    write!(out, "{patch}")?;
+    Ok(())
+}
+
+/// One line of a refusal, for a header that is one line.
+///
+/// ⚠ **A rung's refusal carries the tool's captured output**, and `cargo test`
+/// announces every binary it ran before it says what failed. Interpolating that
+/// whole into a header puts `Running tests\cli.rs` in the middle of a sentence
+/// about a checkpoint pair. The detail is not lost — it is `abcc replay`'s job,
+/// and this verb's job is the patch.
+fn first_line(why: &str) -> &str {
+    why.lines().next().unwrap_or(why).trim_end()
+}
+
 /// The patch has to be one this can apply whole, or none of it.
 fn refuse_unlandable(patch: &str) -> Result<(), AppError> {
     if patch.trim().is_empty() {
@@ -563,5 +702,22 @@ mod tests {
             checkpoints(&log).get(&Seq::new(7)).map(String::as_str),
             Some(A)
         );
+    }
+
+    /// ⚠ **The header is one line and a rung's refusal is not.** `cargo test`
+    /// names every binary it ran before it says what failed, so the first
+    /// version of `abcc diff` printed `Running tests\cli.rs` in the middle of a
+    /// sentence about a checkpoint pair.
+    #[test]
+    fn a_refusal_carrying_a_tools_output_is_cut_to_its_first_line() {
+        let captured = "acceptance failed: error: test failed\n\
+                        Running tests\\cli.rs\n\
+                        Running tests\\land.rs";
+        assert_eq!(
+            first_line(captured),
+            "acceptance failed: error: test failed"
+        );
+        assert_eq!(first_line("one line only"), "one line only");
+        assert_eq!(first_line(""), "");
     }
 }

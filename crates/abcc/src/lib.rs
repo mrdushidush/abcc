@@ -179,6 +179,7 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
             ops::finish(invocation, *task, note.as_deref(), ops::Finish::Reject, out)
         }
         Command::Land { task } => land::land(invocation, *task, out),
+        Command::Diff { task } => land::diff(invocation, *task, out),
         Command::Take { task } => takeover::take(invocation, *task, out),
         Command::Release { task } => takeover::release(invocation, *task, out),
     }

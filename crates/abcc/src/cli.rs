@@ -117,6 +117,19 @@ pub enum Command {
     /// [`crate::land`] for the entitlement, which is `Headline::Green` and is
     /// asked of the gate's own function rather than recomputed.
     Land { task: TaskRef },
+    /// 🚨 **The reading [`crate::land`]'s own doc said was missing.**
+    ///
+    /// That module promises *here is the sha, here is the diff, here is the
+    /// command that lands it*, and shipped two of the three: no verb in this
+    /// binary ever printed a patch. So the operator was asked for
+    /// `abcc review <change> <minutes>` on a change nothing would show them,
+    /// and the measurement W13 scores this project on was a number typed over
+    /// an unread diff. The checkpoints were always there — a pair of real
+    /// commits held by a ref (F330) — and nothing read them.
+    ///
+    /// ⚠ **Read-only, and not an operator verb.** It moves no state and writes
+    /// no row, so unlike its neighbours the fleet may call it.
+    Diff { task: TaskRef },
     /// 🚨 ADR-0012 §4's eighth verb: the operator takes the keyboard **and a
     /// tree to use it in**.
     ///
@@ -228,6 +241,8 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc weights [--model M] [--verify] [--repin]
                                       which bytes are behind the model; --verify
                                       re-reads the whole file (~52 s)
+  abcc diff <task>                    what the attempt wrote, as a patch — read this
+                                      before `land`, and before `review` counts you
   abcc land <task>                    a green attempt becomes a commit on this branch,
                                       and prints the sha `abcc review` takes
   abcc accept <task> [--note N]       the work is good; you take responsibility
@@ -404,7 +419,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
                 repin,
             }
         }
-        "accept" | "reject" | "take" | "release" | "land" => operator_verb(&verb, &mut args)?,
+        "accept" | "reject" | "take" | "release" | "land" | "diff" => one_task(&verb, &mut args)?,
         other => {
             return Err(CliError::Usage(format!("{other:?} is not a command")));
         }
@@ -417,16 +432,18 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
     })
 }
 
-/// The four verbs that are a person acting on one task, and nothing else.
+/// The verbs whose whole argument is one task, and at most a note.
 ///
-/// Their own function because they are one shape — a task id, and at most a
-/// note — and because `parse` is at clippy's line ceiling; `paint_args` is here
-/// for the same reason.
+/// Their own function because they are one shape, and because `parse` is at
+/// clippy's line ceiling; `paint_args` is here for the same reason. ⚠ It is a
+/// *shape*, not a role: five of these are the operator acting on a task and
+/// `diff` only looks at one, so nothing may be inferred here about who is
+/// allowed to type them. [`Command::Diff`] says why that distinction matters.
 ///
 /// ⚠ `take` and `release` deliberately have no `--note`. A note on `accept` or
 /// `reject` is the record of *why a task ended*; a take-over is the beginning of
 /// some work, and its record is the checkpoint at the other end.
-fn operator_verb(verb: &str, args: &mut Vec<String>) -> Result<Command, CliError> {
+fn one_task(verb: &str, args: &mut Vec<String>) -> Result<Command, CliError> {
     let note = match verb {
         "accept" | "reject" => take_flag(args, "--note")?,
         _ => None,
@@ -436,6 +453,7 @@ fn operator_verb(verb: &str, args: &mut Vec<String>) -> Result<Command, CliError
         "accept" => Command::Accept { task, note },
         "reject" => Command::Reject { task, note },
         "land" => Command::Land { task },
+        "diff" => Command::Diff { task },
         "take" => Command::Take { task },
         _ => Command::Release { task },
     })
