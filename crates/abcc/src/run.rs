@@ -157,9 +157,26 @@ fn choose(
         let id = TaskId::at(Seq::new(reference.0));
         let row = ops::row(store, id)?;
         if row.state != TaskState::Queued {
+            //   🚨 A refusal names the way out, or it is a dead end with
+            // good manners. `AwaitingOrders` is the state an operator meets
+            // most -- every attempt that stalls lands there -- and the route
+            // back to standing-by is two verbs nobody would guess, because
+            // F732 made every exit from it an operator's.
+            let route = match row.state {
+                TaskState::AwaitingOrders { .. } => {
+                    " Read it with `abcc replay {id}`; to try again, \
+                     `abcc take {id}` then `abcc release {id}`."
+                }
+                TaskState::Holding { .. } => {
+                    " `abcc take {id}` then `abcc release {id}` puts it back on the board."
+                }
+                TaskState::Commandeered { .. } => " You hold it: `abcc release {id}`.",
+                _ => " `abcc board` says what each task is waiting for.",
+            };
             return Err(AppError::Refused(format!(
-                "{id} is {}, and a run starts from standing-by. `abcc board`",
-                Theme::Command.state(&row.state)
+                "{id} is {}, and a run starts from standing-by.{}",
+                Theme::Command.state(&row.state),
+                route.replace("{id}", &id.to_string())
             )));
         }
         return Ok(id);
