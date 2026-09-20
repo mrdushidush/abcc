@@ -152,7 +152,7 @@ pub fn task(
 /// # Errors
 ///
 /// [`AppError`] if the log will not open.
-pub fn board(invocation: &Invocation, out: &mut impl Write) -> Result<(), AppError> {
+pub fn board(invocation: &Invocation, out: &mut impl Write, all: bool) -> Result<(), AppError> {
     let ground = ground(invocation)?;
     let store = open_log(&ground.home)?;
     let tasks = store.tasks()?;
@@ -160,21 +160,100 @@ pub fn board(invocation: &Invocation, out: &mut impl Write) -> Result<(), AppErr
         writeln!(out, "nothing on the board. `abcc task \"<what to do>\"`")?;
         return Ok(());
     }
+
+    //   A green task that already became a commit is finished; one that has not
+    // is the most actionable row on the board. The landings say which, and they
+    // are the same rows `abcc review` resolves against.
+    let landed: Vec<TaskId> = if all {
+        Vec::new()
+    } else {
+        Replay::over(&crate::fun::read_all(&store)?)
+            .ladder
+            .landings
+            .iter()
+            .map(|l| l.task)
+            .collect()
+    };
+
+    let mut hidden = 0usize;
     for row in &tasks {
+        if !all && !wants_you(&row.state, !landed.contains(&row.id)) {
+            hidden += 1;
+            continue;
+        }
         writeln!(
             out,
-            "{:<6} {:<22} {}",
+            "{:<6} {:<22} {:<46} {}",
             row.id.to_string(),
             Theme::Command.state(&row.state),
-            row.title
+            truncate(&row.title, 46),
+            next_step(row.id, &row.state, !landed.contains(&row.id)),
         )?;
     }
-    writeln!(
-        out,
-        "\n{} task(s), from the projection. `abcc watch` reads the log itself.",
-        tasks.len()
-    )?;
+
+    if hidden == 0 {
+        writeln!(
+            out,
+            "\n{} task(s), from the projection. `abcc watch` reads the log itself.",
+            tasks.len()
+        )?;
+    } else if hidden == tasks.len() {
+        writeln!(
+            out,
+            "\nnothing is waiting on you. {hidden} finished task(s) are hidden — \
+             `abcc board --all` for the lot, `abcc task \"<what to do>\"` for more work."
+        )?;
+    } else {
+        writeln!(
+            out,
+            "\n{} task(s) waiting on you; {hidden} finished and hidden — \
+             `abcc board --all` for the lot.",
+            tasks.len() - hidden
+        )?;
+    }
     Ok(())
+}
+
+/// Whether this row is asking the operator for something.
+///
+/// 🚨 **Terminality is not the question, and using it alone hid the one row
+/// that matters.** `Accomplished` is terminal \u2014 the gate measured every rung
+/// green \u2014 and a green task that has not been landed yet is precisely the row
+/// an operator opened the board to find. So the rule is *not finished*, where
+/// finished means terminal **and** nothing left to do about it.
+fn wants_you(state: &TaskState, unlanded: bool) -> bool {
+    match state {
+        TaskState::Accomplished { .. } => unlanded,
+        other => !other.is_terminal(),
+    }
+}
+
+/// The command this row is waiting for, in the words the operator types.
+///
+/// One line of the runbook, rendered where it is needed rather than in a file
+/// somebody has to remember to open.
+fn next_step(id: TaskId, state: &TaskState, unlanded: bool) -> String {
+    match state {
+        TaskState::Queued => format!("abcc run --task {id}"),
+        TaskState::Accomplished { .. } if unlanded => format!("abcc land {id}"),
+        //   Every exit from AwaitingOrders is an operator's (F732), and the
+        // first move is always to read what happened rather than to guess.
+        TaskState::AwaitingOrders { .. } | TaskState::Holding { .. } => {
+            format!("abcc replay {id}")
+        }
+        TaskState::Commandeered { .. } => format!("abcc release {id}"),
+        TaskState::Deployed { .. } | TaskState::Engaged { .. } => "running — abcc watch".to_owned(),
+        _ => String::new(),
+    }
+}
+
+/// A title, cut to fit beside the column that tells you what to type.
+fn truncate(title: &str, width: usize) -> String {
+    if title.chars().count() <= width {
+        return title.to_owned();
+    }
+    let kept: String = title.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
 }
 
 /// The reader, over the durable log.

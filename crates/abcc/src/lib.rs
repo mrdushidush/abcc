@@ -134,7 +134,7 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
     match &invocation.command {
         Command::Where => ops::show_where(invocation, out),
         Command::Task { prompt, title } => ops::task(invocation, prompt, title.as_deref(), out),
-        Command::Board => ops::board(invocation, out),
+        Command::Board { all } => ops::board(invocation, out, *all),
         Command::Replay { task } => replay::report(invocation, *task, out),
         Command::Fun => fun::report(invocation, out),
         Command::Run(run) => run::attempt(invocation, run, out),

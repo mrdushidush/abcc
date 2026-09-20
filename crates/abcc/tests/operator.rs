@@ -177,9 +177,53 @@ fn a_task_lands_queued_and_the_board_shows_it() {
         .expect("task");
     assert!(said.contains("queued"), "{said}");
 
-    let board = subject.run(Command::Board).expect("board");
+    let board = subject.run(Command::Board { all: false }).expect("board");
     assert!(board.contains("make one() return two"), "{board}");
     assert_eq!(subject.kinds(), vec!["mission_created", "task_created"]);
+}
+
+/// 🚨 **The board answers *what is waiting on me*, and a finished task is
+/// not.**
+///
+/// It used to print every task the log had ever held, which on this project's
+/// own log is 96 rows of spent research arms with the one live task somewhere in
+/// the middle. That is not a listing an operator can act on, and the complaint
+/// that produced this was exactly *too much information*.
+///
+/// ⚠ **`Accomplished` is terminal and still belongs here** until it lands —
+/// a green attempt nobody has committed is the most actionable row there is, so
+/// the filter cannot simply be [`TaskState::is_terminal`].
+#[test]
+fn the_board_hides_what_is_finished_and_says_how_many() {
+    let subject = subject();
+    let live = queue(&subject, "still to do");
+    let done = queue(&subject, "already over");
+    subject
+        .run(Command::Reject {
+            task: TaskRef(done.born().get()),
+            note: Some("not wanted".to_owned()),
+        })
+        .expect("reject");
+
+    let board = subject.run(Command::Board { all: false }).expect("board");
+    assert!(board.contains("still to do"), "{board}");
+    assert!(
+        !board.contains("already over"),
+        "a rejected task is finished and should be hidden: {board}"
+    );
+    assert!(
+        board.contains("1 finished and hidden"),
+        "the board must say what it is not showing: {board}"
+    );
+    //   The row carries the command it is waiting for. One line of the runbook,
+    // where the operator is already looking.
+    assert!(
+        board.contains(&format!("abcc run --task {live}")),
+        "a queued task should name the verb that starts it: {board}"
+    );
+
+    let all = subject.run(Command::Board { all: true }).expect("board");
+    assert!(all.contains("already over"), "--all shows the lot: {all}");
 }
 
 #[test]
@@ -214,7 +258,7 @@ fn a_listing_command_does_not_reconcile_a_live_attempt() {
     let task = queue(&subject, "make one() return two");
     engaged(&subject, task);
 
-    subject.run(Command::Board).expect("board");
+    subject.run(Command::Board { all: false }).expect("board");
     subject.run(Command::Where).expect("where");
 
     assert!(
@@ -516,7 +560,7 @@ fn the_ground_refuses_a_directory_that_is_not_a_repository() {
     let Err(refused) = ops::ground(&Invocation {
         repo: Some(dir.path().to_path_buf()),
         home: Some(dir.path().join("state")),
-        command: Command::Board,
+        command: Command::Board { all: false },
     }) else {
         panic!("a bare directory is not a repository");
     };

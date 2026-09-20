@@ -31,7 +31,10 @@ pub enum Command {
         title: Option<String>,
     },
     /// The board, from the projection.
-    Board,
+    ///
+    /// ⚠ Shows what is waiting on the operator. `--all` adds every
+    /// finished task, which on a long-lived log is most of them.
+    Board { all: bool },
     /// ADR-0012's after-action view: the log folded back into what happened.
     ///
     /// ⚠ With no task it prints every final state against the endings of the
@@ -213,7 +216,7 @@ abcc — the command center. One attempt at a time, over one repository.
 
   abcc where                          where this repository's log and worktrees are
   abcc task <prompt> [--title T]      put a task on the board
-  abcc board                          the board, from the projection
+  abcc board [--all]                  what is waiting on you; --all adds the finished
   abcc replay [t42]                   after-action: how a task got where it is
   abcc fun                            ADR-0012 §5's six queries, over the log
   abcc run [--task t42] [options]     run one attempt on a queued task
@@ -327,7 +330,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
     let verb = args.remove(0);
     let command = match verb.as_str() {
         "where" => Command::Where,
-        "board" => Command::Board,
+        "board" => board_args(&mut args)?,
         "replay" => Command::Replay {
             task: replay_task(&args)?,
         },
@@ -588,6 +591,17 @@ fn no_positionals(args: &[String], verb: &str) -> Result<(), CliError> {
             args[0]
         )))
     }
+}
+
+/// The one switch `board` takes.
+///
+/// Its own function for the reason stated on `paint_args`, which is measured
+/// rather than stylistic: `parse` sits on clippy's 100-line ceiling, so a
+/// four-line match arm is a lint error where a one-line one is not.
+fn board_args(args: &mut Vec<String>) -> Result<Command, CliError> {
+    let all = take_switch(args, "--all");
+    no_positionals(args, "board")?;
+    Ok(Command::Board { all })
 }
 
 /// Everything `paint` takes. Its own function because the parse is three flags
