@@ -138,6 +138,24 @@ pub const ENV_ALLOWLIST: &[&str] = &[
     "USERPROFILE",
     "APPDATA",
     "LOCALAPPDATA",
+    // 🚨 **The same defect a second time, so the shape is the finding:** this
+    // list had the Unix name and not the Windows one. `HOME` without
+    // `USERPROFILE` above; `USER` below without `USERNAME` here.
+    //
+    // Measured on the same repository, one rung later. `claudette`'s
+    // `harden_windows_acl` reads `USERNAME`, returns early when it is empty
+    // because it cannot name a grantee, and so never runs
+    // `icacls /inheritance:r` — and its test then finds the inherited ACE it
+    // asserts is gone. Clearing `USERNAME` and `USERDOMAIN` fails exactly
+    // `secrets::tests::windows_write_removes_acl_inheritance`, which is exactly
+    // the one test the gate refused the attempt for.
+    //
+    // ⚠ Two instances means the rule is not "add a name" but **every Unix
+    // variable here needs its Windows counterpart checked**, and a `cfg!`-split
+    // list would have made both absences visible instead of hiding them in a
+    // section comment.
+    "USERNAME",
+    "USERDOMAIN",
     // Unix equivalents.
     "HOME",
     "TMPDIR",

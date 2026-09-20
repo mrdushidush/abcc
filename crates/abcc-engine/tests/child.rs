@@ -412,21 +412,35 @@ fn the_child_gets_a_home_the_platform_can_find() {
         finished.stdout
     );
 
-    // Whichever variable *this* platform uses to say where home is, the parent
-    // has it and the child must too. Asked of the parent rather than hardcoded,
-    // because a machine that does not set it cannot be failed for not passing
-    // it on.
-    let homes: &[&str] = if cfg!(windows) {
-        &["USERPROFILE", "APPDATA", "LOCALAPPDATA"]
+    // Whichever variables *this* platform uses to say who the user is and where
+    // their home is, the parent has them and the child must too. Asked of the
+    // parent rather than hardcoded, because a machine that does not set one
+    // cannot be failed for not passing it on.
+    //
+    // ⚠ Both groups are here because the same omission happened twice: the list
+    // carried the Unix name and not the Windows one, for `HOME`/`USERPROFILE`
+    // and then again for `USER`/`USERNAME`. The second cost a whole attempt,
+    // refused on `secrets::tests::windows_write_removes_acl_inheritance` — a
+    // test about file permissions, failing because the child could not say who
+    // it was.
+    let needed: &[&str] = if cfg!(windows) {
+        &[
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "USERNAME",
+            "USERDOMAIN",
+        ]
     } else {
-        &["HOME"]
+        &["HOME", "USER"]
     };
-    for name in homes {
+    for name in needed {
         if std::env::var_os(name).is_some() {
             assert!(
                 dumped.contains(&(*name).to_ascii_uppercase()),
-                "the parent has {name} and the child did not get it, so any suite that \
-                 resolves a home directory will fail for a reason the tree did not cause"
+                "the parent has {name} and the child did not get it, so a suite that resolves a \
+                 home directory or names the current user will fail for a reason the tree did \
+                 not cause"
             );
         }
     }
