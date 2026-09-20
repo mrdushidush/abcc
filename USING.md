@@ -1,8 +1,11 @@
 # Driving it
 
-The operator's runbook. `README.md` says what this is and `CLAUDE.md` says how to
-work *in* the code; this says how to *use* the tool on a day when you are not
-studying it.
+**New here, or just want the loop? Read `CHEATSHEET.md` instead** — it is one
+page and it is enough to work all day.
+
+This is the long form: the same loop with the reasons, the stall playbook, and
+how to write a task that lands. `README.md` says what this is and
+`CLAUDE.md` says how to work *in* the code.
 
 Everything below is typed from the repository you want worked on. 🚨 **Run it
 from that checkout**, not from a parent directory — the log is keyed on the

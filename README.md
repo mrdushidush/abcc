@@ -35,7 +35,8 @@ out of measurement rather than taste:
 
 ## Using it, as far as it goes
 
-**`USING.md` is the operator's runbook** — the five-word daily loop, what to do
+**`CHEATSHEET.md` is the whole tool on one page** — start there. **`USING.md` is the
+long-form runbook** — the five-word daily loop, what to do
 when a task stalls, and how to write a task that lands. This section is the verb
 list it rests on.
 
