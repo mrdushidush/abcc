@@ -375,3 +375,59 @@ fn the_allowlist_does_not_carry_a_shared_build_cache() {
         );
     }
 }
+
+/// 🚨 **The allowlist must carry a home the platform actually uses, and on
+/// Windows that is not `HOME`.**
+///
+/// This is the other half of the claim above, and it is the half that was
+/// missing. `env_clear()` plus an allowlist is only correct if the allowlist
+/// admits what the workload needs; the workload is *build and test an existing
+/// repository*, and a test suite that cannot resolve a home directory fails for
+/// a reason that has nothing to do with the tree being graded.
+///
+/// Found against `claudette`: the gate recorded `1161 run, 1103 passed, 58
+/// failed` on a checkpoint whose tree passes **1161 of 1161** when run with a
+/// full environment. Clearing exactly `USERPROFILE`, `APPDATA` and
+/// `LOCALAPPDATA` reproduces **57** of those failures. `HOME` was empty on that
+/// machine, so before this the child had no home at all — the rung was
+/// manufacturing failures and charging them to the model.
+#[test]
+fn the_child_gets_a_home_the_platform_can_find() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let finished = ToolChild::spawn(&dump_env(dir.path()).budget(Duration::from_secs(30)))
+        .expect("spawn")
+        .finish();
+    assert_eq!(finished.unmeasured, None);
+
+    let dumped: Vec<String> = finished
+        .stdout
+        .lines()
+        .filter_map(|l| l.split_once('=').map(|(k, _)| k.to_ascii_uppercase()))
+        .collect();
+    // The same positive control the test above uses: an empty dump would
+    // satisfy nothing below for the wrong reason.
+    assert!(
+        dumped.iter().any(|k| k == "PATH"),
+        "the dump has no PATH, so what follows proves nothing: {}",
+        finished.stdout
+    );
+
+    // Whichever variable *this* platform uses to say where home is, the parent
+    // has it and the child must too. Asked of the parent rather than hardcoded,
+    // because a machine that does not set it cannot be failed for not passing
+    // it on.
+    let homes: &[&str] = if cfg!(windows) {
+        &["USERPROFILE", "APPDATA", "LOCALAPPDATA"]
+    } else {
+        &["HOME"]
+    };
+    for name in homes {
+        if std::env::var_os(name).is_some() {
+            assert!(
+                dumped.contains(&(*name).to_ascii_uppercase()),
+                "the parent has {name} and the child did not get it, so any suite that \
+                 resolves a home directory will fail for a reason the tree did not cause"
+            );
+        }
+    }
+}

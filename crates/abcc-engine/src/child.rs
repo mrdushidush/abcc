@@ -113,6 +113,31 @@ pub const ENV_ALLOWLIST: &[&str] = &[
     "TMP",
     "NUMBER_OF_PROCESSORS",
     "PROCESSOR_ARCHITECTURE",
+    // 🚨 **Where a Windows process finds the user's home, and the omission that
+    // made the gate report red on a green tree.**
+    //
+    // `HOME` below is the *Unix* home and is normally unset on Windows — it was
+    // empty on the machine this was found on — so before these three lines the
+    // child had no home at all. Measured against `claudette` at a checkpoint the
+    // gate had just failed: the tree passes **1161 of 1161** with a full
+    // environment, and clearing exactly `USERPROFILE`, `APPDATA` and
+    // `LOCALAPPDATA` fails **57** of them. The gate had recorded 58 failures on
+    // that same sha and the attempt was refused for it.
+    //
+    // ⚠ That is the worst failure this ladder has: not a missed defect but a
+    // **manufactured one**, charged to a model that had not caused it. A rung
+    // that cannot run the suite has not measured the tree, and a false red is
+    // indistinguishable from a true one to everything downstream.
+    //
+    // ⚠ These do widen the allowlist onto the operator's roaming data, which
+    // ADR-0014 §5 spends the rest of this const narrowing. The trade is taken
+    // deliberately: the workload is *build and test an existing repository*, and
+    // a suite that cannot resolve a home directory does not test anything.
+    // `HOMEDRIVE`/`HOMEPATH` are deliberately still absent — nothing measured
+    // needs them, and an allowlist grows only against evidence.
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
     // Unix equivalents.
     "HOME",
     "TMPDIR",
