@@ -119,6 +119,49 @@ fn the_operators_environment_does_not_reach_the_child() {
         finished.stdout
     );
 
+    // 🚨🚨 **F804: the interpreter invents variables, and they are not leaks.**
+    // `dump_env` runs `set`, so the child is **cmd.exe**, and cmd synthesizes
+    // `COMSPEC`, `PATHEXT` and `PROMPT` into its own block at startup. Measured:
+    // a cmd child handed a *completely empty* environment still dumps all three.
+    // The first two are on the allowlist and so never tripped this check;
+    // `PROMPT` is not, so whenever the **test process** also had `PROMPT` set —
+    // which is any run launched from cmd, and is why this was green from Git
+    // Bash and red from PowerShell — the test blamed the allowlist for a name
+    // the child had manufactured.
+    //
+    // ⚠ That is the same class as the gate's own manufactured failures: a check
+    // that cannot run cleanly reports a defect that is not there. So the baseline
+    // is **probed rather than listed** — spawn the same dump with nothing at all
+    // and subtract what comes back. A future interpreter that invents a fourth
+    // name is then handled without editing a table.
+    // Spawned with `std::process::Command` directly and on purpose: the point is
+    // to see what the interpreter produces from *nothing*, which is a question
+    // about the interpreter and not about `ToolChild`. Giving the production
+    // spawner a no-environment mode to answer it would add an API that only a
+    // test wants.
+    let probe = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/c", "set"])
+            .env_clear()
+            .output()
+    } else {
+        std::process::Command::new("env").env_clear().output()
+    }
+    .expect("baseline probe");
+    let baseline: Vec<String> = String::from_utf8_lossy(&probe.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('=').map(|(k, _)| k.to_ascii_uppercase()))
+        .collect();
+    // ⚠ Not asserted non-empty: on a platform whose interpreter invents nothing
+    // the correct baseline IS empty, and this subtraction is then a no-op. What
+    // must hold is the positive control above — that the real dump has PATH.
+    if cfg!(windows) {
+        assert!(
+            baseline.iter().any(|k| k == "PROMPT"),
+            "cmd stopped inventing PROMPT; F804's subtraction may no longer be needed: {baseline:?}"
+        );
+    }
+
     let allowed: Vec<String> = ENV_ALLOWLIST
         .iter()
         .map(|k| k.to_ascii_uppercase())
@@ -126,7 +169,7 @@ fn the_operators_environment_does_not_reach_the_child() {
     let mut leaked: Vec<String> = Vec::new();
     for (name, _) in std::env::vars_os() {
         let name = name.to_string_lossy().to_ascii_uppercase();
-        if !allowed.contains(&name) && dumped.contains(&name) {
+        if !allowed.contains(&name) && dumped.contains(&name) && !baseline.contains(&name) {
             leaked.push(name);
         }
     }

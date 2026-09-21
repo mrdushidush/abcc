@@ -875,11 +875,30 @@ impl Workspace {
 ///
 /// 1. `ABCC_SHELL`, because an operator with a different shell is configuration
 ///    and not a special case.
-/// 2. A `bash` on PATH that is **not** inside the system directory — which is the
-///    WSL relay's only home.
+/// 2. A `bash` on PATH that is **not** inside the system directory and is **not a
+///    zero-length stub** — see [`is_program`].
 /// 3. Git for Windows, where this platform's working bash actually lives.
 ///
 /// On every other platform the name is the answer and the OS resolves it.
+///
+/// 🚨🚨 **F803: step 2 said *the system directory, which is the WSL relay's only
+/// home*, and that sentence was false.** The relay has a second home, and the
+/// filter let it through: `%LOCALAPPDATA%/Microsoft/WindowsApps/bash.exe` is a
+/// Microsoft Store **app-execution alias** — a **zero-length** reparse point that
+/// relays to the same WSL that F492 already found does not work here. It is not
+/// under `SystemRoot`, so it passed, and `bash` was resolved to it in preference
+/// to the working Git for Windows shell that was never reached.
+///
+/// ⚠ **This is the third time this project has shipped a guard that knew the
+/// Unix or the obvious Windows case and not the other Windows one** — `HOME`
+/// without `USERPROFILE`, `USER` without `USERNAME`, and now the system relay
+/// without the Store alias. The shape is the finding.
+///
+/// Measured: with the alias on `PATH`, `tests/exec.rs`'s own
+/// `bash_runs_a_command_in_the_workspace` fails `execvpe(/bin/bash) failed: No
+/// such file or directory` at exit 1 — so **abcc's own suite is red from a shell
+/// whose PATH carries the alias and green from one that does not**, which is why
+/// it was not caught earlier.
 fn shell() -> Option<OsString> {
     if let Some(chosen) = std::env::var_os("ABCC_SHELL") {
         return Some(chosen);
@@ -896,7 +915,7 @@ fn shell() -> Option<OsString> {
                 .collect::<Vec<_>>()
         })
         .find(|candidate| {
-            candidate.is_file()
+            is_program(candidate)
                 && system
                     .as_ref()
                     .is_none_or(|root| !candidate.starts_with(root))
@@ -914,8 +933,21 @@ fn shell() -> Option<OsString> {
             path.push("bash.exe");
             path
         })
-        .find(|path| path.is_file())
+        .find(|path| is_program(path))
         .map(PathBuf::into_os_string)
+}
+
+/// A path that is a program rather than a **zero-length stub** (F803).
+///
+/// 🚨 `Path::is_file` is true for a Microsoft Store app-execution alias, which is
+/// a reparse point of length **0** — so the existence check that step 2 of
+/// [`shell`] relied on admitted a file that cannot be executed as itself. A real
+/// interpreter is never zero bytes, so length is the discriminator, and it is
+/// checked rather than assumed about a directory name: a future alias somewhere
+/// other than `WindowsApps` is caught by the same rule.
+#[must_use]
+pub fn is_program(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0)
 }
 
 /// The backstop, on the whole command line. It is never the control — the

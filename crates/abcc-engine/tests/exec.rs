@@ -13,7 +13,7 @@ use abcc_core::outcome::{Reading, Why};
 use abcc_engine::provider::ToolCall;
 use abcc_engine::tools::{Confinement, lookup};
 use abcc_engine::turn::{ToolResult, Tools};
-use abcc_engine::workspace::{Standard, TOOLCHAINS, Toolchain, Workspace};
+use abcc_engine::workspace::{Standard, TOOLCHAINS, Toolchain, Workspace, is_program};
 
 fn run(workspace: &Workspace, tool: &str, arguments: &serde_json::Value) -> ToolResult {
     let spec = lookup(tool).expect("registry");
@@ -89,6 +89,48 @@ fn bash_runs_a_command_in_the_workspace() {
         "the shell listed a different directory: {}",
         result.text
     );
+}
+
+/// 🚨🚨 **F803: a zero-length stub must not be accepted as a program.**
+///
+/// `%LOCALAPPDATA%/Microsoft/WindowsApps/bash.exe` is a Store app-execution alias
+/// — a reparse point of length 0 that relays to the WSL F492 already found does
+/// not work here. **`Path::is_file` is true for it**, which is exactly why the old
+/// existence check in `shell()` picked it over the working Git for Windows shell,
+/// and every `bash` call came back `execvpe(/bin/bash) failed` at exit 1.
+///
+/// This pins the discriminator rather than the PATH walk, because the crate
+/// forbids `unsafe` and `set_var` is unsafe: the walk's other half (skip anything
+/// under `SystemRoot`) was already correct, and this is the half that was wrong.
+#[test]
+fn a_zero_length_stub_is_not_a_program() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let stub = dir.path().join("bash.exe");
+    fs::write(&stub, b"").expect("write stub");
+    assert_eq!(
+        fs::metadata(&stub).expect("stat").len(),
+        0,
+        "the fixture must be the zero-length case"
+    );
+    assert!(
+        stub.is_file(),
+        "the premise of F803: is_file() is TRUE for the stub, which is why it passed"
+    );
+    assert!(
+        !is_program(&stub),
+        "a zero-length stub was accepted as a program — F803 has regressed"
+    );
+
+    let real = dir.path().join("real.exe");
+    fs::write(&real, b"MZ").expect("write real");
+    assert!(is_program(&real), "a real file must still be accepted");
+
+    assert!(
+        !is_program(&dir.path().join("absent.exe")),
+        "a missing file is not a program"
+    );
+    assert!(!is_program(dir.path()), "a directory is not a program");
 }
 
 /// A tool that fails is measured, not unmeasured: there is an exit status and it
