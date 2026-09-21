@@ -70,8 +70,10 @@ pub enum ConfirmError {
 /// would make this module decorative.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Listing {
-    /// The server said which models are **resident**, and these are they.
-    Loaded(Vec<String>),
+    /// The server said which models are **resident**, and these are they —
+    /// with the context window it has actually allocated for them, when the
+    /// runtime reports one. LM Studio does; a bare `llama-server` does not.
+    Loaded(Vec<String>, Option<u32>),
     /// The server listed what it *can* serve and did not say what it is holding.
     ///
     /// For a bare `llama-server` that is the same set, because it serves exactly
@@ -84,15 +86,36 @@ impl Listing {
     #[must_use]
     pub fn ids(&self) -> &[String] {
         match self {
-            Listing::Loaded(ids) | Listing::Available(ids) => ids,
+            Listing::Loaded(ids, _) | Listing::Available(ids) => ids,
         }
     }
 
     #[must_use]
     pub fn evidence(&self) -> Evidence {
         match self {
-            Listing::Loaded(_) => Evidence::Loaded,
+            Listing::Loaded(..) => Evidence::Loaded,
             Listing::Available(_) => Evidence::Listed,
+        }
+    }
+
+    /// The context window the server has **actually allocated**, when it says.
+    ///
+    /// 🚨 **F818.** This number arrives in the same body [`parse_loaded`] reads,
+    /// on an endpoint `served` already calls on every run, and it used to be
+    /// thrown away. The only other place abcc could learn it is `n_ctx`, scraped
+    /// out of the server's *error* body once a request had already been refused
+    /// for exceeding it — a quantity arriving after the event it could have
+    /// governed, which is the same shape as F812.
+    ///
+    /// `None` from a runtime that does not report one: [`Listing::Available`]
+    /// never does, and a bare `llama-server` does not either. ⚠ Absent rather
+    /// than zero (F494), because an unallocated window and an unreported one are
+    /// different answers.
+    #[must_use]
+    pub fn window(&self) -> Option<u32> {
+        match self {
+            Listing::Loaded(_, window) => *window,
+            Listing::Available(_) => None,
         }
     }
 }
@@ -280,7 +303,7 @@ pub fn served(base_url: &str, api_key: Option<&str>) -> Result<Listing, ConfirmE
     if let Ok(body) = fetch(&loaded_url(base_url), api_key)
         && let Ok(Some(loaded)) = parse_loaded(&body)
     {
-        return Ok(Listing::Loaded(loaded));
+        return Ok(Listing::Loaded(loaded, parse_window(&body)));
     }
     let url = models_url(base_url);
     let body = fetch(&url, api_key)?;
@@ -355,6 +378,39 @@ pub fn parse_loaded(body: &str) -> Result<Option<Vec<String>>, String> {
             .map(|e| e.id)
             .collect(),
     ))
+}
+
+/// The context window the server has allocated for what it is holding, read from
+/// the same body [`parse_loaded`] takes the ids out of.
+///
+/// 🚨 **⚠ `loaded_context_length`, never `max_context_length`.** They sit beside
+/// each other in every entry, and on the champion they read **40960** and
+/// **262144**: the second is the *model's* ceiling, **6.4×** the window actually
+/// served. Budgeting against it would be wrong in the dangerous direction and
+/// would look right on any box whose operator happened to load a large context.
+/// This is the same join hazard Sweep B recorded — join on the server's
+/// `loaded_context_length`, never on what the model says it could hold.
+///
+/// ⚠ Only an entry the server calls `loaded` is consulted. A listing that does
+/// not distinguish loaded from available cannot answer this question, and gets
+/// `None` rather than the first number in the file.
+#[must_use]
+pub fn parse_window(body: &str) -> Option<u32> {
+    #[derive(Deserialize)]
+    struct Listed {
+        data: Vec<Entry>,
+    }
+    #[derive(Deserialize)]
+    struct Entry {
+        state: Option<String>,
+        loaded_context_length: Option<u32>,
+    }
+    let listed: Listed = serde_json::from_str(body).ok()?;
+    listed
+        .data
+        .into_iter()
+        .filter(|e| e.state.as_deref() == Some("loaded"))
+        .find_map(|e| e.loaded_context_length)
 }
 
 /// The ids in an `OpenAI`-dialect model listing.

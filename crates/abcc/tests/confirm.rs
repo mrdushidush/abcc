@@ -20,11 +20,66 @@ fn ids(ids: &[&str]) -> Vec<String> {
 }
 
 fn loaded(names: &[&str]) -> Listing {
-    Listing::Loaded(ids(names))
+    Listing::Loaded(ids(names), None)
 }
 
 fn available(names: &[&str]) -> Listing {
     Listing::Available(ids(names))
+}
+
+// ---------------------------------------------------------------------------
+// F818 — the window arrives in a body abcc already fetches
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_window_read_is_the_allocated_one_and_never_the_models_ceiling() {
+    // 🚨 F818. This body is the shape `/api/v0/models` really returns, probed
+    // live against this box with the champion resident: the two length fields
+    // sit beside each other and read 40960 and 262144. The second is the
+    // *model's* ceiling — 6.4× the window actually served — so a budget built on
+    // it would be wrong in the dangerous direction while looking right on any
+    // box whose operator happened to load a large context. This test exists to
+    // fail the moment somebody reaches for the wrong field.
+    let body = r#"{"data":[
+        {"id":"qwen3.6-35b-a3b-mtp@iq3_s","state":"loaded",
+         "max_context_length":262144,"loaded_context_length":40960},
+        {"id":"qwen3.5-4b","state":"not-loaded","max_context_length":262144}
+    ]}"#;
+    assert_eq!(confirm::parse_window(body), Some(40960));
+
+    // Only an entry the server calls `loaded` may answer. A listing where
+    // nothing is resident has no allocated window to report, and must not hand
+    // back the first number in the file.
+    let none_resident = r#"{"data":[
+        {"id":"qwen3.5-4b","state":"not-loaded","max_context_length":262144}
+    ]}"#;
+    assert_eq!(confirm::parse_window(none_resident), None);
+
+    // An `OpenAI`-dialect listing carries neither field. Absent rather than
+    // zero (F494): an unreported window and a zero-length one are different
+    // answers, and folding them would put a fabricated measurement on the log.
+    let openai = r#"{"data":[{"id":"a","object":"model"}]}"#;
+    assert_eq!(confirm::parse_window(openai), None);
+    assert_eq!(confirm::parse_window("not json at all"), None);
+}
+
+#[test]
+fn only_a_loaded_listing_can_report_a_window() {
+    // A `Listing::Available` is the weaker answer by construction (F495) — the
+    // runtime did not say what it is holding, so it cannot have said how much
+    // room it gave it. `None` here is the type refusing to guess, and it is the
+    // same distinction `evidence()` keeps.
+    assert_eq!(loaded(&[CHAMPION]).window(), None);
+    assert_eq!(available(&[CHAMPION]).window(), None);
+    assert_eq!(
+        Listing::Loaded(ids(&[CHAMPION]), Some(40960)).window(),
+        Some(40960)
+    );
+    // Carrying the window must not disturb the two questions the type already
+    // answered, which is what every other F495 test depends on.
+    let held = Listing::Loaded(ids(&[CHAMPION]), Some(40960));
+    assert_eq!(held.ids(), ids(&[CHAMPION]).as_slice());
+    assert_eq!(held.evidence(), confirm::Evidence::Loaded);
 }
 
 // ---------------------------------------------------------------------------
@@ -97,13 +152,17 @@ fn the_evidence_behind_a_confirmation_is_carried_and_said_out_loud() {
 
 #[test]
 fn a_server_holding_nothing_and_a_server_offering_nothing_are_two_sentences() {
-    let holding = confirm::decide(CHAMPION, Some("anything"), &Listing::Loaded(Vec::new()));
+    let holding = confirm::decide(
+        CHAMPION,
+        Some("anything"),
+        &Listing::Loaded(Vec::new(), None),
+    );
     let offering = confirm::decide(CHAMPION, Some("anything"), &Listing::Available(Vec::new()));
     assert_eq!(
         holding,
         Verdict::Unconfirmed {
             why: Unconfirmed::NothingLoaded,
-            listing: Listing::Loaded(Vec::new()),
+            listing: Listing::Loaded(Vec::new(), None),
         }
     );
     assert_eq!(

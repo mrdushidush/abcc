@@ -307,6 +307,15 @@ pub fn check(
         },
         listing.ids().join(", ")
     )?;
+    // 🚨 F818. The window is in the body the line above just parsed, and it
+    // used to be dropped on the floor: abcc learned it in exactly one place,
+    // `n_ctx` scraped out of a server error once a request had already been
+    // refused for exceeding it. A conversation heading for the wall was
+    // therefore invisible until it hit. Printing it costs one line and no
+    // request — `served` already fetched this.
+    if let Some(window) = listing.window() {
+        writeln!(out, "window      {window} token(s) allocated")?;
+    }
     writeln!(out, "{}", verdict.note(&asked))?;
     // 🚨 F539. The listing above is exactly the check that missed the only
     // outage this project has had: it answered normally for 60 s while every
