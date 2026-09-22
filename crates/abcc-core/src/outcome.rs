@@ -166,6 +166,36 @@ pub enum Why {
     ///
     /// [`EngineError`]: Why::EngineError
     ContextOverflow { window: u32, prompt_tokens: u32 },
+    /// 🚨 **F829: abcc ended the turn itself, mid-stream, because the reasoning
+    /// trace had run away.** The one `Why` in this enum that is not something
+    /// that happened *to* the attempt — it is a decision this engine took.
+    ///
+    /// **The ceiling is measured in characters and that is not a convenience.**
+    /// `usage.reasoning_tokens` is the server's own count and arrives only in the
+    /// closing usage block, so nothing in token space can be read while a stream
+    /// is still open; the engine's one live per-delta counter is
+    /// `reasoning_chars`, and no chars-to-tokens constant exists in the engine at
+    /// all. The published 12,288-token threshold was therefore unwireable as
+    /// published, and this is the same rule re-derived against the same
+    /// population in the quantity that can actually be observed.
+    ///
+    /// ✅ **Re-derived over 3,048 turns** — 2,830 that emitted text or a tool
+    /// call, 218 that emitted nothing. Pooled ratio **3.701 chars per reasoning
+    /// token** (p10 3.33, p90 4.61, which is why a single multiplication is not
+    /// the answer). Every threshold from ~41,000 to ~60,000 characters catches
+    /// **5** and costs **0** false positives: a plateau, not a knife edge, and
+    /// the plateau is what makes it safe to ship. 50,000 sits 9,372 above the
+    /// most-reasoning productive turn (40,628 chars / 10,486 tokens) and 10,760
+    /// below the least-reasoning barren one (60,760).
+    ///
+    /// ⚠ **It catches one failure shape only, and that is on the record.** All
+    /// five caught turns are one long turn that reasons itself to the cap; an
+    /// attempt that dies through many small unproductive turns is not this
+    /// shape and this rule will not see it. **5 for 5 on turns, 0 for 1 on
+    /// attempts.** ⚠ One of the five ends `stop` rather than `length`, so a
+    /// finish-reason filter would miss it (F815, reproduced independently in
+    /// characters).
+    ReasoningRunaway { chars: u64, ceiling: u64 },
 }
 
 impl fmt::Display for Why {
@@ -218,6 +248,11 @@ impl fmt::Display for Why {
                 f,
                 "the conversation filled the server's {window}-token window \
                  ({prompt_tokens} of it prompt)"
+            ),
+            Why::ReasoningRunaway { chars, ceiling } => write!(
+                f,
+                "abcc ended the turn at {chars} characters of reasoning, past its \
+                 {ceiling}-character ceiling"
             ),
         }
     }

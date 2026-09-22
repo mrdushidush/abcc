@@ -22,12 +22,12 @@ use abcc_core::redact::{MARKER, Secrets};
 use abcc_core::seq::{MissionId, Seq, TaskId, UnitId};
 use abcc_core::task::{AbortReason, TaskState};
 use abcc_drive::{Driver, Landed};
-use abcc_engine::Head;
 use abcc_engine::control::{ControlHandle, ControlPoint};
-use abcc_engine::provider::Role;
+use abcc_engine::provider::{Delta, Role};
 use abcc_engine::scripted::{Script, Scripted, Seen};
 use abcc_engine::turn::PhaseEnded;
 use abcc_engine::workspace::Toolchain;
+use abcc_engine::{Head, Limits};
 use abcc_store::Store;
 use abcc_vcs::{Repo, Sha};
 
@@ -2594,4 +2594,62 @@ fn a_secret_in_the_task_reaches_neither_the_model_nor_the_log() {
             .any(|n| n.starts_with("redacted:") && !n.contains(KEY)),
         "nothing on the log says a class was removed: {notes:?}"
     );
+}
+
+/// 🚨 **F829 at the attempt level: a runaway is an absence, and its purchase is
+/// another attempt.**
+///
+/// `classify` is exhaustive on purpose — its own comment says a thirteenth `Why`
+/// should not be able to arrive and be quietly called a soft failure — so the
+/// fifteenth needs an answer here rather than in a match arm nobody drove. The
+/// answer is the same one `SaidNothing` gets, for the same measured reason: the
+/// trace's size varies 9,942–16,564 characters on *identical* input (F246), so a
+/// turn that ran away is a sample and not a property of the task.
+#[test]
+fn a_runaway_reasoning_trace_is_uncertain_and_buys_another_attempt() {
+    let subject = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+
+    let (mut control, _handle) = ControlPoint::new();
+    let provider = Scripted::new(vec![
+        Script::raw(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Reasoning("thinking ".repeat(400))),
+        ]),
+        Script::says("never reached"),
+    ]);
+    let repo = Repo::open(&subject.root).expect("open");
+    let landed = Driver::new(&mut store, &repo, &provider, MODEL, &subject.worktrees)
+        .limits(Limits {
+            reasoning_ceiling: 1_000,
+            ..Limits::default()
+        })
+        .run(task, UnitId(0), Cause::Fresh, &mut control)
+        .expect("run");
+
+    assert_eq!(
+        provider.remaining(),
+        1,
+        "Builders ran after a dead Localize"
+    );
+    match landed.outcome {
+        AttemptOutcome::Uncertain {
+            why: Why::ReasoningRunaway { ceiling, .. },
+        } => assert_eq!(ceiling, 1_000),
+        other => panic!("a runaway became something other than an absence: {other:?}"),
+    }
+    assert!(
+        matches!(
+            landed.next,
+            Some(NextAction::Attempt {
+                cause: Cause::Retry { .. }
+            })
+        ),
+        "{:?}",
+        landed.next
+    );
+    // The tree is still kept: a failed attempt whose work nobody can look at is
+    // a failure report with the evidence deleted.
+    assert!(landed.kept.is_some());
 }

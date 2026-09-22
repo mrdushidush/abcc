@@ -1578,7 +1578,11 @@ fn classify(why: &Why) -> AttemptOutcome {
         // not measured and did not fail, and a conversation that filled the
         // window was cut off rather than judged.
         | Why::SaidNothing { .. }
-        | Why::ContextOverflow { .. } => AttemptOutcome::Uncertain { why: why.clone() },
+        | Why::ContextOverflow { .. }
+        // 🚨 F829. abcc ended the turn itself, so nothing was measured and
+        // nothing failed: the model reasoned past a ceiling and this engine
+        // stopped paying for it. An absence, like the eleven above.
+        | Why::ReasoningRunaway { .. } => AttemptOutcome::Uncertain { why: why.clone() },
         // The stream went quiet. Another attempt on a less loaded box is a
         // plausible fix, which is what makes it soft.
         Why::Timeout { .. } => AttemptOutcome::SoftFailure { why: why.clone() },
@@ -1604,6 +1608,11 @@ fn next_after(why: &Why, attempt: AttemptId) -> NextAction {
         // *identical* input (F246), so a second sample is a plausible fix in
         // exactly the way it is for `TruncatedAtCap` above.
         | Why::SaidNothing { .. }
+        // The same argument as `SaidNothing` directly above, and it is the
+        // same mechanism one step further along: the trace's size varies
+        // 9,942-16,564 characters on identical input (F246), so a runaway is
+        // a sample rather than a property of the task.
+        | Why::ReasoningRunaway { .. }
         | Why::Timeout { .. } => NextAction::Attempt {
             cause: Cause::Retry { of: attempt },
         },

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use abcc_core::event::{Composition, Control, Event, Finish, Usage};
 use abcc_core::outcome::Why;
-use abcc_core::redact::{MARKER, Secrets};
+use abcc_core::redact::{MARKER, Scrubbed, Secrets};
 use abcc_core::seq::{AttemptId, Seq};
 use abcc_engine::provider::{Delta, Message, ProviderError, Role, TraceSignal};
 use abcc_engine::scripted::{Script, Scripted};
@@ -2136,4 +2136,348 @@ fn a_new_phase_starts_its_own_high_water_and_reports_no_cut() {
         [],
         "a phase boundary was filed as a truncation, which is the reading F750 corrects"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The re-read guard
+// ---------------------------------------------------------------------------
+
+/// The header the guard opens every substituted result with. Spelled out here
+/// rather than imported, because a test that reads the constant it is asserting
+/// on asserts nothing: the claim is that *this string* reaches the model.
+const DUPLICATE_HEADER: &str = "abcc: duplicate tool result";
+
+/// A tool layer with a fixed answer long enough to be worth withholding.
+///
+/// ⚠ [`Recorder`] cannot make any of these claims: its answer is
+/// `<output of read_file>`, 22 bytes, which is smaller than the back-reference
+/// that would stand in for it and is therefore served whole by the arithmetic
+/// floor. That is itself one of the claims below.
+struct Canned {
+    text: String,
+    /// When set, a counter is appended to every answer, so no two calls return
+    /// the same bytes — a file that changed between two reads.
+    vary: bool,
+    calls: Mutex<usize>,
+}
+
+impl Canned {
+    fn of(bytes: usize) -> Canned {
+        Canned {
+            text: "x".repeat(bytes),
+            vary: false,
+            calls: Mutex::new(0),
+        }
+    }
+
+    fn varying(bytes: usize) -> Canned {
+        Canned {
+            vary: true,
+            ..Canned::of(bytes)
+        }
+    }
+}
+
+impl Tools for Canned {
+    fn run(&self, _spec: &'static ToolSpec, _call: &ToolCall) -> ToolResult {
+        let mut calls = self.calls.lock().expect("lock");
+        *calls += 1;
+        let text = if self.vary {
+            format!("{} {}", self.text, *calls)
+        } else {
+            self.text.clone()
+        };
+        ToolResult {
+            text,
+            exit: Some(0),
+            elapsed_ms: 3,
+            unmeasured: None,
+        }
+    }
+}
+
+/// Every tool result in the body, in order, as the model would read them.
+fn served(body: &Body) -> Vec<&str> {
+    body.messages()
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .map(|m| m.content.as_str())
+        .collect()
+}
+
+fn reads(ids: &[&str]) -> Vec<Script> {
+    let mut script: Vec<Script> = ids
+        .iter()
+        .map(|id| Script::calls(id, "read_file", r#"{"path":"src/semantic.rs"}"#))
+        .collect();
+    script.push(Script::says("done"));
+    script
+}
+
+fn drive(provider: &Scripted, tools: &dyn Tools, head: Head) -> (Body, Vec<Event>) {
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find where the dotfile skip lets the env file through");
+    let mut log: Vec<Event> = Vec::new();
+    TurnLoop::new(provider, tools, MODEL).run(
+        head,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+    (body, log)
+}
+
+/// 🚨 **The claim F828 is about.** Thirteen byte-identical whole-file reads
+/// filled a 40,960 window inside one attempt and it died having changed nothing.
+/// The second identical read of an unchanged file is answered with a
+/// back-reference, and the bytes are not repeated.
+#[test]
+fn an_identical_second_read_is_answered_with_a_back_reference() {
+    let provider = Scripted::new(reads(&["c1", "c2"]));
+    let tools = Canned::of(4_000);
+    let (body, log) = drive(&provider, &tools, Head::Recon);
+
+    let served = served(&body);
+    assert_eq!(served.len(), 2, "both calls were answered");
+    assert_eq!(served[0].len(), 4_000, "the first read is served whole");
+    assert!(
+        served[1].starts_with(DUPLICATE_HEADER),
+        "the second read was repeated verbatim: {}",
+        &served[1][..80.min(served[1].len())]
+    );
+    assert!(
+        served[1].len() < 1_000,
+        "the back-reference is not cheaper than the bytes it stands in for"
+    );
+
+    // 🚨 **F713.** The record says what the model was shown. A guard that
+    // substituted *after* `ToolCallEnded` would leave this field claiming the
+    // model read 4,000 bytes it never saw.
+    let shown: Vec<&str> = log
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolCallEnded { output, .. } => output.as_ref().map(Scrubbed::as_str),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, served, "the log and the context disagree");
+
+    // How much was withheld is a `Note`, because nothing branches on it and the
+    // record above can no longer carry it.
+    assert!(
+        log.iter().any(|e| matches!(
+            e,
+            Event::Note { text } if text.contains("re-read guard") && text.contains("4000 bytes")
+        )),
+        "the guard fired without saying so on the log"
+    );
+}
+
+/// ⚠ **The escape valve, and it is a design guess with no rate behind it.**
+/// `Body` is abcc's local record and is not guaranteed to equal what the server
+/// retained, so a correctly-detected repeat can still strand a model whose
+/// visible copy the server dropped. The second and third repeats are
+/// substituted; the fourth is served whole.
+#[test]
+fn the_fourth_identical_read_is_served_whole() {
+    let provider = Scripted::new(reads(&["c1", "c2", "c3", "c4", "c5"]));
+    let tools = Canned::of(4_000);
+    let (body, _log) = drive(&provider, &tools, Head::Recon);
+
+    let served = served(&body);
+    let whole: Vec<bool> = served.iter().map(|s| s.len() == 4_000).collect();
+    assert_eq!(
+        whole,
+        vec![true, false, false, true, false],
+        "the escape valve did not open on the fourth occurrence"
+    );
+}
+
+/// ✅ **A false positive on content is structurally impossible, and this is why.**
+/// A file mutated between two reads no longer returns the same bytes, so the
+/// equality test *is* the staleness check — there is nothing else to get right.
+#[test]
+fn a_result_that_changed_between_reads_is_never_a_duplicate() {
+    let provider = Scripted::new(reads(&["c1", "c2", "c3"]));
+    let tools = Canned::varying(4_000);
+    let (body, _log) = drive(&provider, &tools, Head::Recon);
+
+    for (n, text) in served(&body).iter().enumerate() {
+        assert!(
+            !text.starts_with(DUPLICATE_HEADER),
+            "read {n} was withheld although the bytes had changed"
+        );
+    }
+}
+
+/// 🚨 **F830 — the class the guard must not touch, and it was measured.**
+/// Of the 150 byte-identical repeats in this project's whole log, 12 are
+/// `apply_patch`: ten failure messages and **two** *applied 1 hunk to 1 file*
+/// lines. An editing tool's result reports **what just happened**, so answering
+/// the second one with *you already have this* would be a false statement about
+/// an event — and on those two applied-ok lines it would tell a model its
+/// second patch had not landed.
+#[test]
+fn an_editing_tool_is_never_answered_with_a_back_reference() {
+    let patch = r#"{"diff":"--- a/src/semantic.rs\n+++ b/src/semantic.rs\n"}"#;
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "apply_patch", patch),
+        Script::calls("c2", "apply_patch", patch),
+        Script::calls("c3", "apply_patch", patch),
+        Script::says("done"),
+    ]);
+    let tools = Canned::of(4_000);
+    let (body, _log) = drive(&provider, &tools, Head::Builders);
+
+    let served = served(&body);
+    assert_eq!(served.len(), 3);
+    for (n, text) in served.iter().enumerate() {
+        assert_eq!(
+            text.len(),
+            4_000,
+            "apply_patch result {n} was withheld as a duplicate"
+        );
+    }
+}
+
+/// ⚠ **The floor is arithmetic and not a constant.** Substituting only pays when
+/// the back-reference is smaller than what it stands in for; there is no measured
+/// size threshold, and inventing one would be a number with nothing behind it.
+/// In the log this excludes exactly one repeat — a 78-byte `search` result the
+/// note would have made bigger.
+#[test]
+fn a_result_smaller_than_the_back_reference_is_served_whole() {
+    let provider = Scripted::new(reads(&["c1", "c2", "c3"]));
+    let tools = Canned::of(40);
+    let (body, _log) = drive(&provider, &tools, Head::Recon);
+
+    for (n, text) in served(&body).iter().enumerate() {
+        assert_eq!(
+            text.len(),
+            40,
+            "read {n} was replaced by something no smaller than itself"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The reasoning ceiling
+// ---------------------------------------------------------------------------
+
+/// A turn that reasons for `chars` characters and then, if it is ever allowed
+/// to get there, answers.
+///
+/// ⚠ The answer and the `Closed` delta are the point: a stop that merely let the
+/// stream finish and then reported it would save nothing, and this script cannot
+/// tell the difference unless the tail is there to be missed.
+fn thinks_then_answers(chars: usize) -> Script {
+    let mut deltas = vec![Ok(Delta::Opened { ttfb_ms: 12 })];
+    let chunk = "thinking ".repeat(100);
+    let mut spent = 0;
+    while spent < chars {
+        let take = chunk.len().min(chars - spent);
+        deltas.push(Ok(Delta::Reasoning(chunk[..take].to_owned())));
+        spent += take;
+    }
+    deltas.push(Ok(Delta::Text("src/parser.rs:88 is the place.".to_owned())));
+    Script::raw(deltas).and(Delta::Closed {
+        usage: Usage {
+            prompt_tokens: 2_000,
+            completion_tokens: 16_384,
+            reasoning_tokens: Some(16_384),
+            cached_tokens: None,
+        },
+        finish: Finish::Stop,
+    })
+}
+
+/// 🚨 **F829 — the whole claim.** A turn that reasons past the ceiling is ended
+/// by abcc, mid-stream, and the reason says so rather than borrowing a `Why`
+/// about something that happened to us.
+#[test]
+fn a_turn_that_reasons_past_the_ceiling_is_ended_by_abcc() {
+    let provider = Scripted::new(vec![thinks_then_answers(5_000)]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find where the parser drops the trailing comma");
+    let mut log: Vec<Event> = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL)
+        .limits(Limits {
+            reasoning_ceiling: 1_000,
+            ..Limits::default()
+        })
+        .run(
+            Head::Recon,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+
+    match ended {
+        PhaseEnded::Unmeasured {
+            why: Why::ReasoningRunaway { chars, ceiling },
+            ..
+        } => {
+            assert_eq!(ceiling, 1_000);
+            assert!(chars >= 1_000, "ended below its own ceiling at {chars}");
+        }
+        other => panic!("expected ReasoningRunaway, got {other:?}"),
+    }
+
+    // 🚨 **Stopping is dropping** — the loop returns and the stream goes with
+    // it, which closes the socket (F200). If the drain had run to the end of the
+    // script instead, the turn would have assembled and been recorded.
+    assert!(
+        !kinds(&log).contains(&"model_call_ended"),
+        "the stream ran to completion anyway: {:?}",
+        kinds(&log)
+    );
+    assert!(
+        !body
+            .messages()
+            .iter()
+            .any(|m| m.content.contains("parser.rs")),
+        "the answer the ceiling was supposed to pre-empt still arrived"
+    );
+}
+
+/// ✅ **The margin, stated as a test rather than as a comment.** The
+/// most-reasoning turn in the 3,048 that produced *something* spent **40,628
+/// characters** (10,486 reasoning tokens). At the shipped ceiling it answers, and
+/// that 9,372-character gap is what *0 false positives* means.
+#[test]
+fn the_most_reasoning_productive_turn_ever_logged_still_answers() {
+    let provider = Scripted::new(vec![thinks_then_answers(40_628)]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find where the parser drops the trailing comma");
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Recon,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |_: Event| {},
+    );
+
+    match ended {
+        PhaseEnded::Answered { text, .. } => {
+            assert!(text.contains("parser.rs:88"), "{text}");
+        }
+        other => panic!("the default ceiling refused a turn the log says is fine: {other:?}"),
+    }
+}
+
+/// ⚠ **A stop, not a tier** — and a stop nobody set is a stop nobody can trust.
+/// The number is the middle of the 41,000–60,000 plateau, and a test that let it
+/// drift would let the plateau drift with it.
+#[test]
+fn the_shipped_reasoning_ceiling_is_the_middle_of_the_measured_plateau() {
+    assert_eq!(Limits::default().reasoning_ceiling, 50_000);
 }

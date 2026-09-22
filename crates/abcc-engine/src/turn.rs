@@ -30,16 +30,16 @@ use std::time::{Duration, Instant};
 
 use abcc_core::event::{Event, Finish, Usage};
 use abcc_core::outcome::{Claim, Why};
-use abcc_core::redact::Secrets;
+use abcc_core::redact::{Scrubbed, Secrets};
 use abcc_core::seq::AttemptId;
 
 use crate::control::{ControlPoint, Disposition, Stop};
 use crate::head::{Head, Posting};
 use crate::provider::{
-    ApiRequest, Body, Delta, Message, Provider, ProviderError, Schema, ToolCall, TraceSignal, Turn,
-    TurnStream,
+    ApiRequest, Body, Delta, Message, Provider, ProviderError, Role, Schema, ToolCall, TraceSignal,
+    Turn, TurnStream,
 };
-use crate::tools::{Tier, ToolSpec};
+use crate::tools::{Reach, Tier, ToolSpec};
 
 /// What a phase says to a model that answered with nothing (F503).
 ///
@@ -55,6 +55,85 @@ use crate::tools::{Tier, ToolSpec};
 const NO_ANSWER: &str = "Your last turn produced no reply text at all: the reasoning ended and \
                          nothing was said. Only the reply is visible to anyone — the reasoning \
                          is not, and it is not kept. Say the answer now, in the reply itself.";
+
+// ---------------------------------------------------------------------------
+// The re-read guard
+// ---------------------------------------------------------------------------
+
+/// The first line of every substituted duplicate result, and the string the
+/// occurrence count below is taken over.
+///
+/// It is a header rather than prose so that the model can find the earlier copy
+/// by searching its own transcript for the same sixteen characters, and so the
+/// count has something to match on that does not move when the wording of the
+/// note does.
+const DUPLICATE_HEADER: &str = "abcc: duplicate tool result";
+
+/// Every Nth repeat of one identical result is served whole anyway.
+///
+/// 🚨 **A design guess with no rate behind it, and it is written down as one.**
+/// [`Body`] is abcc's local record and is **not** guaranteed to equal what the
+/// server retained: [`Event::PromptCut`] fires, and LM Studio truncates the
+/// *middle* of a conversation at HTTP 200. So this guard can correctly detect a
+/// repeat and still strand a model whose visible copy the server has since
+/// dropped. This is the escape valve for that case — the second and third
+/// repeats are substituted, the fourth is served whole. **Zero instances of the
+/// failure it guards against have been observed**, because zero were possible
+/// before the guard existed. ▶ Measure it; do not trust it.
+///
+/// Over this project's whole log the valve costs 16 of 131 substitutions and
+/// 233,283 of 1,785,975 duplicate bytes — 13%, against the 87% it still saves.
+const DUPLICATE_ESCAPE_EVERY: usize = 4;
+
+/// A 64-bit FNV-1a over the bytes, as sixteen lowercase hex characters.
+///
+/// ⚠ **Not a cryptographic digest and nothing rests on it being one.** The
+/// equality test is the full content compare in [`duplicates_so_far`]; this only
+/// has to name one result stably enough that the model can search back for it,
+/// and that repeats of the *same* content produce the *same* header. A collision
+/// would join two counts, and joining two counts lets an extra copy through,
+/// which is the safe side of the guard.
+fn fingerprint(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// How many times this exact result has already been served *or* substituted in
+/// this body.
+///
+/// 🚨 **Both halves of the filter are needed.** A substituted repeat no longer
+/// carries the content, so counting full copies alone would say *once* forever
+/// and the fourth occurrence the escape valve is about would never arrive.
+/// Counting headers alone would miss the first, real copy.
+fn duplicates_so_far(body: &Body, content: &str, header: &str) -> usize {
+    body.messages()
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .filter(|m| m.content == content || m.content.starts_with(header))
+        .count()
+}
+
+/// What the model reads instead of bytes it already has.
+///
+/// ⚠ It names the mechanism and gives the model somewhere to go, in the same
+/// spirit as [`NO_ANSWER`] — but unlike a paragraph in the brief, **none of the
+/// saving depends on the model believing it.** F827 measured a brief paragraph
+/// written against this exact behaviour at 89.9% → 88.0%: a prompt can remove a
+/// read the model does not need and cannot remove one it believes it needs. The
+/// bytes are withheld here whether or not the sentence lands.
+fn duplicate_note(header: &str, occurrence: usize, bytes: usize) -> String {
+    format!(
+        "{header}\nThis call returned the same {bytes} bytes as an earlier call in this same \
+         conversation, byte for byte. This is occurrence {occurrence}, and the content is not \
+         repeated here: repeating it is what fills the context window. Search this conversation \
+         for the header line above, or for the earlier copy itself, and read it there. The bytes \
+         cannot have gone stale — they are identical, so nothing you did changed them."
+    )
+}
 
 /// Where the loop writes what happened.
 ///
@@ -220,6 +299,35 @@ pub struct Limits {
     /// brief, server and model. Exhausting it ends the phase
     /// [`Why::SaidNothing`], which is the ruling this does not overturn.
     pub nudges: u8,
+    /// 🚨 **F829: how many characters of reasoning one turn may spend before
+    /// abcc stops it.**
+    ///
+    /// **50,000, and it is derived rather than chosen.** The published rule was
+    /// *12,288 reasoning tokens*, which cannot be wired: `reasoning_tokens` is
+    /// the server's count and arrives only in the closing usage block, while the
+    /// only quantity this loop holds per delta is
+    /// [`Accumulator::reasoning_chars`]. Re-derived over **3,048 turns**:
+    ///
+    /// | ceiling (chars) | catches | false positives |
+    /// |---:|---:|---:|
+    /// | 30,000 | 6 | **4** |
+    /// | 40,000 | 5 | **1** |
+    /// | **41,000 – 60,000** | **5** | **0** |
+    /// | 70,000 | 0 | 0 |
+    ///
+    /// ✅ A **plateau, not a knife edge**, which is the property that makes it
+    /// safe. 50,000 is the point with the most margin on both sides at once:
+    /// 9,372 above the most-reasoning turn that produced something, 10,760 below
+    /// the least-reasoning turn that produced nothing.
+    ///
+    /// ⚠ **It is a stop, not a tier**, like [`Limits::rounds`]: crossing it ends
+    /// the phase [`Why::ReasoningRunaway`], which is neither a pass nor a
+    /// failure, and the purchase available is another attempt.
+    ///
+    /// ⚠ **It catches one shape.** One turn that reasons itself to the cap is
+    /// caught; twenty-four small unproductive rounds are not, and that attempt
+    /// still ends at [`Limits::rounds`]. 5 for 5 on turns, 0 for 1 on attempts.
+    pub reasoning_ceiling: usize,
 }
 
 impl Default for Limits {
@@ -235,6 +343,10 @@ impl Default for Limits {
             tool_call_gap: Duration::from_secs(400),
             liveness_gap: Duration::from_secs(10),
             nudges: 2,
+            // F829. 50,000 characters is the middle of the 41,000-60,000
+            // plateau that catches 5 and costs 0 over 3,048 logged turns.
+            // Derived, not chosen; see the field.
+            reasoning_ceiling: 50_000,
         }
     }
 }
@@ -616,6 +728,10 @@ impl<'a> TurnLoop<'a> {
         match drained {
             Drained::Turn(turn) => Ok(turn),
             Drained::Failed(e) => Err(Ending::Unmeasured(e.why())),
+            Drained::Runaway { chars } => Err(Ending::Unmeasured(Why::ReasoningRunaway {
+                chars: chars as u64,
+                ceiling: self.limits.reasoning_ceiling as u64,
+            })),
             Drained::Interrupted => Err(match control.check() {
                 Disposition::Stop(stop) => Ending::Stopped(stop),
                 // The flag was set and the verb was not there. It cannot happen
@@ -626,6 +742,71 @@ impl<'a> TurnLoop<'a> {
                 }),
             }),
         }
+    }
+
+    /// Decide what an inspecting tool's result should say when this body already
+    /// carries it, byte for byte.
+    ///
+    /// `None` means serve the bytes. `Some((note, occurrence))` is the
+    /// back-reference to send instead, and the occurrence number for the log.
+    ///
+    /// 🚨 **The state is the [`Body`], and that is what makes it phase-correct
+    /// by construction.** A `Body` is fresh per phase — this module's own opening
+    /// line is *two phases, two heads, two bodies* — while [`Workspace`] is one
+    /// `&self`-shared instance reused across Localize and Change. Dedup state on
+    /// the workspace would let a Localize read turn into a substitution in a
+    /// Change phase whose body never saw it, which is a back-reference to
+    /// nothing. Scoping to the body needs no new state, no new field and no
+    /// cross-crate change, and cannot make that mistake.
+    ///
+    /// ✅ **A false positive on content is structurally impossible.** A file
+    /// mutated between two reads no longer returns the same bytes, so a changed
+    /// file is never substituted — the equality test is the check.
+    ///
+    /// 🚨 **Inspecting tools only, and that is measured rather than tidy.** An
+    /// [`Reach::Edits`] or [`Reach::SpawnsChild`] result reports *what just
+    /// happened*, never *what is in the workspace*: two identical
+    /// `applied 1 hunk to 1 file` lines are two applied patches, and answering
+    /// the second with *you already have this* would be a false statement about
+    /// an event rather than a back-reference to a fact. **F830**: of the 150
+    /// byte-identical repeats in this project's whole log, **12 are
+    /// `apply_patch`** — ten failure messages and **two**
+    /// `applied 1 hunk to 1 file` lines — and excluding the whole class costs
+    /// 2,466 bytes of the 1,791,455 that repeat, 0.14%.
+    ///
+    /// ⚠ **The size floor is arithmetic, not a constant.** Substituting only
+    /// pays when the note is smaller than what it stands in for; there is no
+    /// measured size threshold and inventing one would be a number with nothing
+    /// behind it. In the log this excludes exactly one repeat, a 78-byte
+    /// `search` result that the note would have made *bigger*.
+    fn already_have(
+        &self,
+        spec: &ToolSpec,
+        output: &Scrubbed,
+        body: &Body,
+    ) -> Option<(Scrubbed, usize)> {
+        if !matches!(spec.reach, Reach::Inspects) {
+            return None;
+        }
+        let header = format!("{DUPLICATE_HEADER} {}", fingerprint(output.as_str()));
+        let occurrence = duplicates_so_far(body, output.as_str(), &header) + 1;
+        if occurrence == 1 || occurrence.is_multiple_of(DUPLICATE_ESCAPE_EVERY) {
+            return None;
+        }
+        // ⚠ Scrubbed like any other result even though the text is ours, for the
+        // reason the denial below is: the type is what makes *every* path to the
+        // context go through the boundary, and an exemption for the strings we
+        // wrote is the first of the exemptions.
+        let note = self
+            .secrets
+            .scrub(duplicate_note(&header, occurrence, output.len()))
+            .text;
+        // The header has to survive scrubbing or the count above cannot find
+        // this message next round — and a guard that cannot count its own notes
+        // would refuse forever with no escape valve. Serving the bytes is the
+        // safe side of that, so it is the fallback.
+        let usable = note.as_str().starts_with(&header) && note.len() < output.len();
+        usable.then_some((note, occurrence))
     }
 
     /// Admit, run and append every tool the turn asked for.
@@ -672,6 +853,38 @@ impl<'a> TurnLoop<'a> {
                     for note in [output.note(), asked.note()].into_iter().flatten() {
                         journal.record(Event::Note { text: note });
                     }
+                    // 🚨 **The re-read guard, and it stands here on purpose** —
+                    // upstream of the record below, so the log says what the
+                    // model was actually sent rather than what the tool
+                    // produced. Thirteen byte-identical whole-file reads filled
+                    // a 40,960 window inside one attempt (F828) and the attempt
+                    // died having changed nothing; whole-file reads are 54.1% of
+                    // calls and **92.5% of the bytes** (F826). The measured
+                    // saving on the two `SEC-06` attempts is ~29,000 and
+                    // ~36,000 prompt tokens, both before their `prompt_cut`
+                    // even fired.
+                    let shown = match self.already_have(spec, &output.text, body) {
+                        Some((note, occurrence)) => {
+                            // ⚠ A `Note` and not a field: nothing branches on
+                            // it, and the *measurement* the falsifier needs is
+                            // already in `ToolCallEnded::output` — the duplicate
+                            // byte share has to collapse there or the guard is
+                            // not doing what it claims. This says how much was
+                            // withheld, which that record can no longer show.
+                            journal.record(Event::Note {
+                                text: format!(
+                                    "re-read guard: {} returned the same {} bytes again \
+                                     (occurrence {occurrence}); the model was sent a {}-byte \
+                                     back-reference instead",
+                                    spec.name,
+                                    output.text.len(),
+                                    note.len(),
+                                ),
+                            });
+                            note
+                        }
+                        None => output.text,
+                    };
                     journal.record(Event::ToolCallEnded {
                         attempt,
                         tool: spec.name.to_owned(),
@@ -685,10 +898,14 @@ impl<'a> TurnLoop<'a> {
                         // apart, so *what the record says the model was shown*
                         // and *what the model was shown* cannot drift. Recording
                         // a re-scrub, or a rendering, would be a field true of
-                        // itself.
-                        output: Some(output.text.clone()),
+                        // itself. ⚠ That binding is now `shown` and not
+                        // `output.text`, which is the whole reason the re-read
+                        // guard runs above this line: a guard that substituted
+                        // *after* the record would make this field say the model
+                        // read 14,017 bytes it never saw.
+                        output: Some(shown.clone()),
                     });
-                    body.append(Message::tool_result(&call.id, output.text));
+                    body.append(Message::tool_result(&call.id, shown));
                 }
                 Err(denied) => {
                     report.denials += 1;
@@ -749,6 +966,20 @@ impl<'a> TurnLoop<'a> {
             // caller drops the stream on the way out.
             if control.interrupted() {
                 return Drained::Interrupted;
+            }
+            // 🚨 **F829, and it is the second thing sampled between deltas for
+            // the same reason as the first: stopping is dropping.** Returning
+            // here drops the stream, which closes the socket in 3–14 ms (F200);
+            // no cancel token reaches into the provider and none is needed.
+            //
+            // ⚠ **Characters, not tokens.** `usage.reasoning_tokens` arrives
+            // only in the closing usage block, so in flight there is nothing
+            // else to read. See [`Limits::reasoning_ceiling`] for the 3,048-turn
+            // re-derivation that produced the number.
+            if acc.reasoning_chars >= self.limits.reasoning_ceiling {
+                return Drained::Runaway {
+                    chars: acc.reasoning_chars,
+                };
             }
             if last_mark.elapsed() >= self.limits.liveness_gap {
                 journal.record(Event::LivenessMark {
@@ -916,6 +1147,11 @@ impl Accumulator {
 enum Drained {
     Turn(Turn),
     Interrupted,
+    /// The reasoning trace ran past [`Limits::reasoning_ceiling`] and this
+    /// engine ended the turn. F829.
+    Runaway {
+        chars: usize,
+    },
     Failed(ProviderError),
 }
 

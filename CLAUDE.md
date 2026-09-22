@@ -197,6 +197,31 @@ do not reformat around it.
   500s. `content_empty` and the F498 comparison select *which* `Why` — never
   whether there is one. ⚠ `a422` was 8,209 + 8,192 = 16,401 against a 32,768
   window, so do not reach for the context window to explain a 500.
+- 🚨 **An inspecting tool's result the body already carries, byte for byte, is
+  replaced by a back-reference** (F826, F828, F830). Thirteen byte-identical
+  whole-file reads filled a 40,960 window inside one attempt and it died having
+  changed nothing; whole-file reads are 54.1% of tool calls and **92.5% of the
+  bytes**. ⚠ **The prompt is not the lever and that was measured** — a paragraph
+  written against this exact behaviour, quoting its own numbers, moved the
+  re-read rate 89.9% → 88.0% (F827). The state is the **`Body` and never the
+  `Workspace`**: a `Body` is fresh per phase, a `Workspace` is one instance
+  shared across Localize and Change, so dedup state on the workspace would
+  substitute in a phase whose body never saw the original. ⚠ **`Reach::Inspects`
+  only** — two identical `applied 1 hunk to 1 file` lines are two applied
+  patches, and 12 of the 150 repeats in the whole log are exactly that class.
+  ⚠ The escape valve (every 4th repeat served whole) is a **design guess with no
+  rate behind it**, there because `body` is not guaranteed to equal what the
+  server retained; say so, and measure it.
+- 🚨 **A turn that reasons past `Limits::reasoning_ceiling` is ended by abcc,
+  mid-stream** (F829). **50,000 characters, and characters is not a
+  convenience**: `usage.reasoning_tokens` arrives only in the closing usage
+  block, so the published 12,288-*token* rule was unwireable; the loop's one
+  live counter is `reasoning_chars`. Re-derived over **3,048 turns** — every
+  ceiling from ~41,000 to ~60,000 catches 5 and costs **0** false positives, so
+  it is a plateau and not a knife edge. ⚠ **It catches one shape**: one turn
+  that reasons itself to the cap, never an attempt that dies through many small
+  unproductive rounds. **5 for 5 on turns, 0 for 1 on attempts.** ⚠ One of the
+  five ends `stop`, not `length`, so do not reach for the finish reason.
 - 🚨 **Text out of a tool call reaches the log and the model's context only as
   a `Scrubbed`, and there is one constructor** (ADR-0014 §5). `redact::Secrets`
   is applied at exactly one seam — `TurnLoop::tool_round` — because a tool's

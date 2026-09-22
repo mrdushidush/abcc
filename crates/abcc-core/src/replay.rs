@@ -613,6 +613,7 @@ pub const fn why_name(why: &Why) -> &'static str {
         Why::EngineError { .. } => "EngineError",
         Why::SaidNothing { .. } => "SaidNothing",
         Why::ContextOverflow { .. } => "ContextOverflow",
+        Why::ReasoningRunaway { .. } => "ReasoningRunaway",
     }
 }
 
