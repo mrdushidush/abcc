@@ -197,6 +197,19 @@ do not reformat around it.
   500s. `content_empty` and the F498 comparison select *which* `Why` — never
   whether there is one. ⚠ `a422` was 8,209 + 8,192 = 16,401 against a 32,768
   window, so do not reach for the context window to explain a 500.
+- 🚨🚨 **A card's test must be shown RED on the unfixed tree, by running it
+  there. The gate cannot do this for you** (F832). It runs `cargo test` and
+  sees green whether or not the new test exercises the change, and **two of
+  three landed cards have carried a test that passes unfixed**: `SHELL-10`'s
+  child reads 0 bytes of stdin whether stdin is `null` or **inherited**,
+  because under `cargo test` the parent's stdin is already at EOF; and
+  `RUNTIME-10b` built its *deeply nested* JSON as `"[]"` repeated, which is
+  flat and errors on trailing content long before any depth check. Both
+  production fixes were correct and both tests proved nothing. ▶ The check is
+  cheap and there is no substitute: extract the test, put it on the pre-fix
+  tree, watch it fail. 🎉 The **judge** caught one of these and **decided
+  nothing**, which is ADR-0009 working — the first finding in this project's
+  history that the deterministic rungs could not produce.
 - 🚨 **An inspecting tool's result the body already carries, byte for byte, is
   replaced by a back-reference** (F826, F828, F830). Thirteen byte-identical
   whole-file reads filled a 40,960 window inside one attempt and it died having
@@ -218,10 +231,22 @@ do not reformat around it.
   block, so the published 12,288-*token* rule was unwireable; the loop's one
   live counter is `reasoning_chars`. Re-derived over **3,048 turns** — every
   ceiling from ~41,000 to ~60,000 catches 5 and costs **0** false positives, so
-  it is a plateau and not a knife edge. ⚠ **It catches one shape**: one turn
-  that reasons itself to the cap, never an attempt that dies through many small
-  unproductive rounds. **5 for 5 on turns, 0 for 1 on attempts.** ⚠ One of the
-  five ends `stop`, not `length`, so do not reach for the finish reason.
+  it looked like a plateau. 🚨 **F831: it is not one, and the field data said
+  so.** `a2065` holds a **barren** turn at 26,275 reasoning chars and a
+  **productive** one at 34,760 **in the same attempt**, so the two populations
+  are not separable by a threshold and no ceiling catches the first without
+  discarding the second. **5 of 6 on turns, not 5 of 5.** ▶ So the stop also
+  requires the turn to have produced nothing — no text, no assembled call, no
+  argument bytes, no `ToolCallOpened`. That can only *prevent* firings, and it
+  does **not** make the rule complete: F624 buffers a tool call's arguments to
+  the end, so the threshold is still doing the real work. ⚠ It catches one
+  shape — one turn that reasons itself to the cap, never an attempt that dies
+  through many small rounds. ⚠ One of the five ends `stop`, not `length`, so do
+  not reach for the finish reason. 🚨 **`--reasoning-ceiling 0` turns it off,
+  and that flag is not a convenience**: the ceiling ended `a2468`, which made
+  *would that turn have produced anything* unobservable, because the
+  observation is the thing the stop prevents. **A stop that cannot be taken out
+  of the path cannot be measured.**
 - 🚨 **Text out of a tool call reaches the log and the model's context only as
   a `Scrubbed`, and there is one constructor** (ADR-0014 §5). `redact::Secrets`
   is applied at exactly one seam — `TurnLoop::tool_round` — because a tool's

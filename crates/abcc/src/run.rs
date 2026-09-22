@@ -343,13 +343,26 @@ pub(crate) fn describe(checked: &weights::Checked) -> String {
     }
 }
 
-pub(crate) fn limits_for(run: &cli::Run) -> Limits {
+/// The flags an operator typed, folded onto the measured defaults.
+///
+/// `pub` rather than `pub(crate)` so `tests/cli.rs` can assert the mapping
+/// itself: `--reasoning-ceiling 0` means *off*, and a mapping that is only
+/// read by `main` is a mapping nothing checks.
+#[must_use]
+pub fn limits_for(run: &cli::Run) -> Limits {
     let mut limits = Limits::default();
     if let Some(rounds) = run.rounds {
         limits.rounds = rounds;
     }
     if let Some(gap) = run.idle_gap {
         limits.idle_gap = gap;
+    }
+    // ⚠ **`0` is off, not a ceiling of zero.** `reasoning_chars` starts at 0
+    // and the check is `>=`, so a literal 0 would end every turn before its
+    // first delta. `usize::MAX` is *no turn ever reaches this*, which is what
+    // the operator asking for 0 means and is the arm F831 needs.
+    if let Some(chars) = run.reasoning_ceiling {
+        limits.reasoning_ceiling = if chars == 0 { usize::MAX } else { chars };
     }
     limits
 }

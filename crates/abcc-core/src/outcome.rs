@@ -195,6 +195,15 @@ pub enum Why {
     /// attempts.** ⚠ One of the five ends `stop` rather than `length`, so a
     /// finish-reason filter would miss it (F815, reproduced independently in
     /// characters).
+    ///
+    /// 🚨 **F831 qualifies the plateau and the engine answers it.** The two
+    /// populations are **not separable in general**: one attempt, `a2065`,
+    /// holds a barren turn at 26,275 chars and a productive one at 34,760. So
+    /// the stop fires only on a turn that has produced **nothing but trace**
+    /// at the moment it crosses, which makes discarding produced work
+    /// impossible and makes the rule 5 of 6 rather than 5 of 5 on turns.
+    /// ✅ First live firing, `a2229`: 50,003 chars with the liveness mark
+    /// reading *0 chars of answer, 0 of tool-call arguments*. A true positive.
     ReasoningRunaway { chars: u64, ceiling: u64 },
 }
 

@@ -438,3 +438,47 @@ fn a_size_that_is_not_wxh_is_refused_with_an_example() {
     let err = parse("paint --px many").expect_err("should refuse");
     assert!(err.to_string().contains("--px"), "{err}");
 }
+
+/// 🚨 **F831: a stop that cannot be taken out of the path cannot be measured.**
+/// `a2468` is the case the flag exists for — the reasoning ceiling ended the
+/// first Change phase the quality tier ever reached, correctly by every signal
+/// the loop had, and *whether that turn would have produced anything* became
+/// unobservable, because the observation is the thing the stop prevents.
+///
+/// ⚠ **`0` is off and not a ceiling of zero.** `reasoning_chars` starts at 0 and
+/// the check is `>=`, so a literal zero would end every turn before its first
+/// delta — the opposite of what the operator typing it means.
+#[test]
+fn the_reasoning_ceiling_can_be_set_and_zero_takes_the_stop_out_of_the_path() {
+    let parsed = parse("run --task t7 --reasoning-ceiling 12000").expect("run");
+    let Command::Run(run) = parsed.command else {
+        panic!("expected a run");
+    };
+    assert_eq!(run.reasoning_ceiling, Some(12_000));
+    assert_eq!(
+        abcc::run::limits_for(&run).reasoning_ceiling,
+        12_000,
+        "the flag did not reach the limits"
+    );
+
+    let parsed = parse("run --task t7 --reasoning-ceiling 0").expect("run");
+    let Command::Run(run) = parsed.command else {
+        panic!("expected a run");
+    };
+    assert_eq!(
+        abcc::run::limits_for(&run).reasoning_ceiling,
+        usize::MAX,
+        "0 has to mean off; a ceiling of zero ends every turn before its first delta"
+    );
+
+    let parsed = parse("run --task t7").expect("run");
+    let Command::Run(run) = parsed.command else {
+        panic!("expected a run");
+    };
+    assert_eq!(run.reasoning_ceiling, None);
+    assert_eq!(
+        abcc::run::limits_for(&run).reasoning_ceiling,
+        50_000,
+        "a run that names no ceiling gets the measured one"
+    );
+}

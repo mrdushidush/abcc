@@ -976,7 +976,13 @@ impl<'a> TurnLoop<'a> {
             // only in the closing usage block, so in flight there is nothing
             // else to read. See [`Limits::reasoning_ceiling`] for the 3,048-turn
             // re-derivation that produced the number.
-            if acc.reasoning_chars >= self.limits.reasoning_ceiling {
+            //
+            // 🚨 **Both halves, and the second one is F831.** The ceiling alone
+            // cannot be made safe: `a2065` holds a barren turn at 26,275 chars
+            // and a productive one at 34,760, in one attempt. So this never
+            // throws away a turn that has already produced something — see
+            // [`Accumulator::produced_nothing`], including what it does not buy.
+            if acc.reasoning_chars >= self.limits.reasoning_ceiling && acc.produced_nothing() {
                 return Drained::Runaway {
                     chars: acc.reasoning_chars,
                 };
@@ -1096,6 +1102,31 @@ impl Accumulator {
             }
             Delta::Closed { usage, finish } => self.ended = Some((usage, finish)),
         }
+    }
+
+    /// Whether this turn has produced anything but trace so far — the same
+    /// quantity [`Accumulator::mark`] reports, asked as a question.
+    ///
+    /// 🚨 **F831, and it is why the reasoning ceiling asks it.** The two
+    /// populations the ceiling was fitted against — turns that produce
+    /// something and turns that produce nothing — were separable over 3,048
+    /// logged turns and are **not separable in general**: `a2065` contains a
+    /// barren turn at 26,275 reasoning chars and a productive one at 34,760 in
+    /// the same attempt. A threshold alone therefore cannot be made both safe
+    /// and complete, and this predicate is the half that can be made safe.
+    ///
+    /// ⚠ **What it does NOT buy.** LM Studio buffers a tool call's arguments
+    /// and delivers them in one delta at the end (F624), so a turn whose only
+    /// output is a large call looks barren for almost all of its trace. The
+    /// announcement — [`Delta::ToolCallOpened`] — arrives first and is what
+    /// makes this more than a text check, but nothing guarantees a server
+    /// sends one. **The threshold is still doing the real work**; this only
+    /// makes it impossible to throw away something already produced.
+    fn produced_nothing(&self) -> bool {
+        self.text.is_empty()
+            && self.tool_calls.is_empty()
+            && self.tool_call_chars == 0
+            && self.writing.is_none()
     }
 
     /// What a liveness mark says, which depends on what the stream is doing.

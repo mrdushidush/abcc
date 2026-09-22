@@ -2481,3 +2481,112 @@ fn the_most_reasoning_productive_turn_ever_logged_still_answers() {
 fn the_shipped_reasoning_ceiling_is_the_middle_of_the_measured_plateau() {
     assert_eq!(Limits::default().reasoning_ceiling, 50_000);
 }
+
+/// 🚨 **F831 — the ceiling never throws away work already produced.** `a2065`
+/// holds a barren turn at 26,275 reasoning chars and a **productive** one at
+/// 34,760, in one attempt, so the two populations the plateau was fitted
+/// against are not separable by a threshold. This is the half that can be made
+/// safe: a turn that has already said something keeps streaming however long it
+/// reasons afterwards.
+#[test]
+fn a_turn_that_already_said_something_is_never_cut_by_the_ceiling() {
+    let mut deltas = vec![
+        Ok(Delta::Opened { ttfb_ms: 12 }),
+        Ok(Delta::Text("src/parser.rs:88 is the place.".to_owned())),
+    ];
+    let chunk = "thinking ".repeat(100);
+    for _ in 0..30 {
+        deltas.push(Ok(Delta::Reasoning(chunk.clone())));
+    }
+    let provider = Scripted::new(vec![Script::raw(deltas).and(Delta::Closed {
+        usage: Usage {
+            prompt_tokens: 2_000,
+            completion_tokens: 16_384,
+            reasoning_tokens: Some(16_384),
+            cached_tokens: None,
+        },
+        finish: Finish::Stop,
+    })]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find where the parser drops the trailing comma");
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL)
+        .limits(Limits {
+            reasoning_ceiling: 1_000,
+            ..Limits::default()
+        })
+        .run(
+            Head::Recon,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |_: Event| {},
+        );
+
+    match ended {
+        PhaseEnded::Answered { text, .. } => assert!(text.contains("parser.rs:88"), "{text}"),
+        other => panic!("the ceiling discarded a turn that had already answered: {other:?}"),
+    }
+}
+
+/// ⚠ **And the announcement counts, which is the only reason this is more than
+/// a text check.** LM Studio buffers a tool call's arguments to the end (F624),
+/// so a turn whose only output is a call looks barren for almost all of its
+/// trace; `Delta::ToolCallOpened` arrives first and is what the loop has to go
+/// on. A turn that has announced a call is not barren.
+#[test]
+fn a_turn_that_has_announced_a_tool_call_is_never_cut_by_the_ceiling() {
+    let mut deltas = vec![
+        Ok(Delta::Opened { ttfb_ms: 12 }),
+        Ok(Delta::ToolCallOpened {
+            tool: "read_file".to_owned(),
+        }),
+    ];
+    let chunk = "thinking ".repeat(100);
+    for _ in 0..30 {
+        deltas.push(Ok(Delta::Reasoning(chunk.clone())));
+    }
+    let provider = Scripted::new(vec![
+        Script::raw(deltas)
+            .and(Delta::ToolCall(ToolCall {
+                id: "c1".to_owned(),
+                tool: "read_file".to_owned(),
+                arguments: r#"{"path":"src/parser.rs"}"#.to_owned(),
+            }))
+            .and(Delta::Closed {
+                usage: Usage {
+                    prompt_tokens: 2_000,
+                    completion_tokens: 16_384,
+                    reasoning_tokens: Some(16_384),
+                    cached_tokens: None,
+                },
+                finish: Finish::ToolCalls,
+            }),
+        Script::says("src/parser.rs:88 is the place."),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("find where the parser drops the trailing comma");
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL)
+        .limits(Limits {
+            reasoning_ceiling: 1_000,
+            ..Limits::default()
+        })
+        .run(
+            Head::Recon,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |_: Event| {},
+        );
+
+    assert!(
+        matches!(ended, PhaseEnded::Answered { .. }),
+        "the ceiling discarded a turn that had announced a tool call: {ended:?}"
+    );
+    assert_eq!(tools.ran.lock().unwrap().as_slice(), ["read_file"]);
+}

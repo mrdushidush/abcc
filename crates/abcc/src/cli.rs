@@ -205,6 +205,17 @@ pub struct Run {
     /// binds only the tool that has an argument (W7, four times) — the class is
     /// the thing that can be denied.
     pub ceiling: Option<Tier>,
+    /// 🚨 **How many characters of reasoning one turn may spend, and `0`
+    /// turns the stop off** (F831).
+    ///
+    /// It exists because a stop that cannot be disabled cannot be
+    /// **measured**. `a2468` is the case: the ceiling ended the first Change
+    /// phase the quality tier ever reached, correctly by every signal the
+    /// loop had — and *whether that turn would have produced anything* is
+    /// then unobservable, because the observation is the thing the stop
+    /// prevents. An operator running the arm that validates the rule needs to
+    /// be able to take the rule out of the path.
+    pub reasoning_ceiling: Option<usize>,
 }
 
 /// A task named on the command line, as `t42` or `42`.
@@ -265,6 +276,10 @@ run and fleet:
   --rounds <n>      tool rounds before the phase gives up
   --idle-gap <s>    seconds of silence on the stream that count as a hang
   --ceiling <tier>  cap every role in the slot: no-tools | read | write | exec
+  --reasoning-ceiling <n>
+                    characters of reasoning one turn may spend before abcc
+                    ends it; 0 turns the stop off, which is how the rule
+                    itself gets measured
 
 paint:
   --sprites <dir>   the sprite corpus (default: $ABCC_SPRITES)
@@ -584,6 +599,9 @@ fn run_args(args: &mut Vec<String>, per_task: bool) -> Result<Run, CliError> {
             .transpose()?,
         ceiling: take_flag(args, "--ceiling")?
             .map(|c| ceiling(&c))
+            .transpose()?,
+        reasoning_ceiling: take_flag(args, "--reasoning-ceiling")?
+            .map(|r| number(&r, "--reasoning-ceiling"))
             .transpose()?,
     };
     no_positionals(args, verb)?;
