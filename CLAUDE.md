@@ -197,19 +197,24 @@ do not reformat around it.
   500s. `content_empty` and the F498 comparison select *which* `Why` — never
   whether there is one. ⚠ `a422` was 8,209 + 8,192 = 16,401 against a 32,768
   window, so do not reach for the context window to explain a 500.
-- 🚨🚨 **A card's test must be shown RED on the unfixed tree, by running it
-  there. The gate cannot do this for you** (F832). It runs `cargo test` and
-  sees green whether or not the new test exercises the change, and **two of
-  three landed cards have carried a test that passes unfixed**: `SHELL-10`'s
-  child reads 0 bytes of stdin whether stdin is `null` or **inherited**,
-  because under `cargo test` the parent's stdin is already at EOF; and
-  `RUNTIME-10b` built its *deeply nested* JSON as `"[]"` repeated, which is
-  flat and errors on trailing content long before any depth check. Both
-  production fixes were correct and both tests proved nothing. ▶ The check is
-  cheap and there is no substitute: extract the test, put it on the pre-fix
-  tree, watch it fail. 🎉 The **judge** caught one of these and **decided
-  nothing**, which is ADR-0009 working — the first finding in this project's
-  history that the deterministic rungs could not produce.
+- 🚨🚨 **Checking the card's test is not checking the model's test, and only
+  the second one lands** (F832). The standing pre-queue rule — *prove the new
+  test fails against the unfixed source* — validates the artifact the **card
+  author** wrote. The model writes its own, and nothing looks at that one.
+  `RUNTIME-10b` is the case: its card test was verified RED before queueing,
+  the model wrote a different one — *deeply nested* JSON built as `"[]"`
+  **repeated**, which is flat and errors on trailing content long before any
+  depth check — and it landed MISSION ACCOMPLISHED with four green rungs. ▶ So
+  **extract the test the attempt actually wrote, put it on the pre-fix tree,
+  and watch it fail, before `land`.** The gate cannot do this for you: it runs
+  `cargo test` and sees green either way. ⚠ `SHELL-10`'s test also passes
+  unfixed — under `cargo test` the parent's stdin is already at EOF, so the
+  child reads 0 bytes whether stdin is `null` or **inherited** — but that was
+  **known when it was queued** and accepted as a regression guard, which is a
+  different thing from a test nobody checked. 🎉 The **judge** caught the
+  unchecked one and **decided nothing**, which is ADR-0009 working, and is the
+  first finding in this project's history the deterministic rungs could not
+  produce.
 - 🚨 **An inspecting tool's result the body already carries, byte for byte, is
   replaced by a back-reference** (F826, F828, F830). Thirteen byte-identical
   whole-file reads filled a 40,960 window inside one attempt and it died having
