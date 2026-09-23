@@ -376,7 +376,7 @@ fn a_denied_tool_is_refused_on_the_log_and_in_the_transcript() {
 /// a folded payload through the real tool layer and looked in the body, which is
 /// the only place the sentence has to arrive to be worth writing.
 #[test]
-fn a_folded_apply_patch_puts_write_file_in_the_model_s_own_transcript() {
+fn a_folded_apply_patch_puts_edit_file_in_the_model_s_own_transcript() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("first.txt"), "alpha\nbeta\n").expect("write");
     let workspace = Workspace::open(dir.path()).expect("open");
@@ -418,7 +418,7 @@ fn a_folded_apply_patch_puts_write_file_in_the_model_s_own_transcript() {
         told.content
     );
     assert!(
-        told.content.contains("write_file"),
+        told.content.contains("edit_file"),
         "the model reads the refusal and is offered no way out: {}",
         told.content
     );

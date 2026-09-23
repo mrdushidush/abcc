@@ -485,6 +485,10 @@ pub enum PatchError {
     /// whose problem is that it is not one diff. The round is spent either way;
     /// this at least spends it on a sentence the model can act on.
     ///
+    /// ⚠ **2026-09-23 (PLAN-TOOL B1): the offer now names `edit_file`**, which
+    /// needs a snippet rather than the whole file. The history below is why
+    /// there is an offer at all.
+    ///
     /// 🚨🚨 **F649: the sentence now names `write_file`, because a refusal its
     /// reader cannot act on is a loop with a receipt.** F641 put the fold in the
     /// **server's** tool-call parser, before abcc sees anything, so this message
@@ -517,7 +521,7 @@ pub enum PatchError {
          transcript and not a diff. Send one call, whose `diff` is only the unified diff text: \
          no `<tool_call>` wrappers, no commentary, and nothing after the last hunk. \
          If the next `apply_patch` is refused this way too, stop patching and use \
-         `write_file` instead: one call, `path`, and the file's whole new text in `content`."
+         `edit_file` instead: `path`, the exact `old_text` to replace, and its `new_text`."
     )]
     NotADiff { marker: String, line: usize },
     #[error("the diff is malformed: {detail}")]

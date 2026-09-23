@@ -302,7 +302,7 @@ fn a_diff_argument_carrying_tool_call_markup_is_refused_as_a_transcript() {
 /// record and not the transcript would pass that test and change nothing about
 /// the run — F647's rule, one layer down: assert the wire, not the fold.
 #[test]
-fn the_refusal_the_model_reads_offers_write_file_as_the_way_out() {
+fn the_refusal_the_model_reads_offers_edit_file_as_the_way_out() {
     let dir = tempfile::tempdir().expect("tempdir");
     write(dir.path(), "first.txt", "alpha\nbeta\n");
     let workspace = Workspace::open(dir.path()).expect("open");
@@ -312,23 +312,23 @@ fn the_refusal_the_model_reads_offers_write_file_as_the_way_out() {
     // ⚠ Not a tautology: the payload names neither tool, so every assertion
     // below is about the sentence and not about the fixture (F632).
     assert!(
-        !diff.contains("write_file"),
+        !diff.contains("edit_file"),
         "the fixture must not supply it"
     );
     assert!(
-        !diff.contains("content"),
+        !diff.contains("old_text"),
         "nor the argument being recommended"
     );
 
     let result = apply(&workspace, diff);
 
     assert!(
-        result.text.contains("write_file"),
+        result.text.contains("edit_file"),
         "the model is told to keep patching and nothing else: {}",
         result.text
     );
     assert!(
-        result.text.contains("content"),
+        result.text.contains("old_text"),
         "naming the tool without naming its argument spends a round: {}",
         result.text
     );
@@ -534,4 +534,32 @@ fn a_success_sentence_is_never_reported_over_an_unchanged_tree() {
         read(dir.path(), "src/lib.rs"),
         "alpha\nGAMMA\nbeta\nDELTA\n"
     );
+}
+
+/// PLAN-TOOL B1: all or nothing on the write side too. The second file's
+/// directory cannot be made (its parent is a file), so the first file, which
+/// applied cleanly in memory, must not have been written either.
+#[test]
+fn a_write_that_fails_part_way_leaves_every_file_as_it_was() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "first.txt", "alpha\nbeta\n");
+    write(dir.path(), "blocker", "a file, not a directory\n");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let diff = "--- a/first.txt\n+++ b/first.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA\n\
+                --- /dev/null\n+++ b/blocker/new.txt\n@@ -0,0 +1 @@\n+new\n";
+    let result = apply(&workspace, diff);
+
+    assert!(result.unmeasured.is_some(), "{}", result.text);
+    assert!(
+        result.text.contains("nothing was written"),
+        "{}",
+        result.text
+    );
+    assert_eq!(read(dir.path(), "first.txt"), "alpha\nbeta\n");
+    let names: Vec<_> = fs::read_dir(dir.path())
+        .expect("ls")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    assert_eq!(names.len(), 2, "a staging file was left: {names:?}");
 }

@@ -91,7 +91,7 @@ fn write_file_and_run_tests_cannot_both_be_had_below_exec() {
     );
 }
 
-/// 🚨🚨 **F649: `apply_patch`'s refusal names `write_file`, so no ceiling may
+/// 🚨🚨 **F649: `apply_patch`'s refusal names `edit_file`, so no ceiling may
 /// admit the first and deny the second.**
 ///
 /// A refusal that recommends a tool the role cannot have is worse than the one
@@ -112,7 +112,7 @@ fn every_ceiling_that_admits_apply_patch_admits_the_tool_its_refusal_names() {
     }
     .to_string();
     assert!(
-        refusal.contains("write_file"),
+        refusal.contains("edit_file"),
         "this test guards a recommendation the message no longer makes: {refusal}"
     );
 
@@ -124,7 +124,7 @@ fn every_ceiling_that_admits_apply_patch_admits_the_tool_its_refusal_names() {
         }
         admitted_anywhere = true;
         assert!(
-            policy.admits("write_file").is_ok(),
+            policy.admits("edit_file").is_ok(),
             "at ceiling {ceiling} the refusal recommends a tool the role cannot call"
         );
     }
@@ -179,6 +179,10 @@ fn only_builders_reaches_the_exec_class() {
     assert!(uncapped(Head::Commandos).tools().is_empty());
     assert!(
         uncapped(Head::Recon).policy().admits("write_file").is_err(),
+        "Recon is read-only and must not be able to edit"
+    );
+    assert!(
+        uncapped(Head::Recon).policy().admits("edit_file").is_err(),
         "Recon is read-only and must not be able to edit"
     );
 }

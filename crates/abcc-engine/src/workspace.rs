@@ -1,4 +1,4 @@
-//! The tool layer's working half: the five tools that touch files and the four
+//! The tool layer's working half: the six tools that touch files and the four
 //! that start a child, over one real directory.
 //!
 //! [`crate::tools`] decides *what a role may reach for*; this is what happens
@@ -56,6 +56,7 @@ use serde::Deserialize;
 
 use crate::child::{Finished, Spawn, ToolChild};
 use crate::control::Watch;
+use crate::edit;
 use crate::patch::{self, Patch};
 use crate::provider::ToolCall;
 use crate::tools::{Confinement, Denied, ToolSpec, destructive_git};
@@ -72,6 +73,14 @@ use crate::turn::{ToolResult, Tools};
 /// quarter of everything the model has for one read. It is a cap rather than a
 /// convenience, and exceeding it is **said** rather than silently trimmed.
 pub const MAX_READ_BYTES: usize = 64 * 1024;
+
+/// Lines `read_file` returns when the model names no `to_line` (PLAN-TOOL D2,
+/// claudette's `DEFAULT_READ_LINES`).
+pub const DEFAULT_READ_LINES: usize = 400;
+
+/// The most of an edited region `edit_file` echoes back, so the model can see
+/// the result without reading the file again.
+pub const MAX_ECHO_LINES: usize = 20;
 
 /// The most of one captured stream a tool result shows the model.
 ///
@@ -260,7 +269,7 @@ impl Toolchain {
 // The workspace
 // ---------------------------------------------------------------------------
 
-/// One attempt's working directory, and the nine tools over it.
+/// One attempt's working directory, and the ten tools over it.
 pub struct Workspace {
     root: PathBuf,
     toolchain: Option<Toolchain>,
@@ -338,6 +347,7 @@ impl Tools for Workspace {
             "read_file" => told(self.read_file(raw)),
             "list_files" => told(self.list_files(raw)),
             "search" => told(self.search(raw)),
+            "edit_file" => told(self.edit_file(raw)),
             "write_file" => told(self.write_file(raw)),
             "apply_patch" => told(self.apply_patch(raw)),
             "bash" => self.bash(raw).unwrap_or_else(refused),
@@ -356,7 +366,7 @@ impl Tools for Workspace {
 }
 
 // ---------------------------------------------------------------------------
-// The five that touch files
+// The six that touch files
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -385,6 +395,15 @@ struct SearchArgs {
 struct WriteArgs {
     path: String,
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditArgs {
+    path: String,
+    old_text: String,
+    new_text: String,
+    #[serde(default)]
+    replace_all: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -419,12 +438,26 @@ impl Workspace {
                 args.path
             ));
         }
-        let to = args.to_line.unwrap_or(total).clamp(from, total);
+        let to = args
+            .to_line
+            .unwrap_or(from + DEFAULT_READ_LINES - 1)
+            .clamp(from, total);
+        let shown = self.relative(&path);
         let (body, elided) = clamp(&lines[from - 1..to].join("\n"), MAX_READ_BYTES);
         let note = elided.map_or_else(String::new, |n| format!(", {n} bytes elided"));
+        // Only the default window says the file goes on: a range the model
+        // chose is the range it asked for.
+        let more = if args.to_line.is_none() && to < total {
+            format!(
+                "\n[{shown} continues to line {total}. Read from_line={} for more, or \
+                 search for the line you need. Do not re-read lines {from}-{to}.]",
+                to + 1
+            )
+        } else {
+            String::new()
+        };
         Ok(format!(
-            "{} lines {from}-{to} of {total}{note}\n{body}",
-            self.relative(&path)
+            "{shown} lines {from}-{to} of {total}{note}\n{body}{more}"
         ))
     }
 
@@ -526,6 +559,57 @@ impl Workspace {
         ))
     }
 
+    /// Replace one unique snippet of an existing file, atomically: the new text
+    /// goes to a sibling temporary file that is renamed over the original, so a
+    /// failure leaves the file as it was.
+    fn edit_file(&self, raw: &str) -> Result<String, String> {
+        let args: EditArgs = parse(raw, "edit_file")?;
+        let path = self.resolve("edit_file", &args.path)?;
+        let shown = self.relative(&path);
+        if !path.is_file() {
+            return Err(format!(
+                "edit_file: {shown} does not exist. edit_file changes an existing file; \
+                 write_file creates a new one."
+            ));
+        }
+        let bytes =
+            fs::read(&path).map_err(|e| format!("edit_file: {shown} could not be read: {e}"))?;
+        let content = String::from_utf8(bytes)
+            .map_err(|_| format!("edit_file: {shown} is not UTF-8 and cannot be edited"))?;
+        let edited = edit::replace(&content, &args.old_text, &args.new_text, args.replace_all)
+            .map_err(|e| format!("edit_file: {shown}: {e}"))?;
+        write_atomically(&path, &edited.content)
+            .map_err(|e| format!("edit_file: {shown} could not be written: {e}"))?;
+
+        let total = edited.content.lines().count();
+        let what = if edited.replacements == 1 {
+            format!("replaced 1 occurrence at line {}", edited.line)
+        } else {
+            format!(
+                "replaced {} occurrences, the first at line {}",
+                edited.replacements, edited.line
+            )
+        };
+        let mut out = format!("edited {shown}: {what}; the file now has {total} lines");
+        // Echo the region as it now reads, a line either side, so checking the
+        // edit does not cost a re-read.
+        if edited.replacements == 1 && total > 0 {
+            let new_lines = args.new_text.lines().count();
+            let from = edited.line.saturating_sub(1).max(1);
+            let to = (edited.line + new_lines).min(total);
+            if to >= from && to - from < MAX_ECHO_LINES {
+                let region: Vec<&str> = edited
+                    .content
+                    .lines()
+                    .skip(from - 1)
+                    .take(to + 1 - from)
+                    .collect();
+                let _ = write!(out, "\nlines {from}-{to} now read:\n{}", region.join("\n"));
+            }
+        }
+        Ok(out)
+    }
+
     fn write_file(&self, raw: &str) -> Result<String, String> {
         let args: WriteArgs = parse(raw, "write_file")?;
         let path = self.resolve("write_file", &args.path)?;
@@ -599,22 +683,66 @@ impl Workspace {
             }
         }
 
+        // All or nothing on the write side too: every new file is staged to a
+        // temporary sibling first, and only when all of them are on disk are
+        // they renamed into place and the deletions made.
+        let mut ready: Vec<(PathBuf, PathBuf)> = Vec::new();
         for (path, new) in &staged {
-            match new {
-                Some(content) => {
-                    if let Some(parent) = path.parent() {
-                        fs::create_dir_all(parent)
-                            .map_err(|e| format!("apply_patch: {}: {e}", path.display()))?;
-                    }
-                    fs::write(path, content)
-                        .map_err(|e| format!("apply_patch: {}: {e}", path.display()))?;
+            let Some(content) = new else { continue };
+            let tmp = staging_path(path);
+            let written = path
+                .parent()
+                .map_or(Ok(()), fs::create_dir_all)
+                .and_then(|()| fs::write(&tmp, content));
+            if let Err(e) = written {
+                let _ = fs::remove_file(&tmp);
+                for (tmp, _) in &ready {
+                    let _ = fs::remove_file(tmp);
                 }
-                None => fs::remove_file(path)
-                    .map_err(|e| format!("apply_patch: {}: {e}", path.display()))?,
+                return Err(format!(
+                    "apply_patch: {}: {e}; nothing was written",
+                    path.display()
+                ));
+            }
+            ready.push((tmp, path.clone()));
+        }
+        for (tmp, path) in &ready {
+            fs::rename(tmp, path).map_err(|e| {
+                let _ = fs::remove_file(tmp);
+                format!("apply_patch: {}: {e}", path.display())
+            })?;
+        }
+        for (path, new) in &staged {
+            if new.is_none() {
+                fs::remove_file(path)
+                    .map_err(|e| format!("apply_patch: {}: {e}", path.display()))?;
             }
         }
         Ok(patch::summarise(&applied))
     }
+}
+
+/// A temporary sibling of `path`, in the same directory so the rename that
+/// replaces the original never crosses a filesystem.
+fn staging_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+    path.with_file_name(format!(".{name}.abcc-tmp"))
+}
+
+/// Write `content` to `path` through a temporary sibling and a rename, keeping
+/// the original's permissions.
+fn write_atomically(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp = staging_path(path);
+    let written = fs::write(&tmp, content)
+        .and_then(|()| fs::metadata(path))
+        .and_then(|m| fs::set_permissions(&tmp, m.permissions()))
+        .and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// One walker, configured the same way for both tools that use it.

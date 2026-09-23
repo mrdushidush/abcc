@@ -1,4 +1,4 @@
-//! The nine tools over a real directory.
+//! The ten tools over a real directory.
 //!
 //! Nothing here is simulated. The claims are about a filesystem — what an ignore
 //! rule hides, what a path check refuses, what a walk actually visited — and a
@@ -226,6 +226,183 @@ fn read_file_says_how_long_the_file_is_when_the_range_is_past_it() {
         r#"{"path":"short.txt","from_line":40}"#,
     ));
     assert!(sentence.contains("has 2 lines"), "{sentence}");
+}
+
+fn numbered(n: usize) -> String {
+    (1..=n).fold(String::new(), |mut acc, i| {
+        let _ = writeln!(acc, "L{i}");
+        acc
+    })
+}
+
+/// PLAN-TOOL D2: with no `to_line` a read is a 400-line window, the header
+/// still says which lines of how many (F826 reads it), and the answer says how
+/// to page on.
+#[test]
+fn read_file_is_a_window_by_default_and_says_where_the_file_goes_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "long.txt", &numbered(1000));
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let text = run(&workspace, "read_file", r#"{"path":"long.txt"}"#).text;
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "long.txt lines 1-400 of 1000");
+    assert_eq!(lines[1], "L1");
+    assert_eq!(lines[400], "L400");
+    assert!(!text.contains("L401\n"), "the window overran");
+    assert!(text.contains("from_line=401"), "no way to page on: {text}");
+
+    let next = run(
+        &workspace,
+        "read_file",
+        r#"{"path":"long.txt","from_line":801}"#,
+    )
+    .text;
+    assert!(
+        next.starts_with("long.txt lines 801-1000 of 1000\n"),
+        "{next}"
+    );
+    assert!(
+        !next.contains("continues"),
+        "the last window says it goes on: {next}"
+    );
+}
+
+/// A range the model chose is served as asked, with no paging note.
+#[test]
+fn read_file_serves_an_explicit_range_past_the_window() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "long.txt", &numbered(1000));
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let text = run(
+        &workspace,
+        "read_file",
+        r#"{"path":"long.txt","from_line":1,"to_line":900}"#,
+    )
+    .text;
+    assert!(text.starts_with("long.txt lines 1-900 of 1000\n"), "{text}");
+    assert!(text.contains("\nL900"), "{text}");
+    assert!(!text.contains("continues"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// edit_file
+// ---------------------------------------------------------------------------
+
+#[test]
+fn edit_file_replaces_a_unique_snippet_and_echoes_the_region() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "src/a.rs", "fn a() {\n    old();\n}\n");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let result = run(
+        &workspace,
+        "edit_file",
+        r#"{"path":"src/a.rs","old_text":"    old();\n","new_text":"    new();\n"}"#,
+    );
+    assert_eq!(result.unmeasured, None, "{}", result.text);
+    assert_eq!(result.exit, None, "a file tool has no exit status");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src/a.rs")).expect("read"),
+        "fn a() {\n    new();\n}\n"
+    );
+    assert!(
+        result
+            .text
+            .starts_with("edited src/a.rs: replaced 1 occurrence at line 2"),
+        "{}",
+        result.text
+    );
+    assert!(
+        result
+            .text
+            .contains("lines 1-3 now read:\nfn a() {\n    new();\n}"),
+        "{}",
+        result.text
+    );
+    let leftovers: Vec<_> = fs::read_dir(dir.path().join("src"))
+        .expect("ls")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    assert_eq!(
+        leftovers.len(),
+        1,
+        "the staging file was left: {leftovers:?}"
+    );
+}
+
+/// The `SEC-06` shape: delete a block with an empty `new_text`.
+#[test]
+fn edit_file_deletes_with_an_empty_new_text() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "x.txt", "a\nb\nc\nd\n");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let result = run(
+        &workspace,
+        "edit_file",
+        r#"{"path":"x.txt","old_text":"b\nc\n","new_text":""}"#,
+    );
+    assert_eq!(result.unmeasured, None, "{}", result.text);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("x.txt")).expect("read"),
+        "a\nd\n"
+    );
+}
+
+#[test]
+fn edit_file_refuses_an_ambiguous_snippet_and_leaves_the_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "x.txt", "same\nsame\n");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let sentence = refusal(&run(
+        &workspace,
+        "edit_file",
+        r#"{"path":"x.txt","old_text":"same","new_text":"other"}"#,
+    ));
+    assert!(sentence.starts_with("edit_file: x.txt: "), "{sentence}");
+    assert!(sentence.contains("appears 2 times"), "{sentence}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("x.txt")).expect("read"),
+        "same\nsame\n"
+    );
+}
+
+#[test]
+fn edit_file_on_a_missing_file_points_at_write_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = Workspace::open(dir.path()).expect("open");
+
+    let sentence = refusal(&run(
+        &workspace,
+        "edit_file",
+        r#"{"path":"nope.txt","old_text":"a","new_text":"b"}"#,
+    ));
+    assert!(sentence.contains("does not exist"), "{sentence}");
+    assert!(sentence.contains("write_file"), "{sentence}");
+    assert!(!dir.path().join("nope.txt").exists());
+}
+
+/// The argument check binds `edit_file` like every other file tool.
+#[test]
+fn edit_file_cannot_leave_the_workspace() {
+    let outer = tempfile::tempdir().expect("tempdir");
+    fs::create_dir(outer.path().join("inside")).expect("mkdir");
+    fs::write(outer.path().join("secret.txt"), "keep").expect("write");
+    let workspace = Workspace::open(outer.path().join("inside")).expect("open");
+
+    let sentence = refusal(&run(
+        &workspace,
+        "edit_file",
+        r#"{"path":"../secret.txt","old_text":"keep","new_text":"gone"}"#,
+    ));
+    assert!(sentence.contains("outside the workspace"), "{sentence}");
+    assert_eq!(
+        fs::read_to_string(outer.path().join("secret.txt")).expect("read"),
+        "keep"
+    );
 }
 
 // ---------------------------------------------------------------------------

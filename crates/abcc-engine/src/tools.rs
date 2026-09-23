@@ -203,7 +203,13 @@ pub const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "read_file",
         reach: Reach::Inspects,
-        summary: "Read a file from the workspace, optionally a line range.",
+        // PLAN-TOOL D2: whole-file reads were 54% of calls and 92.5% of bytes
+        // (F826). The default is a window, the way claudette reads.
+        summary: concat!(
+            "Read a file from the workspace: 400 lines from from_line (default 1), or ",
+            "exactly from_line..to_line. The first line of the answer says which lines ",
+            "of how many you got. Do not re-read a range you already have."
+        ),
         schema: concat!(
             r#"{"type":"object","properties":{"path":{"type":"string"},"#,
             r#""from_line":{"type":"integer","minimum":1},"#,
@@ -231,10 +237,32 @@ pub const TOOLS: &[ToolSpec] = &[
             r#""required":["pattern"],"additionalProperties":false}"#
         ),
     },
+    // PLAN-TOOL D1/H1: the editor that needs only a unique snippet, not the
+    // whole file or exact line numbers. Listed before the other two editors
+    // because the head lists tools in registry order.
+    ToolSpec {
+        name: "edit_file",
+        reach: Reach::Edits,
+        summary: concat!(
+            "Change part of an existing file: replace old_text, copied exactly from ",
+            "the file and found there exactly once, with new_text. An empty new_text ",
+            "deletes it. replace_all replaces every occurrence instead. This is the ",
+            "way to modify a file."
+        ),
+        schema: concat!(
+            r#"{"type":"object","properties":{"path":{"type":"string"},"#,
+            r#""old_text":{"type":"string"},"new_text":{"type":"string"},"#,
+            r#""replace_all":{"type":"boolean"}},"#,
+            r#""required":["path","old_text","new_text"],"additionalProperties":false}"#
+        ),
+    },
     ToolSpec {
         name: "write_file",
         reach: Reach::Edits,
-        summary: "Write a file in the workspace, creating it if it does not exist.",
+        summary: concat!(
+            "Create a new file with the whole of its content. ",
+            "To modify an existing file use edit_file."
+        ),
         schema: concat!(
             r#"{"type":"object","properties":{"path":{"type":"string"},"#,
             r#""content":{"type":"string"}},"#,
@@ -244,7 +272,7 @@ pub const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "apply_patch",
         reach: Reach::Edits,
-        summary: "Apply a unified diff to the workspace.",
+        summary: "Apply a unified diff to the workspace, all hunks or none.",
         schema: concat!(
             r#"{"type":"object","properties":{"diff":{"type":"string"}},"#,
             r#""required":["diff"],"additionalProperties":false}"#
