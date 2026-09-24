@@ -77,10 +77,41 @@ pub fn localize(row: &TaskRow, redirect: Option<&str>, refused: Option<&Refusal>
          the tree, so look as widely as you need to. When you know where the work \
          goes, say so and stop asking for tools.\n",
         row.title,
-        row.prompt,
+        without_recipe(&row.prompt),
         redirected(redirect),
         refused_before(refused)
     )
+}
+
+/// 🧪 **F839 probe (b): the task as Recon sees it, without the card's recipe.**
+///
+/// F839: on `edit_06` `edit_09` `sec_04` `shell_04` Recon never answers — it
+/// drafts the implementation inside a read-only phase until the reasoning
+/// ceiling, and the brief it drafts from carries the card's whole `THE FIX`
+/// section. This drops that section, from a line starting `THE FIX` to the next
+/// line that opens with an all-capitals word of four letters or more (`A TEST`,
+/// `TESTS`, `HARD CONSTRAINTS`). Builders still gets the whole prompt.
+///
+/// ⚠ **Keyed on the R cards' own layout**, so it is a probe and not a design: a
+/// prompt without that heading passes through unchanged.
+fn without_recipe(prompt: &str) -> String {
+    let heading = |line: &str| {
+        let line = line.strip_prefix("A ").unwrap_or(line);
+        line.chars().take_while(char::is_ascii_uppercase).count() >= 4
+    };
+    let mut kept = Vec::new();
+    let mut skipping = false;
+    for line in prompt.lines() {
+        if line.starts_with("THE FIX") {
+            skipping = true;
+        } else if skipping && heading(line) {
+            skipping = false;
+        }
+        if !skipping {
+            kept.push(line);
+        }
+    }
+    kept.join("\n")
 }
 
 /// 🚨 **F646: what the operator said to do instead, if they said anything.**
