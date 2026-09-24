@@ -56,6 +56,14 @@ const NO_ANSWER: &str = "Your last turn produced no reply text at all: the reaso
                          nothing was said. Only the reply is visible to anyone — the reasoning \
                          is not, and it is not kept. Say the answer now, in the reply itself.";
 
+/// 🧪 F841 probe (a'): what follows a tool call recovered from the reasoning.
+/// [`NO_ANSWER`]'s mechanism sentence, plus the call having been run — so the
+/// push to answer survives the recovery (F841 addendum, `edit_10`).
+const RECOVERED: &str = "Your last turn wrote its tool call inside the reasoning and said nothing \
+                         in the reply, so the call was never sent; it has been run for you and the \
+                         result is above. Only the reply is visible to anyone. If you already know \
+                         enough, say the answer now, in the reply itself.";
+
 // ---------------------------------------------------------------------------
 // The re-read guard
 // ---------------------------------------------------------------------------
@@ -683,6 +691,15 @@ impl<'a> TurnLoop<'a> {
             }
 
             self.tool_round(posting, attempt, &turn, body, journal, &mut report);
+
+            // 🧪 F841 probe (a'): keep the push the nudge used to give. F841's
+            // addendum: on `edit_10` the NO_ANSWER nudge at an empty stop is what
+            // ended Recon (3 of 3 in A3); recovering the call instead kept Recon
+            // reading to the ceiling. So the recovered turn is run AND followed
+            // by the same kind of sentence, naming what happened.
+            if recovered > 0 {
+                body.append(Message::user(RECOVERED));
+            }
         }
 
         Ending::Unmeasured(Why::BudgetExhausted {
