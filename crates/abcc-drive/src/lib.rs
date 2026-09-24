@@ -372,8 +372,27 @@ impl<'a> Driver<'a> {
             control,
         )?;
 
-        let change = match &localize {
-            PhaseEnded::Answered { text, .. } => Some(self.phase(
+        // 🧪 **F839 probe (d): a Recon that never answered hands Builders the
+        // task anyway.** F837/F839: 24 of 28 R+K failures end in Recon with no
+        // edit — drafting the fix in a read-only phase until the ceiling, or a
+        // tool call written inside the reasoning — on cards whose prompt already
+        // names the file and the lines. So an unmeasured Recon becomes a report
+        // that says so, instead of the end of the attempt. The absence is still
+        // on the log as Recon's own ending; this only decides what runs next.
+        let unreported;
+        let found = match &localize {
+            PhaseEnded::Answered { text, .. } => Some(text.as_str()),
+            PhaseEnded::Unmeasured { why, .. } => {
+                unreported = format!(
+                    "Recon did not report: {why}. Nothing it found reached you, so find \
+                     the place yourself from the task above before you change it."
+                );
+                Some(unreported.as_str())
+            }
+            PhaseEnded::Stopped { .. } => None,
+        };
+        let change = match found {
+            Some(text) => Some(self.phase(
                 Call {
                     attempt,
                     phase: AttemptPhase::Change,
@@ -384,9 +403,7 @@ impl<'a> Driver<'a> {
                 brief::change(&row, text, self.redirect.as_deref(), refused.as_ref()),
                 control,
             )?),
-            // No artifact to hand over. Running Builders on an absence would
-            // spend a second model call to produce a second absence.
-            PhaseEnded::Stopped { .. } | PhaseEnded::Unmeasured { .. } => None,
+            None => None,
         };
 
         self.land(&row, attempt, opened, &localize, change.as_ref(), control)
