@@ -665,6 +665,23 @@ impl<'a> TurnLoop<'a> {
                 return PhaseEnded::Answered { text, report };
             }
 
+            // 🧪 F841 probe (a): on the log, so a recovered turn is counted
+            // rather than inferred. See `openai::calls_in_reasoning`.
+            let recovered = turn
+                .tool_calls
+                .iter()
+                .filter(|c| c.id.starts_with("from_reasoning_"))
+                .count();
+            if recovered > 0 {
+                journal.record(Event::Note {
+                    text: format!(
+                        "F841 probe: {recovered} tool call(s) recovered from the reasoning of \
+                         a stop turn by {}",
+                        posting.call_sign()
+                    ),
+                });
+            }
+
             self.tool_round(posting, attempt, &turn, body, journal, &mut report);
         }
 
