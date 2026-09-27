@@ -53,6 +53,14 @@ const HELP: &str = concat!(
     "  Esc or Ctrl-C while it works stops that turn; then say what to do instead",
 );
 
+/// Tool rounds the model gets per thing the operator says, unless `--rounds`.
+///
+/// A batch attempt gets 24 for Recon and another 24 for Builders; a chat is one
+/// conversation, so 24 was half of what it replaced. The first chat over K
+/// (2026-09-27) ran out on `finish_the_cancelled_status` mid-fix. 40 is
+/// claudette's own cap (`DEFAULT_MAX_ITERATIONS`), which PLAN-TOOL D7 names.
+const CHAT_ROUNDS: u32 = 40;
+
 /// Run `abcc chat`.
 ///
 /// # Errors
@@ -111,6 +119,9 @@ pub fn chat(
     }
     let mut limits = limits_for(&run);
     limits.evict_window = evict_window;
+    if run.rounds.is_none() {
+        limits.rounds = CHAT_ROUNDS;
+    }
     let ceiling = run.ceiling.unwrap_or(Tier::Exec);
 
     writeln!(out, "\nchat on {task}: {}\n{HELP}\n", row.title)?;
