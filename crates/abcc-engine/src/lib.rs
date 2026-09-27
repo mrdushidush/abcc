@@ -42,6 +42,7 @@
 pub mod child;
 pub mod control;
 pub mod edit;
+pub mod evict;
 pub mod head;
 pub mod openai;
 pub mod patch;

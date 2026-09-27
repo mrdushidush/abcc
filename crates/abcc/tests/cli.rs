@@ -501,3 +501,20 @@ fn the_temperature_is_zero_unless_the_run_asks_for_the_server_s() {
     );
     assert!(parse("run --task t7 --temperature 0.7").is_err());
 }
+
+/// Eviction is off unless asked for, on `run` and on `fleet` alike. The window
+/// itself comes from the server at confirm time, never from the flag.
+#[test]
+fn eviction_is_off_unless_the_run_asks_for_it() {
+    let evict = |line: &str| match parse(line).expect("parse").command {
+        Command::Run(run) | Command::Fleet(run) => run.evict,
+        _ => panic!("expected run or fleet"),
+    };
+    assert!(!evict("run --task t7"));
+    assert!(evict("run --task t7 --evict"));
+    assert!(evict("fleet --evict"));
+    assert_eq!(
+        abcc::run::limits_for(&cli::Run::default()).evict_window,
+        None
+    );
+}

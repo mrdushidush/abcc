@@ -27,6 +27,7 @@ use abcc_core::seq::{Seq, TaskId, UnitId};
 use abcc_core::task::TaskState;
 use abcc_drive::{Driver, Landed};
 use abcc_engine::control::ControlPoint;
+use abcc_engine::evict;
 use abcc_engine::openai::OpenAiCompat;
 use abcc_engine::tools::Tier;
 use abcc_engine::turn::{Limits, PhaseEnded, PhaseReport};
@@ -65,7 +66,10 @@ pub fn attempt(
     // 🚨 Before the checkpoint, before the worktree, before the slot. Everything
     // after this point costs real time and produces real records, and all of it
     // would be about the wrong model.
-    let model = confirm_model(&mut store, run, out)?;
+    let Confirmed {
+        model,
+        evict_window,
+    } = confirm_model(&mut store, run, out)?;
 
     let base = ops::base_url(run.base_url.as_deref());
     let mut provider = OpenAiCompat::new(&base)?;
@@ -73,7 +77,8 @@ pub fn attempt(
         provider = provider.with_api_key(key);
     }
 
-    let limits = limits_for(run);
+    let mut limits = limits_for(run);
+    limits.evict_window = evict_window;
     let unit = UnitId(run.unit.unwrap_or(0));
     let (mut control, handle) = ControlPoint::new();
 
@@ -203,7 +208,7 @@ pub(crate) fn confirm_model(
     store: &mut Store,
     run: &cli::Run,
     out: &mut impl Write,
-) -> Result<String, AppError> {
+) -> Result<Confirmed, AppError> {
     let asked = ops::model_name(run.model.as_deref())?;
     let base = ops::base_url(run.base_url.as_deref());
     let listing = confirm::served(&base, ops::api_key().as_deref())?;
@@ -215,6 +220,24 @@ pub(crate) fn confirm_model(
     let note = verdict.note(&asked);
     store.append(Event::Note { text: note.clone() })?;
     writeln!(out, "model {note}")?;
+
+    // B3: `--evict` needs the window the server actually loaded (F818). Without
+    // it there is no line to evict at, so it is off and the log says why.
+    let evict_window = if run.evict {
+        let window = listing.window().map(|w| w as usize);
+        let text = match window {
+            Some(w) => format!(
+                "evict: on, at {}% of the {w}-token window",
+                evict::TRIGGER_PERCENT
+            ),
+            None => "evict: asked for, but the server did not report its window, so off".to_owned(),
+        };
+        store.append(Event::Note { text: text.clone() })?;
+        writeln!(out, "{text}")?;
+        window
+    } else {
+        None
+    };
 
     // 🚨 F539, on the path that spends the budget. A wedged server serves the
     // right model and answers nothing, so the listing above confirms it and the
@@ -254,7 +277,17 @@ pub(crate) fn confirm_model(
     if beat.refuses() {
         return Err(AppError::Refused(pulse::refusal_advice(&beat)));
     }
-    Ok(asked)
+    Ok(Confirmed {
+        model: asked,
+        evict_window,
+    })
+}
+
+/// What [`confirm_model`] settled before anything was spent.
+pub(crate) struct Confirmed {
+    pub model: String,
+    /// Set only when `--evict` was asked for and the server reported its window.
+    pub evict_window: Option<usize>,
 }
 
 /// Check the weights against their pin, write the event, and say so.

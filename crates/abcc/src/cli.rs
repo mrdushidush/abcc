@@ -218,6 +218,9 @@ pub struct Run {
     pub reasoning_ceiling: Option<usize>,
     /// `--temperature 0|server`. `None` is the engine's default, which is `0`.
     pub temperature: Option<Temperature>,
+    /// `--evict`: stub stale tool results before the server's window fills
+    /// (PLAN-TOOL B3). Off by default until the bench rules on it.
+    pub evict: bool,
 }
 
 /// A task named on the command line, as `t42` or `42`.
@@ -284,6 +287,8 @@ run and fleet:
                     itself gets measured
   --temperature <t> 0 (the default) or server, which sends none and leaves it
                     to the server
+  --evict           stub stale tool results at 60% of the server's window,
+                    rather than let the server cut the middle
 
 paint:
   --sprites <dir>   the sprite corpus (default: $ABCC_SPRITES)
@@ -610,6 +615,7 @@ fn run_args(args: &mut Vec<String>, per_task: bool) -> Result<Run, CliError> {
         temperature: take_flag(args, "--temperature")?
             .map(|t| t.parse().map_err(CliError::Usage))
             .transpose()?,
+        evict: take_switch(args, "--evict"),
     };
     no_positionals(args, verb)?;
     Ok(run)

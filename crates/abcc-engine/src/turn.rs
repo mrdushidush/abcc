@@ -34,6 +34,7 @@ use abcc_core::redact::{Scrubbed, Secrets};
 use abcc_core::seq::AttemptId;
 
 use crate::control::{ControlPoint, Disposition, Stop};
+use crate::evict;
 use crate::head::{Head, Posting};
 use crate::provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderError, Role, Schema, Temperature, ToolCall,
@@ -330,6 +331,10 @@ pub struct Limits {
     pub reasoning_ceiling: usize,
     /// What every call in the loop sends as its temperature. See [`Temperature`].
     pub temperature: Temperature,
+    /// The server's loaded window in tokens, when stale tool results should be
+    /// stubbed before it fills (`crate::evict`, PLAN-TOOL B3). `None` is off,
+    /// the default until the bench rules on it.
+    pub evict_window: Option<usize>,
 }
 
 impl Default for Limits {
@@ -350,6 +355,7 @@ impl Default for Limits {
             // Derived, not chosen; see the field.
             reasoning_ceiling: 50_000,
             temperature: Temperature::Zero,
+            evict_window: None,
         }
     }
 }
@@ -600,6 +606,14 @@ impl<'a> TurnLoop<'a> {
         let mut nudges = self.limits.nudges;
 
         for round in 0..self.limits.rounds {
+            // B3: abcc decides what leaves the context before the server has to.
+            if let Some(window) = self.limits.evict_window
+                && let Some(evicted) = evict::stale(body, posting.prefix(), window)
+            {
+                journal.record(Event::Note {
+                    text: format!("{attempt} {}", evicted.note(window)),
+                });
+            }
             let asking = Asking { posting, schema };
             let turn = match self.one_turn(asking, attempt, round, body, control, journal) {
                 Ok(turn) => turn,

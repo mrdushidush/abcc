@@ -223,6 +223,13 @@ impl Body {
         &self.messages
     }
 
+    /// For [`crate::evict`] only, which replaces stale tool output with a stub
+    /// of its own text. Crate-private so every other path onto the body stays
+    /// `append` of a [`Scrubbed`] result.
+    pub(crate) fn messages_mut(&mut self) -> &mut [Message] {
+        &mut self.messages
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.messages.len()

@@ -68,7 +68,10 @@ pub fn sortie(
     // Before the board is touched, for the same reason `run` does it here:
     // everything after this point costs real time and would be about the wrong
     // model.
-    let model = run::confirm_model(&mut store, args, out)?;
+    let run::Confirmed {
+        model,
+        evict_window,
+    } = run::confirm_model(&mut store, args, out)?;
 
     let base = ops::base_url(args.base_url.as_deref());
     let mut provider = OpenAiCompat::new(&base)?;
@@ -107,7 +110,10 @@ pub fn sortie(
         model,
         ground.home.worktrees(),
     )
-    .limits(run::limits_for(args))
+    .limits(abcc_engine::turn::Limits {
+        evict_window,
+        ..run::limits_for(args)
+    })
     .secrets(ops::secrets())
     .in_flight(in_flight)
     .stand_down(stand_down);
