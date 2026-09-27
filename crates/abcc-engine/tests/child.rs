@@ -139,13 +139,21 @@ fn the_operators_environment_does_not_reach_the_child() {
     // about the interpreter and not about `ToolChild`. Giving the production
     // spawner a no-environment mode to answer it would add an API that only a
     // test wants.
+    //
+    // ⚠ Through `sh`, as `dump_env` is, and never bare `env`: dash puts `PWD`
+    // into its own environment at startup, so a bare `env` baseline left it out
+    // and this was red on every ubuntu runner, where the test process has `PWD`
+    // too. The probe has to be the same interpreter as the dump.
     let probe = if cfg!(windows) {
         std::process::Command::new("cmd")
             .args(["/c", "set"])
             .env_clear()
             .output()
     } else {
-        std::process::Command::new("env").env_clear().output()
+        std::process::Command::new("sh")
+            .args(["-c", "env"])
+            .env_clear()
+            .output()
     }
     .expect("baseline probe");
     let baseline: Vec<String> = String::from_utf8_lossy(&probe.stdout)
