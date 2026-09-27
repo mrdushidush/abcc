@@ -26,8 +26,9 @@ cargo install --path crates\abcc --locked
 
 It lands in `~\.cargo\bin`, which is already on PATH. ⚠ **It is a copy, not
 a link**: after you land a change to abcc itself, re-run that line or you are
-driving with the binary from before the change. `abcc --version` does not tell
-you — the version string only moves when `Cargo.toml` does.
+driving with the binary from before the change. `abcc --version` tells you: it
+names the commit it was built from (`abcc 0.1.0+62adf13`), so compare it with
+`git log -1 --format=%h`.
 
 Then name the model once, in the profile, so every shell you open already has it:
 

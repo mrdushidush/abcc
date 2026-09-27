@@ -40,12 +40,24 @@ long-form runbook** — the five-word daily loop, what to do
 when a task stalls, and how to write a task that lands. This section is the verb
 list it rests on.
 
+**The daily way in is `abcc chat`**, in a checkout of your own: you talk, the
+model edits in a worktree, `/done` runs the repository's checks and shows the
+diff, and `y` commits it. ⚠ **Only a repository the gate can check can land.**
+The checks are found by witness file: a `Cargo.toml` (`cargo test`, plus
+`cargo fmt --check` and `cargo clippy -D warnings` when there is a
+`clippy.toml`) or a Python project (`pyproject.toml`, `setup.py`, `pytest.ini`
+or `tox.ini`: `python -m pytest`). With neither, nothing can
+measure the work, so nothing lands; the chat still edits and `/diff` still
+shows it.
+
 ```
 abcc where                       where this repository's log and worktrees live
+abcc check                       ask the server which model it is holding
 abcc chat "make one() return two"   work on it together: you talk, it edits
 abcc task "make one() return two"   put a task on the board
 abcc run --task t3               one attempt, Localize then Change
 abcc board                       the board, from the projection
+abcc diff t3                     what the attempt wrote, as a patch
 abcc land t3                     a green attempt becomes a commit on this branch
 abcc replay t3                   after-action: how a task got where it is
 abcc watch                       the reader, over the event log alone
