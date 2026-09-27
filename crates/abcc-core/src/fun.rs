@@ -520,6 +520,7 @@ pub const fn in_flight(event: &Event) -> bool {
         | Event::TaskTransitioned { .. }
         | Event::CommandRefused { .. }
         | Event::OperatorAnswered { .. }
+        | Event::OperatorSaid { .. }
         | Event::ReviewRecorded { .. }
         // An operator verb, typed long after the sortie it lands work from.
         | Event::ChangeLanded { .. }

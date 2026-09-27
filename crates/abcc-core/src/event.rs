@@ -481,6 +481,13 @@ pub enum Event {
         prompt: PromptId,
         answer: String,
     },
+    /// A line the operator typed into `abcc chat`, exactly as the model received
+    /// it. With the brief and the tool results, it is the whole conversation, so
+    /// a chat replays from the log like any other attempt.
+    OperatorSaid {
+        attempt: AttemptId,
+        text: Scrubbed,
+    },
     /// A control verb arriving from the console. It is written here first and the
     /// in-memory poke is a latency optimisation, never the truth (ADR-0006).
     ControlRequested {
@@ -811,6 +818,7 @@ impl Event {
             | Event::PhaseNudged { attempt, .. }
             | Event::PhaseEnded { attempt, .. }
             | Event::OperatorPrompted { attempt, .. }
+            | Event::OperatorSaid { attempt, .. }
             | Event::ChangeLanded { attempt, .. }
             | Event::LivenessMark { attempt, .. } => Some(*attempt),
             _ => None,
@@ -847,6 +855,7 @@ impl Event {
             Event::WorktreeClosed { .. } => "worktree_closed",
             Event::OperatorPrompted { .. } => "operator_prompted",
             Event::OperatorAnswered { .. } => "operator_answered",
+            Event::OperatorSaid { .. } => "operator_said",
             Event::ControlRequested { .. } => "control_requested",
             Event::ControlApplied { .. } => "control_applied",
             Event::LivenessMark { .. } => "liveness_mark",

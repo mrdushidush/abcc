@@ -116,12 +116,30 @@ pub fn task(
 ) -> Result<(), AppError> {
     let ground = ground(invocation)?;
     let mut store = open_log(&ground.home)?;
-    let mission = match latest_mission(&store)? {
+    let (id, title) = new_task(&mut store, &ground, prompt, title)?;
+    writeln!(out, "{id}  queued  {title}")?;
+    writeln!(out, "\nrun it with:  abcc run --task {id}")?;
+    Ok(())
+}
+
+/// Write one task onto the log, under the latest mission or a new one, and say
+/// which id and title it got. `abcc task` and `abcc chat` both start here.
+///
+/// # Errors
+///
+/// [`AppError`] if the log will not take the writes.
+pub(crate) fn new_task(
+    store: &mut Store,
+    ground: &Ground,
+    prompt: &str,
+    title: Option<&str>,
+) -> Result<(TaskId, String), AppError> {
+    let mission = match latest_mission(store)? {
         Some(id) => id,
         None => MissionId::at(
             store
                 .append(Event::MissionCreated {
-                    title: default_mission_title(&ground),
+                    title: default_mission_title(ground),
                 })?
                 .seq,
         ),
@@ -135,10 +153,7 @@ pub fn task(
         title: title.clone(),
         prompt: prompt.to_owned(),
     })?;
-    let id = TaskId::at(created.seq);
-    writeln!(out, "{id}  queued  {title}")?;
-    writeln!(out, "\nrun it with:  abcc run --task {id}")?;
-    Ok(())
+    Ok((TaskId::at(created.seq), title))
 }
 
 /// The board, from the projection.

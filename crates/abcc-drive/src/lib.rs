@@ -77,8 +77,10 @@ use abcc_store::{Applied, Store, StoreError, TaskRow};
 use abcc_vcs::{Repo, Sha, VcsError, Worktree, checkpoint_ref};
 
 pub mod brief;
+pub mod chat;
 pub mod journal;
 
+pub use chat::{Operator, Said};
 pub use journal::StoreJournal;
 
 /// Anything that stops the driver from running an attempt at all.

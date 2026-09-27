@@ -36,6 +36,7 @@
 use std::io::Write;
 
 pub mod breaker;
+pub mod chat;
 pub mod cli;
 pub mod confirm;
 pub mod desk;
@@ -44,6 +45,7 @@ pub mod fleet;
 pub mod fun;
 pub mod home;
 pub mod land;
+mod line_editor;
 pub mod ops;
 mod paint;
 pub mod pulse;
@@ -138,6 +140,7 @@ pub fn dispatch(invocation: &Invocation, out: &mut impl Write) -> Result<(), App
         Command::Replay { task } => replay::report(invocation, *task, out),
         Command::Fun => fun::report(invocation, out),
         Command::Run(run) => run::attempt(invocation, run, out),
+        Command::Chat(args) => chat::chat(invocation, args, out),
         Command::Fleet(args) => fleet::sortie(invocation, args, out),
         Command::Breaker { model, base_url } => {
             breaker::report(invocation, model.as_deref(), base_url.as_deref(), out)

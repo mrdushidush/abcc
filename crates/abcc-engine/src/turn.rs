@@ -517,6 +517,9 @@ pub struct TurnLoop<'a> {
     ///
     /// ⚠ It is not the control. See [`abcc_core::redact`].
     secrets: Secrets,
+    /// Sees every delta as it arrives, for a front end that streams the reply
+    /// (`abcc chat`). It observes and cannot change anything; `None` in batch.
+    watch: Option<&'a dyn Fn(&Delta)>,
 }
 
 impl<'a> TurnLoop<'a> {
@@ -529,7 +532,16 @@ impl<'a> TurnLoop<'a> {
             limits: Limits::default(),
             ceiling: Tier::Exec,
             secrets: Secrets::default(),
+            watch: None,
         }
+    }
+
+    /// Show every delta to `watch` as it arrives. See
+    /// [`TurnLoop::watch`](TurnLoop#structfield.watch).
+    #[must_use]
+    pub fn watch(mut self, watch: &'a dyn Fn(&Delta)) -> Self {
+        self.watch = Some(watch);
+        self
     }
 
     /// Give the loop the literals this process holds — the model API key, today.
@@ -1053,7 +1065,12 @@ impl<'a> TurnLoop<'a> {
             };
             match next {
                 Err(e) => return Drained::Failed(e),
-                Ok(delta) => acc.take(delta),
+                Ok(delta) => {
+                    if let Some(watch) = self.watch {
+                        watch(&delta);
+                    }
+                    acc.take(delta);
+                }
             }
         }
 

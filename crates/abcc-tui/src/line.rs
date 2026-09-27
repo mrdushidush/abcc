@@ -229,6 +229,9 @@ pub fn describe(logged: &Logged, theme: Theme) -> Line {
         Event::OperatorAnswered { prompt, answer, .. } => {
             format!("operator answered {prompt} · {}", clip(answer))
         }
+        Event::OperatorSaid { attempt, text } => {
+            format!("{attempt} · operator said · {}", clip(text.as_str()))
+        }
         Event::ControlRequested { control, .. } => format!("operator: {}", control_text(control)),
         Event::ControlApplied { control, .. } => format!("applied: {}", control_text(control)),
         Event::LivenessMark { note, .. } => format!("alive · {}", clip(note)),

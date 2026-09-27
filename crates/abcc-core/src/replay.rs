@@ -1125,6 +1125,7 @@ const fn attempt_of(event: &Event) -> Option<AttemptId> {
         | Event::LivenessMark { attempt, .. }
         | Event::PhaseNudged { attempt, .. }
         | Event::OperatorPrompted { attempt, .. }
+        | Event::OperatorSaid { attempt, .. }
         // ⚠ **After the attempt's span, and deliberately still filed under it.**
         // Every other event here happened between `AttemptStarted` and
         // `AttemptEnded`; a landing happens whenever a person gets to it. It is

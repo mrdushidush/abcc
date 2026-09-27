@@ -122,6 +122,28 @@ fn redirected(prompt: Option<&str>) -> String {
     })
 }
 
+/// What `abcc chat` opens with: the task, and that a person is on the other end.
+///
+/// One conversation under Builders for the whole chat (PLAN-TOOL B2 by
+/// construction): there is no Recon hand-off, so nothing is read twice across
+/// phases.
+#[must_use]
+pub fn chat(row: &TaskRow) -> String {
+    format!(
+        "## The task\n\n{}\n\n{}\n\n## How this works\n\n\
+         This is a conversation with the operator, in a worktree of their repository. \
+         Do the work with your tools. When it is done, or you need the operator, say so \
+         in a few lines and stop asking for tools; they will answer.\n",
+        row.title, row.prompt
+    )
+}
+
+/// What a chat is told when it carries on over a tree a check refused.
+#[must_use]
+pub fn chat_refused(refusal: &Refusal) -> String {
+    refused_before(Some(refusal)).trim_start().to_owned()
+}
+
 /// What Builders is asked, opening the Change phase.
 ///
 /// ⚠ Recon's answer arrives as *a claim about the tree*, and it is labelled as

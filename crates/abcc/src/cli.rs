@@ -54,6 +54,8 @@ pub enum Command {
     Fun,
     /// One attempt, end to end.
     Run(Box<Run>),
+    /// One attempt as a conversation with the operator (PLAN-TOOL C1).
+    Chat(Box<Chat>),
     /// Attempts until the board is quiet, on one slot.
     ///
     /// ⚠ It takes no `--task`, and that is the point rather than an omission:
@@ -223,6 +225,15 @@ pub struct Run {
     pub evict: bool,
 }
 
+/// Everything `chat` takes: `run`'s flags, plus the ask that opens a new task.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Chat {
+    /// A new task's prompt. `None` with no `--task` asks for it at the prompt.
+    pub prompt: Option<String>,
+    pub title: Option<String>,
+    pub run: Run,
+}
+
 /// A task named on the command line, as `t42` or `42`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskRef(pub i64);
@@ -248,6 +259,9 @@ abcc — the command center. One attempt at a time, over one repository.
   abcc board [--all]                  what is waiting on you; --all adds the finished
   abcc replay [t42]                   after-action: how a task got where it is
   abcc fun                            ADR-0012 §5's six queries, over the log
+  abcc chat [<ask>] [--task t42] [options]
+                                      work on it together: you talk, it edits, in a
+                                      worktree; /diff, /done (check, then land), /quit
   abcc run [--task t42] [options]     run one attempt on a queued task
   abcc fleet [options]                attempts until the board is quiet, one slot
   abcc watch [--theme command|classic]  the reader, over the log alone
@@ -273,7 +287,7 @@ Everywhere:
   --repo <path>     the checkout to work on (default: the working directory)
   --home <path>     where the log and worktrees live (default: outside the repo)
 
-run and fleet:
+run, chat and fleet:
   --model <name>    the model to ask for (default: $ABCC_MODEL)
   --url <base>      the server (default: $ABCC_MODEL_BASE_URL)
   --fingerprint <s> a substring that must appear in the served model id
@@ -383,6 +397,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
             Command::Task { prompt, title }
         }
         "run" => Command::Run(Box::new(run_args(&mut args, true)?)),
+        "chat" => Command::Chat(Box::new(chat_args(&mut args)?)),
         "fleet" => Command::Fleet(Box::new(run_args(&mut args, false)?)),
         "watch" => {
             let theme = match take_flag(&mut args, "--theme")?.as_deref() {
@@ -582,7 +597,35 @@ fn one_positional(args: &[String], verb: &str, wanted: &str) -> Result<String, C
 /// and `--unit` names a slot in a fleet that has one (ADR-0020).
 fn run_args(args: &mut Vec<String>, per_task: bool) -> Result<Run, CliError> {
     let verb = if per_task { "run" } else { "fleet" };
-    let run = Run {
+    let run = run_flags(args, per_task)?;
+    no_positionals(args, verb)?;
+    Ok(run)
+}
+
+/// `chat`: an optional first ask, `--title`, and every flag `run` takes.
+fn chat_args(args: &mut Vec<String>) -> Result<Chat, CliError> {
+    let title = take_flag(args, "--title")?;
+    let run = run_flags(args, true)?;
+    let prompt = match args.as_slice() {
+        [] => None,
+        [one] => Some(one.clone()),
+        _ => {
+            return Err(CliError::Usage(
+                "chat takes one ask and nothing else — quote it if it has spaces in it".to_owned(),
+            ));
+        }
+    };
+    if prompt.is_some() && run.task.is_some() {
+        return Err(CliError::Usage(
+            "chat takes an ask for a new task, or --task for one on the board, not both".to_owned(),
+        ));
+    }
+    Ok(Chat { prompt, title, run })
+}
+
+/// The flags themselves, leaving any positionals for the caller.
+fn run_flags(args: &mut Vec<String>, per_task: bool) -> Result<Run, CliError> {
+    Ok(Run {
         task: if per_task {
             take_flag(args, "--task")?
                 .map(|t| task_ref(&t))
@@ -616,9 +659,7 @@ fn run_args(args: &mut Vec<String>, per_task: bool) -> Result<Run, CliError> {
             .map(|t| t.parse().map_err(CliError::Usage))
             .transpose()?,
         evict: take_switch(args, "--evict"),
-    };
-    no_positionals(args, verb)?;
-    Ok(run)
+    })
 }
 
 /// A ceiling, by the name the log and the refusals print.

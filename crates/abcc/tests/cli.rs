@@ -518,3 +518,31 @@ fn eviction_is_off_unless_the_run_asks_for_it() {
         None
     );
 }
+
+/// `chat` takes one ask for a new task, or `--task` for one on the board, and
+/// every flag `run` takes.
+#[test]
+fn chat_takes_an_ask_or_a_task_and_the_run_flags() {
+    let chat = |args: &[&str]| match parse_args(args).expect("parse").command {
+        Command::Chat(chat) => chat,
+        other => panic!("expected chat, got {other:?}"),
+    };
+
+    let asked = chat(&["chat", "add a flag for the port", "--title", "port flag"]);
+    assert_eq!(asked.prompt.as_deref(), Some("add a flag for the port"));
+    assert_eq!(asked.title.as_deref(), Some("port flag"));
+    assert_eq!(asked.run.task, None);
+
+    let picked = chat(&["chat", "--task", "t7", "--temperature", "server"]);
+    assert_eq!(picked.prompt, None);
+    assert_eq!(picked.run.task, Some(cli::TaskRef(7)));
+    assert_eq!(picked.run.temperature, Some(Temperature::Server));
+
+    assert_eq!(
+        chat(&["chat"]).prompt,
+        None,
+        "a bare chat asks at the prompt"
+    );
+    assert!(parse_args(&["chat", "one", "two"]).is_err());
+    assert!(parse_args(&["chat", "an ask", "--task", "t7"]).is_err());
+}
