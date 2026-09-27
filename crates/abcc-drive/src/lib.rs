@@ -1308,6 +1308,17 @@ pub fn snapshot(store: &mut Store, repo: &Repo, row: &TaskRow, when: &str) -> Re
         sha: sha.to_string(),
         git_ref,
     })?;
+    // F844: say what the snapshot left out, so a missing file is not a mystery.
+    let skipped = repo.unindexable()?;
+    if !skipped.is_empty() {
+        store.append(Event::Note {
+            text: format!(
+                "checkpoint {} left out {} (Windows device names git cannot index)",
+                sha.short(),
+                skipped.join(", ")
+            ),
+        })?;
+    }
     Ok(Kept {
         id: CheckpointId::at(logged.seq),
         sha,

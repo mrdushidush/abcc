@@ -44,6 +44,27 @@ use std::process::Command;
 /// real rather than aspirational.
 pub const CHECKPOINT_REFS: &str = "refs/abcc/checkpoints";
 
+/// Windows reserved device names, as case-insensitive globs at any depth, bare
+/// and with an extension.
+///
+/// 🚨 **F844: git for Windows cannot index a file with one of these names**, and
+/// a model's `2>nul` under Git Bash makes one. `git add -A` then fails with exit
+/// 128 and the checkpoint takes the attempt down with it. Measured 2026-09-27 on
+/// this machine: `nul`, `sub/nul.txt`, `aux.rs` and `COM1` all fail to index, so
+/// leaving them out loses nothing git could have kept. On other platforms they
+/// are ordinary names and nothing is left out.
+#[cfg(windows)]
+const UNINDEXABLE: &[&str] = &["con", "prn", "aux", "nul", "com[1-9]", "lpt[1-9]"];
+#[cfg(not(windows))]
+const UNINDEXABLE: &[&str] = &[];
+
+/// [`UNINDEXABLE`] as pathspecs with `magic` (`exclude,glob,icase` or `glob,icase`).
+fn unindexable_pathspecs(magic: &str) -> impl Iterator<Item = String> + '_ {
+    UNINDEXABLE
+        .iter()
+        .flat_map(move |d| [format!(":({magic})**/{d}"), format!(":({magic})**/{d}.*")])
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum VcsError {
     #[error("running `git {args}`: {source}")]
@@ -246,7 +267,12 @@ impl Repo {
 
         let head = self.head()?;
         run_with_index(&self.root, index.path(), ["read-tree", "HEAD"])?;
-        run_with_index(&self.root, index.path(), ["add", "-A"])?;
+        // F844: never let a file git cannot index fail the snapshot.
+        let add = ["add", "-A", "--", "."].map(str::to_owned);
+        let add = add
+            .into_iter()
+            .chain(unindexable_pathspecs("exclude,glob,icase"));
+        run_with_index(&self.root, index.path(), add)?;
         let tree = run_with_index(&self.root, index.path(), ["write-tree"])?;
         let tree = tree.trim();
 
@@ -262,6 +288,26 @@ impl Repo {
 
         run(&self.root, ["update-ref", ref_name, sha.as_str()])?;
         Ok(sha)
+    }
+
+    /// The untracked files a [`checkpoint`](Repo::checkpoint) leaves out because
+    /// git cannot index their names (F844). Empty off Windows.
+    ///
+    /// # Errors
+    ///
+    /// Fails if git will not answer.
+    pub fn unindexable(&self) -> Result<Vec<String>> {
+        if UNINDEXABLE.is_empty() {
+            return Ok(Vec::new());
+        }
+        let args = ["ls-files", "-o", "--exclude-standard", "-z", "--"].map(str::to_owned);
+        let args = args.into_iter().chain(unindexable_pathspecs("glob,icase"));
+        let out = run(&self.root, args)?;
+        Ok(out
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 
     /// What changed between two snapshots.

@@ -71,6 +71,36 @@ fn a_checkpoint_captures_untracked_files() {
     assert_eq!(changes[0].kind, ChangeKind::Added);
 }
 
+/// 🚨 F844: a file named after a Windows device — a model's `2>nul` under Git
+/// Bash makes one — must not fail the snapshot, and it must be reported as left
+/// out rather than silently dropped.
+#[cfg(windows)]
+#[test]
+fn a_checkpoint_survives_a_file_named_after_a_windows_device() {
+    let (_dir, root) = fixture();
+    let repo = Repo::open(&root).expect("open");
+
+    // A verbatim `\\?\` path is the only way Windows itself will make these.
+    let verbatim = |rel: &str| {
+        let full = root.join(rel).display().to_string().replace('/', r"\");
+        PathBuf::from(format!(r"\\?\{full}"))
+    };
+    fs::write(verbatim("nul"), "x\n").expect("write nul");
+    fs::write(verbatim(r"src\Aux.rs"), "x\n").expect("write Aux.rs");
+    fs::write(root.join("src/new.rs"), "pub fn two() -> u32 { 2 }\n").expect("write");
+
+    let sha = repo
+        .checkpoint(&checkpoint_ref("m1", 1), "checkpoint")
+        .expect("a device-named file failed the checkpoint");
+    let head = repo.head().expect("head");
+    let changes = repo.changed_between(&head, &sha).expect("diff");
+    assert_eq!(changed_paths(&changes), vec!["src/new.rs"]);
+
+    let mut skipped = repo.unindexable().expect("unindexable");
+    skipped.sort_unstable();
+    assert_eq!(skipped, vec!["nul", "src/Aux.rs"]);
+}
+
 /// The snapshot touches neither the index nor the working tree. If it did, the
 /// operator's own staged work would move underneath them every time the fleet
 /// saved a game.
