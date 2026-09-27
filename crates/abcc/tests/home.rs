@@ -90,13 +90,25 @@ fn the_default_is_keyed_by_the_repositorys_path_and_not_by_its_name() {
     assert_eq!(default_root(&one), default_root(&one));
 }
 
+/// ⚠ Windows only, because the claim is: a case-sensitive filesystem really
+/// does hold two repositories at two casings of one path.
+#[cfg(windows)]
 #[test]
 fn a_repository_path_that_differs_only_in_case_is_one_repository() {
     // Windows paths are case-insensitive, so `D:\dev\abcc` and `d:\dev\abcc` are
     // one checkout and must not get two logs.
+    //
+    // ⚠ The directory must EXIST. The case is settled by `canonicalize`, which
+    // asks the filesystem, so a path that is not there keeps the case it was
+    // typed in. This test used to name `D:/dev/abcc` literally: green on the one
+    // box that has that checkout, red on every CI runner since.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = dir.path().join("Subject");
+    fs::create_dir_all(&repo).expect("mkdir");
+    let typed = repo.to_string_lossy();
     assert_eq!(
-        default_root(Path::new("D:/dev/ABCC")),
-        default_root(Path::new("d:/dev/abcc"))
+        default_root(Path::new(&typed.to_uppercase())),
+        default_root(Path::new(&typed.to_lowercase()))
     );
 }
 
