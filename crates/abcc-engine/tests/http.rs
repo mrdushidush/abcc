@@ -513,6 +513,54 @@ fn the_cap_with_an_empty_payload_is_marked_as_the_absence_it_is() {
     }
 }
 
+/// 🧪 F841 probe (a): a `stop` turn with an empty payload whose trace **ends**
+/// in `<tool_call>` blocks asks for those calls — F839's `said_nothing` shape.
+/// A block the trace moved past is not a request, and a turn that said
+/// something keeps its words.
+#[test]
+fn a_tool_call_written_inside_the_trace_is_recovered_only_from_its_end() {
+    let trace = "Plan: maybe\n<tool_call>\n<function=search>\n<parameter=pattern>\nx\n\
+                 </parameter>\n</function>\n</tool_call>\nNo, read them instead.\n\n\
+                 <tool_call>\n<function=read_file>\n<parameter=path>\njobs/a.py\n</parameter>\n\
+                 </function>\n</tool_call>\n<tool_call>\n<function=read_file>\n\
+                 <parameter=path>\n2024\n</parameter>\n<parameter=offset>\n10\n</parameter>\n\
+                 </function>\n</tool_call>\n";
+    let reasoning = serde_json::json!({"choices":[{"delta":{"reasoning_content": trace}}]});
+    let turn = |extra: Vec<(Duration, String)>| {
+        let mut chunks = vec![(Duration::ZERO, chunk(&reasoning.to_string()))];
+        chunks.extend(extra);
+        chunks.extend([
+            (Duration::ZERO, chunk(STOP)),
+            (Duration::ZERO, chunk(USAGE)),
+            (Duration::ZERO, "data: [DONE]\n\n".to_owned()),
+        ]);
+        let stub = Stub::new(vec![Reply::sse(chunks)]);
+        let body = Body::opening("go");
+        drain(&stub.provider(), &request(Head::Commandos, &body, BUDGET))
+    };
+    let calls = |deltas: &[Result<Delta, ProviderError>]| -> Vec<ToolCall> {
+        deltas
+            .iter()
+            .filter_map(|d| match d {
+                Ok(Delta::ToolCall(c)) => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let silent = calls(&turn(vec![]));
+    assert_eq!(silent.len(), 2, "{silent:?}");
+    assert_eq!(silent[0].tool, "read_file");
+    assert_eq!(silent[0].arguments, r#"{"path":"jobs/a.py"}"#);
+    assert_eq!(silent[0].id, "from_reasoning_0");
+    // A number-shaped path would be mangled by a blind JSON read; the probe
+    // accepts that (the server's parser does the same without a schema).
+    assert_eq!(silent[1].arguments, r#"{"offset":10,"path":2024}"#);
+
+    let spoke = calls(&turn(vec![(Duration::ZERO, text_chunk("the answer"))]));
+    assert!(spoke.is_empty(), "{spoke:?}");
+}
+
 /// 🚨 A stream that answers without usage **stops**. `stream_options.include_usage`
 /// was asked for; a turn recorded at zero tokens is a silent under-report of
 /// every accounting built on top of it, and a zero from an instrument nobody

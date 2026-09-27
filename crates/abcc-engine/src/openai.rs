@@ -610,6 +610,11 @@ struct Parse {
     reason: Option<String>,
     usage: Option<Usage>,
     said_something: bool,
+    /// 🧪 **F841 probe (a): the trace's text, kept for one question only** —
+    /// whether a turn that ended `stop` with nothing on the wire wrote its tool
+    /// call inside the trace instead. See [`calls_in_reasoning`].
+    trace: String,
+    called: u32,
 }
 
 impl Parse {
@@ -665,6 +670,7 @@ impl Parse {
             if let Some(trace) = choice.delta.reasoning_content
                 && !trace.is_empty()
             {
+                self.trace.push_str(&trace);
                 self.out.push(Ok(Delta::Reasoning(trace)));
             }
             if let Some(text) = choice.delta.content
@@ -748,6 +754,7 @@ impl Parse {
             if call.tool.is_empty() {
                 continue;
             }
+            self.called += 1;
             self.out.push(Ok(Delta::ToolCall(ToolCall {
                 id: call.id,
                 tool: call.tool,
@@ -778,11 +785,91 @@ impl Parse {
             }));
             return;
         };
+        if reason == "stop" && !self.said_something && self.called == 0 {
+            for call in calls_in_reasoning(&self.trace) {
+                self.out.push(Ok(Delta::ToolCall(call)));
+            }
+        }
         self.out.push(Ok(Delta::Closed {
             usage,
             finish: finish(&reason, self.said_something),
         }));
     }
+}
+
+/// 🧪 **F841 probe (a): the tool calls a `stop` turn wrote inside its trace.**
+///
+/// F839: 10 of 11 empty `stop` turns end in a `<tool_call>` block that never
+/// left the reasoning channel — the model did not close its think block, so the
+/// server's tool parser never saw the call, returned none, and abcc read an
+/// empty answer (`SaidNothing`) from a model that was asking to read a file.
+///
+/// ⚠ **Only the trailing run** of blocks is taken: the calls the trace *ends*
+/// on, with nothing but whitespace between them and the end. A block followed by
+/// more thinking is a plan the model moved past, not a request.
+///
+/// Both forms Qwen writes are read: the XML one
+/// (`<function=NAME><parameter=KEY>VALUE</parameter></function>`) and the JSON
+/// one (`{"name": …, "arguments": {…}}`). An XML value is a string unless it
+/// parses as a JSON number, boolean, array or object — the rule the server's own
+/// parser applies when it has no schema to hand. A block that reads as neither
+/// form ends the run, so a malformed call is left an absence rather than guessed.
+fn calls_in_reasoning(trace: &str) -> Vec<ToolCall> {
+    const OPEN: &str = "<tool_call>";
+    const CLOSE: &str = "</tool_call>";
+    let mut rest = trace.trim_end();
+    let mut calls = Vec::new();
+    while let Some(before) = rest.strip_suffix(CLOSE) {
+        let Some(at) = before.rfind(OPEN) else { break };
+        let Some((tool, arguments)) = one_call(&before[at + OPEN.len()..]) else {
+            break;
+        };
+        calls.push((tool, arguments));
+        rest = before[..at].trim_end();
+    }
+    calls.reverse();
+    calls
+        .into_iter()
+        .enumerate()
+        .map(|(n, (tool, arguments))| ToolCall {
+            id: format!("from_reasoning_{n}"),
+            tool,
+            arguments,
+        })
+        .collect()
+}
+
+/// One `<tool_call>` block's body, as `(tool, arguments-json)`.
+fn one_call(block: &str) -> Option<(String, String)> {
+    let block = block.trim();
+    if block.starts_with('{') {
+        let value: Value = serde_json::from_str(block).ok()?;
+        let tool = value.get("name")?.as_str()?.to_owned();
+        let arguments = value.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        return Some((tool, arguments.to_string()));
+    }
+    let body = block.strip_prefix("<function=")?;
+    let (tool, mut body) = body.split_once('>')?;
+    body = body.trim().strip_suffix("</function>")?;
+    let mut arguments = Map::new();
+    loop {
+        body = body.trim_start();
+        if body.is_empty() {
+            break;
+        }
+        let param = body.strip_prefix("<parameter=")?;
+        let (key, param) = param.split_once('>')?;
+        let (value, after) = param.split_once("</parameter>")?;
+        let value = value.strip_prefix('\n').unwrap_or(value);
+        let value = value.strip_suffix('\n').unwrap_or(value);
+        let typed = match serde_json::from_str::<Value>(value) {
+            Ok(v) if !v.is_string() && !v.is_null() => v,
+            _ => Value::String(value.to_owned()),
+        };
+        arguments.insert(key.trim().to_owned(), typed);
+        body = after;
+    }
+    Some((tool.trim().to_owned(), Value::Object(arguments).to_string()))
 }
 
 /// The finish reason, and the one field in it that matters.
