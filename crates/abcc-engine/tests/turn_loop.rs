@@ -2346,6 +2346,63 @@ fn a_result_that_changed_between_reads_is_never_a_duplicate() {
     }
 }
 
+/// Reads answer with 4,000 bytes; `edit_file` fails the way a missed `old_text`
+/// does, leaving the file — and so the next read's bytes — unchanged.
+struct MissedEdit;
+
+impl Tools for MissedEdit {
+    fn run(&self, spec: &'static ToolSpec, _call: &ToolCall) -> ToolResult {
+        let text = if spec.name == "edit_file" {
+            "edit_file: src/semantic.rs: old_text was not found in the file. Closest match: \
+             lines 10-43 (19/34 lines match)."
+                .to_owned()
+        } else {
+            "x".repeat(4_000)
+        };
+        ToolResult {
+            text,
+            exit: Some(0),
+            elapsed_ms: 3,
+            unmeasured: None,
+        }
+    }
+}
+
+/// 🚨 **After a failed edit, the re-read is served whole — once.** Found on the
+/// first `abcc chat` over K: the model re-read the file to get the bytes its
+/// `old_text` missed, the guard said *you already have this* twice, and the
+/// attempt ran out of rounds in `cat -A`. The read after the failed edit gets
+/// the bytes; a further read with no edit between is a duplicate again.
+#[test]
+fn a_re_read_after_a_failed_edit_of_that_file_is_served_whole() {
+    let read = r#"{"path":"src/semantic.rs"}"#;
+    let provider = Scripted::new(vec![
+        Script::calls("c1", "read_file", read),
+        Script::calls(
+            "c2",
+            "edit_file",
+            r#"{"path":"src/semantic.rs","old_text":"a","new_text":"b"}"#,
+        ),
+        Script::calls("c3", "read_file", "{\"path\":\"./src/semantic.rs\"}"),
+        Script::calls("c4", "read_file", read),
+        Script::says("done"),
+    ]);
+    let (body, _log) = drive(&provider, &MissedEdit, Head::Builders);
+
+    let served = served(&body);
+    assert_eq!(served.len(), 4);
+    assert_eq!(served[0].len(), 4_000);
+    assert_eq!(
+        served[2].len(),
+        4_000,
+        "the read after the failed edit was withheld"
+    );
+    assert!(
+        served[3].starts_with(DUPLICATE_HEADER),
+        "a read with no edit since the last copy must still be a duplicate"
+    );
+}
+
 /// 🚨 **F830 — the class the guard must not touch, and it was measured.**
 /// Of the 150 byte-identical repeats in this project's whole log, 12 are
 /// `apply_patch`: ten failure messages and **two** *applied 1 hunk to 1 file*

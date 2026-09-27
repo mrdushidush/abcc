@@ -111,6 +111,41 @@ fn fingerprint(text: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// 🚨 **Whether an `edit_file` of the file `call` reads has failed since the last
+/// full copy of `content` in this body** — and so whether this re-read is the
+/// one the guard must let through.
+///
+/// Found on the first `abcc chat` over K (2026-09-27, `finish_the_cancelled_status`):
+/// a 34-line `old_text` missed at line 27, the model re-read the file to get the
+/// exact bytes, and the guard answered *you already have this* — twice — because
+/// a failed edit leaves the bytes unchanged. The model went to `cat -A` and `xxd`
+/// and ran out of rounds. After a failed edit the fresh copy is the point.
+fn edit_failed_since(body: &Body, content: &str, call: &ToolCall) -> bool {
+    let Some(path) = path_of(call) else {
+        return false;
+    };
+    let messages = body.messages();
+    let Some(copy) = messages
+        .iter()
+        .rposition(|m| m.role == Role::Tool && m.content == content)
+    else {
+        return false;
+    };
+    // Any `edit_file` result naming this path will do: a successful one changed
+    // the bytes, so the read would not have been a duplicate in the first place.
+    let edited = format!("edit_file: {path}");
+    messages[copy + 1..]
+        .iter()
+        .any(|m| m.role == Role::Tool && m.content.replace('\\', "/").starts_with(&edited))
+}
+
+/// The `path` argument of a tool call, with `./` and backslashes smoothed out.
+fn path_of(call: &ToolCall) -> Option<String> {
+    let args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
+    let path = args.get("path")?.as_str()?.replace('\\', "/");
+    Some(path.trim_start_matches("./").to_owned())
+}
+
 /// How many times this exact result has already been served *or* substituted in
 /// this body.
 ///
@@ -847,6 +882,7 @@ impl<'a> TurnLoop<'a> {
     fn already_have(
         &self,
         spec: &ToolSpec,
+        call: &ToolCall,
         output: &Scrubbed,
         body: &Body,
     ) -> Option<(Scrubbed, usize)> {
@@ -856,6 +892,9 @@ impl<'a> TurnLoop<'a> {
         let header = format!("{DUPLICATE_HEADER} {}", fingerprint(output.as_str()));
         let occurrence = duplicates_so_far(body, output.as_str(), &header) + 1;
         if occurrence == 1 || occurrence.is_multiple_of(DUPLICATE_ESCAPE_EVERY) {
+            return None;
+        }
+        if edit_failed_since(body, output.as_str(), call) {
             return None;
         }
         // ⚠ Scrubbed like any other result even though the text is ours, for the
@@ -928,7 +967,7 @@ impl<'a> TurnLoop<'a> {
                     // saving on the two `SEC-06` attempts is ~29,000 and
                     // ~36,000 prompt tokens, both before their `prompt_cut`
                     // even fired.
-                    let shown = match self.already_have(spec, &output.text, body) {
+                    let shown = match self.already_have(spec, call, &output.text, body) {
                         Some((note, occurrence)) => {
                             // ⚠ A `Note` and not a field: nothing branches on
                             // it, and the *measurement* the falsifier needs is
