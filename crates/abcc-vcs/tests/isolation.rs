@@ -32,6 +32,11 @@ fn fixture() -> (tempfile::TempDir, PathBuf) {
     git(dir.path(), &["init", "-q", "-b", "main", "subject"]);
     git(&root, &["config", "user.email", "test@example.invalid"]);
     git(&root, &["config", "user.name", "test"]);
+    // ⚠ Pinned, because the machine's setting is not the fixture's: GitHub's
+    // Windows image sets `core.autocrlf=true` system-wide, so a restore writes
+    // CRLF back. That is restore being exact "up to the repository's own text
+    // attributes", and a fixture has to choose those attributes, not inherit them.
+    git(&root, &["config", "core.autocrlf", "false"]);
 
     fs::write(root.join("src/lib.rs"), "pub fn one() -> u32 { 1 }\n").expect("write");
     fs::write(root.join("README.md"), "# subject\n").expect("write");

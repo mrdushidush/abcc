@@ -55,6 +55,11 @@ fn subject() -> Subject {
     git(dir.path(), &["init", "-q", "-b", "main", "subject"]);
     git(&root, &["config", "user.email", "test@example.invalid"]);
     git(&root, &["config", "user.name", "test"]);
+    // ⚠ Pinned, because the machine's setting is not the fixture's: GitHub's
+    // Windows image sets `core.autocrlf=true` system-wide, so every file git
+    // writes back here comes out CRLF and the byte comparisons below fail on
+    // git's conversion rather than on anything `land` did.
+    git(&root, &["config", "core.autocrlf", "false"]);
     fs::write(root.join("src.rs"), "pub fn one() -> u32 { 1 }\n").expect("write");
     fs::write(root.join("other.rs"), "pub fn two() -> u32 { 2 }\n").expect("write");
     git(&root, &["add", "-A"]);
