@@ -427,7 +427,9 @@ pub struct PhaseReport {
     /// next to an answer either way.
     pub trace: TraceSignal,
     pub elapsed_ms: u64,
-    /// The highest `prompt_tokens` any turn of this phase has reported.
+    /// The highest `prompt_tokens` any turn of this phase has reported. After an
+    /// eviction it starts again from abcc's own estimate of the smaller body,
+    /// less a margin (`PhaseReport::shrunk`).
     ///
     /// 🚨 **The phase is the unit, and that is the whole of why this lives here**
     /// (F748). The body is reset by `Body::opening` at every phase and appended to
@@ -465,7 +467,8 @@ impl PhaseReport {
     /// one — and the loop cannot forget to ask, because the answer arrives with
     /// the count it already takes. `Some(high_water)` means *this turn's prompt
     /// was measured smaller than an earlier turn of this phase*, which a body
-    /// that only grows cannot do.
+    /// that only grows cannot do. Eviction is the one thing that shrinks it, and
+    /// it says so through [`shrunk`](Self::shrunk).
     fn count(&mut self, turn: &Turn) -> Option<u32> {
         self.turns += 1;
         self.prompt_tokens = self.prompt_tokens.saturating_add(turn.usage.prompt_tokens);
@@ -483,7 +486,28 @@ impl PhaseReport {
         self.prompt_high_water = self.prompt_high_water.max(turn.usage.prompt_tokens);
         cut
     }
+
+    /// abcc shrank the body itself (B3 eviction) to about `estimate` tokens, so
+    /// the next prompt may be measured smaller than the last with nothing cut.
+    /// Without this, every eviction that got the prompt under the last one was
+    /// logged as a server cut (the first live smoke of the emergency tier).
+    ///
+    /// 🚨 **Not a reset to zero**, which was tried and hid a real cut: the stale
+    /// pass alone left an estimated 50,881 tokens, the server reported 27,355,
+    /// and that call is exactly the one after an eviction. So the high water
+    /// becomes abcc's own estimate of what it is about to send, less
+    /// [`ESTIMATE_MARGIN_PERCENT`]. On that smoke the server reported 0-12% over
+    /// the chars/4 estimate when nothing was cut, and a cut falls to about half
+    /// (F745), so the margin keeps both readings.
+    fn shrunk(&mut self, estimate: usize) {
+        let floor = estimate.saturating_mul(100 - ESTIMATE_MARGIN_PERCENT) / 100;
+        self.prompt_high_water = u32::try_from(floor).unwrap_or(u32::MAX);
+    }
 }
+
+/// How far under abcc's own estimate a prompt may be measured, after an
+/// eviction, before it is read as the server's cut. See [`PhaseReport::shrunk`].
+const ESTIMATE_MARGIN_PERCENT: usize = 25;
 
 /// How much a trace signal is worth worrying about. Absent is not the same as
 /// closed and neither is a problem; an open trace at token 200 is the one the
@@ -665,6 +689,7 @@ impl<'a> TurnLoop<'a> {
             if let Some(window) = self.limits.evict_window
                 && let Some(evicted) = evict::stale(body, posting.prefix(), window)
             {
+                report.shrunk(evicted.after);
                 journal.record(Event::Note {
                     text: format!("{attempt} {}", evicted.note(window)),
                 });

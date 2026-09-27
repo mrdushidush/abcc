@@ -21,6 +21,21 @@
 //!   79.7% of TTFT). Stopping at the trigger would pay that on nearly every turn
 //!   once a phase sits near the line.
 //!
+//! And one thing claudette's eviction does not have at all, **the emergency
+//! tier**. When the stale pass is done and the estimate is still at the
+//! trigger, the recent results go too, oldest first, down to the same low water,
+//! and never the newest one. Recency immunity assumes one result is small next
+//! to the window, and here it is not: `read_file` hands back up to 64 KiB
+//! (`MAX_READ_BYTES`, about 16k tokens) and the trigger at a 40,960 window is
+//! 24,576 tokens, exactly the window less the 16,384 completion budget. Two or
+//! three big reads in one turn cross it with nothing yet stale, and then neither
+//! the stale pass nor compaction (which runs between operator turns) can act
+//! before the server cuts. claudette has 30 of its 112 files over 32 KB and six
+//! over 64 KiB. They are counted apart ([`Evicted::recent`]) so the log shows
+//! each time the window overrode recency, and their stub
+//! ([`recent_stub_body`]) does not call them stale, because the model may not
+//! have read them yet.
+//!
 //! Why at all: past the window LM Studio's `truncateMiddle` cuts the middle of
 //! the conversation at HTTP 200 and orphans tool results (F748, F775). This is
 //! abcc choosing what goes first instead.
@@ -56,6 +71,20 @@ pub fn stub_body(tool: &str, original_chars: usize) -> String {
     )
 }
 
+/// abcc's stub for a recent result the emergency tier cleared. Not claudette's
+/// words: the model may not have read this one yet, so it is not called stale,
+/// and the way back is a smaller part rather than the same call again.
+#[must_use]
+pub fn recent_stub_body(tool: &str, original_chars: usize) -> String {
+    let tool = serde_json::to_string(tool).unwrap_or_else(|_| "\"tool\"".to_owned());
+    format!(
+        "{{\"evicted\":true,\"tool\":{tool},\"original_chars\":{original_chars},\"note\":\"Recent \
+         output, cleared because the conversation had outgrown the context window. If a step \
+         still needs it, re-run the tool on a smaller part (for read_file, a from_line..to_line \
+         range), not the whole thing again.\"}}"
+    )
+}
+
 /// Tokens, estimated at four characters each: the head's prefix plus the body.
 #[must_use]
 pub fn estimate_tokens(prefix: &str, body: &Body) -> usize {
@@ -74,7 +103,11 @@ pub(crate) fn message_tokens(m: &Message) -> usize {
 /// What one pass stubbed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evicted {
+    /// Stale results: older than the last [`KEEP_RECENT`].
     pub results: usize,
+    /// Recent results the emergency tier stubbed because the stale ones were
+    /// not enough. Zero unless the window overrode recency.
+    pub recent: usize,
     /// Characters of tool output replaced.
     pub chars: usize,
     /// The estimate before and after, in tokens.
@@ -86,8 +119,16 @@ impl Evicted {
     /// The line the log carries.
     #[must_use]
     pub fn note(&self, window: usize) -> String {
+        let recent = if self.recent > 0 {
+            format!(
+                " and {} recent one(s) stubbed, the stale ones not being enough",
+                self.recent
+            )
+        } else {
+            " stubbed".to_owned()
+        };
         format!(
-            "evict: {} stale tool result(s) stubbed, {} chars; estimate {} -> {} tokens of a \
+            "evict: {} stale tool result(s){recent}, {} chars; estimate {} -> {} tokens of a \
              {window}-token window",
             self.results, self.chars, self.before, self.after
         )
@@ -95,7 +136,9 @@ impl Evicted {
 }
 
 /// Stub stale tool results in `body` if the estimate has reached
-/// [`TRIGGER_PERCENT`] of `window`. `None` when nothing was stubbed.
+/// [`TRIGGER_PERCENT`] of `window`, oldest first, down to [`LOW_WATER_PERCENT`].
+/// If that is not enough to get under the trigger, the recent ones go as well
+/// (the emergency tier), never the newest. `None` when nothing was stubbed.
 pub fn stale(body: &mut Body, prefix: &str, window: usize) -> Option<Evicted> {
     let trigger = window.saturating_mul(TRIGGER_PERCENT) / 100;
     let low = window.saturating_mul(LOW_WATER_PERCENT) / 100;
@@ -116,32 +159,63 @@ pub fn stale(body: &mut Body, prefix: &str, window: usize) -> Option<Evicted> {
         .collect();
     let stale = results.len().saturating_sub(KEEP_RECENT);
 
-    let mut estimate = before;
     let mut evicted = Evicted {
         results: 0,
+        recent: 0,
         chars: 0,
         before,
         after: before,
     };
     for &i in &results[..stale] {
-        if estimate < low {
+        if evicted.after < low {
             break;
         }
-        let m = &mut messages[i];
-        if m.content.len() < MIN_EVICTABLE_CHARS || m.content.starts_with(STUB_MARKER) {
-            continue;
+        if let Some(chars) = stub(&mut messages[i], &names, stub_body, &mut evicted.after) {
+            evicted.results += 1;
+            evicted.chars += chars;
         }
-        let tool = m
-            .tool_call_id
-            .as_deref()
-            .and_then(|id| names.get(id))
-            .map_or("tool", String::as_str);
-        let stub = stub_body(tool, m.content.len());
-        estimate = estimate.saturating_sub(m.content.len().saturating_sub(stub.len()) / 4);
-        evicted.results += 1;
-        evicted.chars += m.content.len();
-        m.content = stub;
     }
-    evicted.after = estimate;
-    (evicted.results > 0).then_some(evicted)
+    // The emergency tier: the window overrides recency, but never the newest.
+    if evicted.after >= trigger {
+        let newest = results.len().saturating_sub(1);
+        for &i in &results[stale.min(newest)..newest] {
+            if evicted.after < low {
+                break;
+            }
+            if let Some(chars) = stub(
+                &mut messages[i],
+                &names,
+                recent_stub_body,
+                &mut evicted.after,
+            ) {
+                evicted.recent += 1;
+                evicted.chars += chars;
+            }
+        }
+    }
+    (evicted.results + evicted.recent > 0).then_some(evicted)
+}
+
+/// Replace one result with `stub_with`'s stub, unless it is too small to be
+/// worth one or is a stub already, and take what that frees off `estimate`.
+/// The characters replaced, when it was stubbed.
+fn stub(
+    m: &mut Message,
+    names: &HashMap<String, String>,
+    stub_with: fn(&str, usize) -> String,
+    estimate: &mut usize,
+) -> Option<usize> {
+    let chars = m.content.len();
+    if chars < MIN_EVICTABLE_CHARS || m.content.starts_with(STUB_MARKER) {
+        return None;
+    }
+    let tool = m
+        .tool_call_id
+        .as_deref()
+        .and_then(|id| names.get(id))
+        .map_or("tool", String::as_str);
+    let stub = stub_with(tool, chars);
+    *estimate = estimate.saturating_sub(chars.saturating_sub(stub.len()) / 4);
+    m.content = stub;
+    Some(chars)
 }

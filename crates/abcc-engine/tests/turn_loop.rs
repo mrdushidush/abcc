@@ -2050,9 +2050,11 @@ fn cuts(log: &[Event]) -> Vec<(u32, u32)> {
 /// 🚨 **F748: a body that only grows reported a smaller prompt, and until now
 /// nothing said so.**
 ///
-/// The loop appends and never removes — `Body` has no `insert`, no `prepend` and
-/// no indexed write — so `prompt_tokens` cannot fall inside one phase. When it
-/// does, the server measured its own cut of the prompt, and F745 measured that
+/// The loop appends and never removes — `Body` has no `insert` and no `prepend`,
+/// and its one indexed write is B3 eviction, which sets the high water to its
+/// own estimate (`tests/evict.rs::an_eviction_is_not_a_cut`) — so `prompt_tokens` cannot fall
+/// inside one phase. When it does, the server measured its own cut of the
+/// prompt, and F745 measured that
 /// happening from outside the program: past the window the reported figure stops
 /// tracking the input and falls to roughly half of it, at `200 OK`, with no
 /// header and no field saying anything was dropped.
