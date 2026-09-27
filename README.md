@@ -42,6 +42,7 @@ list it rests on.
 
 ```
 abcc where                       where this repository's log and worktrees live
+abcc chat "make one() return two"   work on it together: you talk, it edits
 abcc task "make one() return two"   put a task on the board
 abcc run --task t3               one attempt, Localize then Change
 abcc board                       the board, from the projection

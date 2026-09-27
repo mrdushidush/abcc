@@ -18,6 +18,26 @@ t14977 INTERVENTION REQUIRED  STARTER 1: Seq::distance          abcc replay t149
 
 Do what the right-hand column says. Then run `abcc board` again. That is the loop.
 
+## Working on it together: `abcc chat`
+
+The daily way in. You talk, the model edits, in a scratch copy of your repo.
+
+```powershell
+abcc chat "add a --port flag to serve"      # a new task, worked on as a conversation
+abcc chat --task t42                        # pick one up where it was left
+```
+
+| while it works | at the `you>` prompt |
+|---|---|
+| **Esc** or **Ctrl-C** stops the turn; then say what to do instead | anything you type goes to the model |
+| | `/diff` what it has changed so far |
+| | `/done` run your checks; if they pass you see the diff and `y` lands it |
+| | `/quit` stop and keep the work (`abcc chat --task t42` resumes) |
+
+If a check refuses the change, say *yes* to keep going: the model sees what the
+check said and carries on in the same conversation. The time between the diff
+appearing and your `y` is recorded as your review; you do not type it.
+
 ## The three words the board answers with
 
 | | what it means | what you do |
