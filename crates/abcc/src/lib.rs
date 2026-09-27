@@ -60,6 +60,10 @@ pub use home::Home;
 /// Who a run and an operator verb are attributed to.
 pub const OPERATOR_ENV: &str = "ABCC_OPERATOR";
 
+/// The package version and the commit it was built from, `0.1.0+52f7bd0`
+/// (`build.rs`). What `--version` prints and every `RunStarted` records.
+pub const VERSION: &str = env!("ABCC_VERSION");
+
 /// Anything that stops a subcommand.
 ///
 /// [`AppError::Refused`] is the one that is not a fault: the operator asked for

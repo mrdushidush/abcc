@@ -78,7 +78,7 @@ pub fn chat(
     report_boot(&store.boot()?, out)?;
     store.append(Event::RunStarted {
         mode: Mode::SinglePlayer,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: crate::VERSION.to_owned(),
         pid: std::process::id(),
     })?;
 

@@ -372,7 +372,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, CliE
         return Err(CliError::Help);
     }
     if args.iter().any(|a| a == "--version") {
-        return Err(CliError::Version(env!("CARGO_PKG_VERSION").to_owned()));
+        return Err(CliError::Version(crate::VERSION.to_owned()));
     }
 
     // The two global flags are pulled out first so they can appear anywhere,

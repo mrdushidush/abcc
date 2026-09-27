@@ -61,7 +61,7 @@ pub fn sortie(
 
     store.append(Event::RunStarted {
         mode: Mode::SinglePlayer,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: crate::VERSION.to_owned(),
         pid: std::process::id(),
     })?;
 

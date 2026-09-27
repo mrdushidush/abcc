@@ -32,9 +32,26 @@ fn nothing_at_all_is_help_and_help_is_not_a_failure() {
     assert_eq!(abcc::AppError::Cli(CliError::Help).exit_code(), 0);
 }
 
+/// The version names the commit the binary was built from, so a log says which
+/// build wrote it: `0.1.0+52f7bd0`, or the bare package version without git.
+#[test]
+fn the_version_names_the_commit_it_was_built_from() {
+    let package = env!("CARGO_PKG_VERSION");
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+    match head {
+        Some(sha) => assert_eq!(abcc::VERSION, format!("{package}+{sha}")),
+        None => assert_eq!(abcc::VERSION, package),
+    }
+}
+
 #[test]
 fn the_version_flag_prints_and_exits_zero() {
-    let version = env!("CARGO_PKG_VERSION").to_owned();
+    let version = abcc::VERSION.to_owned();
     assert_eq!(parse("--version"), Err(CliError::Version(version.clone())));
     assert_eq!(parse("board --version"), Err(CliError::Version(version)));
     let v = abcc::AppError::Cli(CliError::Version("0.0.0".to_owned()));
