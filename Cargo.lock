@@ -14,6 +14,7 @@ dependencies = [
  "abcc-store",
  "abcc-tui",
  "abcc-vcs",
+ "crossterm",
  "image",
  "reqwest",
  "serde",
