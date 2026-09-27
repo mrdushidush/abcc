@@ -413,6 +413,33 @@ pub(crate) fn report(landed: &Landed, out: &mut impl Write) -> Result<(), AppErr
         // the attempt, and a blank line would read as a phase that cost nothing.
         None => writeln!(out, "change    did not run — Localize produced no artifact")?,
     }
+    ending(landed, out)?;
+    if let TaskState::AwaitingOrders { .. } = landed.state {
+        writeln!(
+            out,
+            "\nThis work is not accepted. Read the checkpoint, then:\n\
+             \n  abcc accept <task>   you have read it and take responsibility for it\n  \
+             abcc reject <task>   it is not good and the task stops"
+        )?;
+    }
+    Ok(())
+}
+
+/// A chat's ending. It is one conversation under Builders, so there are no
+/// phases to name: the driver hands `land` the chat's last turn where a batch
+/// attempt hands it Localize, and [`report`] printed that turn as `localize`
+/// over a `change did not run` line, naming two phases for a chat that ran
+/// neither. The accept/reject block is left to the chat too, which asks its own
+/// question after a refusal.
+pub(crate) fn report_chat(landed: &Landed, out: &mut impl Write) -> Result<(), AppError> {
+    writeln!(out, "\n{} ended {:?}", landed.attempt, landed.outcome)?;
+    phase(out, "last ask", &landed.localize)?;
+    ending(landed, out)
+}
+
+/// What both reports end with: what was kept, the gate, the Judge and where
+/// the task is now.
+fn ending(landed: &Landed, out: &mut impl Write) -> Result<(), AppError> {
     if let Some(sha) = &landed.kept {
         writeln!(out, "kept      {sha}")?;
     } else {
@@ -425,14 +452,6 @@ pub(crate) fn report(landed: &Landed, out: &mut impl Write) -> Result<(), AppErr
         writeln!(
             out,
             "next      {next:?}  (a recommendation; nothing acted on it)"
-        )?;
-    }
-    if let TaskState::AwaitingOrders { .. } = landed.state {
-        writeln!(
-            out,
-            "\nThis work is not accepted. Read the checkpoint, then:\n\
-             \n  abcc accept <task>   you have read it and take responsibility for it\n  \
-             abcc reject <task>   it is not good and the task stops"
         )?;
     }
     Ok(())
@@ -574,5 +593,43 @@ mod tests {
             !said.contains("no artifact"),
             "the sentence asserts an absence nothing measured: {said}"
         );
+    }
+
+    /// A chat names no phase it did not run. The first `/quit` of a real chat
+    /// (2026-09-27) printed `localize ...` over `change did not run — Localize
+    /// produced no artifact`, for a chat that runs neither.
+    #[test]
+    fn a_chat_report_names_no_phase() {
+        use abcc_core::attempt::AttemptOutcome;
+        use abcc_core::outcome::Why;
+        use abcc_core::seq::{AttemptId, Seq};
+        use abcc_core::task::TaskState;
+        use abcc_drive::Landed;
+        use abcc_engine::turn::PhaseReport;
+
+        let landed = Landed {
+            attempt: AttemptId::at(Seq::new(11)),
+            outcome: AttemptOutcome::Uncertain {
+                why: Why::Cancelled {
+                    by: "operator".to_owned(),
+                },
+            },
+            state: TaskState::Queued,
+            localize: PhaseReport::default(),
+            change: None,
+            kept: Some("fd78ae9".to_owned()),
+            gate: None,
+            next: None,
+            judge: None,
+        };
+        let mut out = Vec::new();
+        super::report_chat(&landed, &mut out).expect("write");
+        let said = String::from_utf8(out).expect("utf-8");
+
+        assert!(said.contains("last ask  0 turn(s)"), "{said}");
+        assert!(said.contains("kept      fd78ae9"), "{said}");
+        for batch in ["localize", "change", "Localize"] {
+            assert!(!said.contains(batch), "{batch} in a chat report: {said}");
+        }
     }
 }

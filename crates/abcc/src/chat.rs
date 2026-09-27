@@ -44,7 +44,7 @@ use abcc_store::Store;
 use crossterm::event::{self as keys, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::line_editor::{LineEditor, ReadOutcome};
-use crate::run::{Confirmed, confirm_model, limits_for, report, report_boot};
+use crate::run::{Confirmed, confirm_model, limits_for, report_boot, report_chat};
 use crate::{AppError, Invocation, cli, land, ops};
 
 const HELP: &str = concat!(
@@ -143,7 +143,7 @@ pub fn chat(
         .ceiling(ceiling)
         .secrets(ops::secrets());
         let landed = driver.chat(task, UnitId(0), cause, &mut body, &mut terminal, &deltas)?;
-        report(&landed, out)?;
+        report_chat(&landed, out)?;
         // A refused tree comes back to the operator, and the operator is here.
         if matches!(landed.state, TaskState::AwaitingOrders { .. })
             && landed.gate.as_ref().is_some_and(|g| !g.headline.is_pass())
