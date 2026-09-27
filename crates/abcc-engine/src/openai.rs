@@ -96,8 +96,8 @@ use serde_json::{Map, Value, json};
 
 use crate::head::Posting;
 use crate::provider::{
-    ApiRequest, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Role, ToolCall,
-    TurnStream,
+    ApiRequest, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Role,
+    Temperature, ToolCall, TurnStream,
 };
 
 /// Where LM Studio listens until somebody moves it. ⚠ The port and the API key
@@ -923,9 +923,12 @@ fn payload(req: &ApiRequest<'_>) -> Value {
     // 🚨 The one sampling field this engine sets, and it sets it so that a
     // run can be re-flown rather than to move the distribution. Without it the
     // champion answers five identical requests five different ways; with it,
-    // one. Sampling is otherwise the server's, which is where every number this
-    // project has quoted was taken.
+    // one. Every number quoted before 2026-09-27 was taken at the server's own
+    // temperature; since then the default is 0 (see `Temperature`).
     payload.insert("seed".to_owned(), json!(req.seed));
+    if req.temperature == Temperature::Zero {
+        payload.insert("temperature".to_owned(), json!(0));
+    }
     payload.insert("stream".to_owned(), json!(true));
     // F84: the compat dialect reports real token counts only when asked.
     payload.insert("stream_options".to_owned(), json!({"include_usage": true}));

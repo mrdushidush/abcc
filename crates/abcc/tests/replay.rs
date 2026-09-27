@@ -124,6 +124,7 @@ fn a_truncated_attempt(store: &mut Store, title: &str) -> (TaskId, AttemptId) {
             ceiling: String::new(),
             budget: 8192,
             seed: 0,
+            temperature: String::new(),
         })
         .expect("call started");
     store

@@ -230,12 +230,17 @@ pub enum Event {
         /// precision silently — a seed that reads back as a near neighbour of
         /// itself is a replay that is not one.
         ///
-        /// ⚠ Temperature and `top_p` are **not** sent and are not recorded:
-        /// the ruling was to pin what makes a run replayable without moving the
-        /// distribution every past number was taken at. Their absence here is
-        /// that decision, not an omission.
         #[serde(default)]
         seed: u32,
+        /// 🚨 **The temperature the request carried**: `"0"`, or `"server"` for
+        /// none sent. Temperature 0 is the default since 2026-09-27 (David's
+        /// ruling, after F840), reversing 2026-09-12's *send no temperature*.
+        ///
+        /// ⚠ `#[serde(default)]` for the logs written before it existed, where it
+        /// reads as the empty string — *not recorded*. Every call in those logs
+        /// sent no temperature.
+        #[serde(default)]
+        temperature: String,
     },
     ModelCallEnded {
         attempt: AttemptId,

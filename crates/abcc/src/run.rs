@@ -364,6 +364,9 @@ pub fn limits_for(run: &cli::Run) -> Limits {
     if let Some(chars) = run.reasoning_ceiling {
         limits.reasoning_ceiling = if chars == 0 { usize::MAX } else { chars };
     }
+    if let Some(temperature) = run.temperature {
+        limits.temperature = temperature;
+    }
     limits
 }
 

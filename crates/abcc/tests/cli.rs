@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use abcc::cli::{self, CliError, Command, Paint};
-use abcc_engine::Tier;
+use abcc_engine::{Temperature, Tier};
 use abcc_tui::Theme;
 
 fn parse(line: &str) -> Result<cli::Invocation, CliError> {
@@ -481,4 +481,23 @@ fn the_reasoning_ceiling_can_be_set_and_zero_takes_the_stop_out_of_the_path() {
         50_000,
         "a run that names no ceiling gets the measured one"
     );
+}
+
+/// Temperature 0 unless the run says `--temperature server`, and anything else
+/// is refused with the spelling rather than guessed at.
+#[test]
+fn the_temperature_is_zero_unless_the_run_asks_for_the_server_s() {
+    let limits = |line: &str| {
+        let Command::Run(run) = parse(line).expect("run").command else {
+            panic!("expected a run");
+        };
+        abcc::run::limits_for(&run).temperature
+    };
+    assert_eq!(limits("run --task t7"), Temperature::Zero);
+    assert_eq!(limits("run --task t7 --temperature 0"), Temperature::Zero);
+    assert_eq!(
+        limits("run --task t7 --temperature server"),
+        Temperature::Server
+    );
+    assert!(parse("run --task t7 --temperature 0.7").is_err());
 }

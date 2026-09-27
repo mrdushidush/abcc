@@ -293,6 +293,45 @@ pub struct ApiRequest<'a> {
     /// the wire so that a sortie is replayable; derived per call so that a
     /// retry is not a re-decode of its parent.
     pub seed: u32,
+    /// What the request says about temperature (`Event::ModelCallStarted::temperature`).
+    pub temperature: Temperature,
+}
+
+/// What a request says about sampling temperature.
+///
+/// 🚨 **`Zero` is the default since 2026-09-27** (David's ruling, reversing
+/// 2026-09-12's *send no temperature*). F840: at temperature 0 the K suite went
+/// 3, 2, 2 of 3 against A3's 0 of 9 at the server's default. claudette has
+/// always sent 0. `Server` sends nothing, which is how every number before that
+/// date was taken, and stays so the bench can fly that arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Temperature {
+    #[default]
+    Zero,
+    Server,
+}
+
+impl fmt::Display for Temperature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Temperature::Zero => "0",
+            Temperature::Server => "server",
+        })
+    }
+}
+
+impl std::str::FromStr for Temperature {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Temperature, String> {
+        match s {
+            "0" => Ok(Temperature::Zero),
+            "server" => Ok(Temperature::Server),
+            other => Err(format!(
+                "temperature {other:?} is not one of: 0 (the default), server"
+            )),
+        }
+    }
 }
 
 impl ApiRequest<'_> {

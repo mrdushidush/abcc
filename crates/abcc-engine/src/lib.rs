@@ -57,7 +57,7 @@ pub use head::{Head, Posting, Serves};
 pub use openai::OpenAiCompat;
 pub use provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderClass, ProviderError, ProviderId, Role,
-    Schema, ToolCall, TraceSignal, Turn, TurnStream,
+    Schema, Temperature, ToolCall, TraceSignal, Turn, TurnStream,
 };
 pub use tools::{Confinement, Denied, Destructive, Policy, Reach, Tier, ToolSpec, UnknownTier};
 pub use turn::{Journal, Limits, NoTools, PhaseEnded, PhaseReport, ToolResult, Tools, TurnLoop};

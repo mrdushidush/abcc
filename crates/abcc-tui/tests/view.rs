@@ -98,6 +98,7 @@ fn the_attempt_runs(log: &mut Replay, task: TaskId, attempt: AttemptId, engaged:
         ceiling: "read".to_string(),
         budget: 2048,
         seed: 3_041_887_211,
+        temperature: String::new(),
     });
     let model_end = log.advance(3_200).push(Event::ModelCallEnded {
         attempt,

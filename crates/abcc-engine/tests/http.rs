@@ -32,7 +32,7 @@ use abcc_core::event::{Event, Finish};
 use abcc_core::outcome::Why;
 use abcc_core::seq::{AttemptId, Seq};
 use abcc_engine::openai::OpenAiCompat;
-use abcc_engine::provider::{ApiRequest, Delta, ProviderError, Role, Schema};
+use abcc_engine::provider::{ApiRequest, Delta, ProviderError, Role, Schema, Temperature};
 use abcc_engine::tools::{TOOLS, ToolSpec};
 use abcc_engine::{
     Body, ControlPoint, Head, Limits, PhaseEnded, Provider, Tier, ToolCall, ToolResult, Tools,
@@ -207,6 +207,7 @@ fn request(head: Head, body: &Body, idle_gap: Duration) -> ApiRequest<'_> {
         tool_call_gap: idle_gap,
         liveness_slice: idle_gap,
         seed: 1234,
+        temperature: Temperature::default(),
     }
 }
 
@@ -736,6 +737,26 @@ fn a_400_that_is_not_the_window_is_still_a_status() {
 /// One request, read field by field. Each assertion is a finding rather than a
 /// preference, and they are together because they are one request.
 #[test]
+fn a_server_temperature_sends_none_so_the_old_arm_can_still_be_flown() {
+    let stub = Stub::new(vec![Reply::sse(vec![
+        (Duration::ZERO, chunk(STOP)),
+        (Duration::ZERO, chunk(USAGE)),
+        (Duration::ZERO, "data: [DONE]\n\n".to_owned()),
+    ])]);
+    let provider = stub.provider();
+    let body = Body::opening("fix the thing");
+    let req = ApiRequest {
+        temperature: Temperature::Server,
+        ..request(Head::Builders, &body, BUDGET)
+    };
+    drain(&provider, &req);
+
+    let sent = &stub.requests()[0];
+    assert!(sent.get("temperature").is_none());
+    assert_eq!(sent["seed"], 1234);
+}
+
+#[test]
 fn the_request_carries_the_head_the_tools_and_the_ask_for_real_token_counts() {
     let stub = Stub::new(vec![Reply::sse(vec![
         (Duration::ZERO, chunk(STOP)),
@@ -766,18 +787,15 @@ fn the_request_carries_the_head_the_tools_and_the_ask_for_real_token_counts() {
     // ⚠ `num_ctx` has no analogue in the compat dialect and the window is fixed
     // at load time. Sending one would be the F50 trap wearing a field name.
     assert!(sent.get("num_ctx").is_none());
-    // 🚨 F715: the seed, and it is the only sampling field sent. Measured on the
-    // champion, five identical requests without one are five distinct answers
-    // and with one are a single answer — so its absence is what made every rate
-    // this project has quoted unrepeatable. ⚠ A JSON *number*, not a string:
-    // LM Studio parses this in TypeScript.
+    // 🚨 F715: the seed. Measured on the champion, five identical requests
+    // without one are five distinct answers and with one are a single answer.
+    // ⚠ A JSON *number*, not a string: LM Studio parses this in TypeScript.
     assert_eq!(sent["seed"], 1234);
     assert!(sent["seed"].is_number());
-    // ⚠ And temperature and top_p are deliberately NOT here (the operator's
-    // ruling, 2026-09-12): pinning what makes a run replayable without moving
-    // the distribution every past number was taken at. If one appears, a number
-    // measured before it is no longer comparable to one measured after.
-    assert!(sent.get("temperature").is_none());
+    // 🚨 Temperature 0 by default since 2026-09-27 (David's ruling after F840,
+    // reversing 2026-09-12's *send none*). A number measured before that date
+    // was taken at the server's temperature and is not comparable to one after.
+    assert_eq!(sent["temperature"], 0);
     assert!(sent.get("top_p").is_none());
 
     // The advertised surface is the enforced one: exactly the policy's admitted
@@ -851,6 +869,7 @@ fn a_schema_travels_as_strict_json_schema_and_never_as_json_object() {
             tool_call_gap: BUDGET,
             liveness_slice: BUDGET,
             seed: 1234,
+            temperature: Temperature::default(),
         },
     );
 
@@ -999,6 +1018,7 @@ fn a_live_turn_reports_usage_and_a_reasoning_trace() {
             tool_call_gap: Limits::default().tool_call_gap,
             liveness_slice: Duration::from_secs(10),
             seed: 1234,
+            temperature: Temperature::default(),
         },
     );
     for delta in &deltas {
@@ -1211,6 +1231,7 @@ fn request_with_gaps(
         tool_call_gap,
         liveness_slice: slice,
         seed: 1234,
+        temperature: Temperature::default(),
     }
 }
 
@@ -1523,6 +1544,7 @@ fn a_live_turn_writing_a_large_tool_call_survives_its_own_silence() {
         tool_call_gap: Limits::default().tool_call_gap,
         liveness_slice: Duration::from_secs(10),
         seed: 1234,
+        temperature: Temperature::default(),
     };
     let mut stream = provider.start(&req).expect("open the turn");
     while let Some(delta) = stream.next_delta() {

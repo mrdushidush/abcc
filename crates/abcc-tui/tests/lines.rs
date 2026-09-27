@@ -194,6 +194,7 @@ fn a_model_call_line_names_its_seed() {
         ceiling: "exec".to_owned(),
         budget: 16_384,
         seed: 2_859_510_835,
+        temperature: String::new(),
     });
     assert_one_line(&text);
     assert!(
@@ -215,6 +216,7 @@ fn a_model_call_line_names_its_seed() {
         ceiling: "exec".to_owned(),
         budget: 16_384,
         seed: 1_612_451_988,
+        temperature: String::new(),
     });
     assert_ne!(
         text, next,

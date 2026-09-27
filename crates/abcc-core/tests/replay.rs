@@ -365,6 +365,7 @@ fn a_hang_after_the_last_event_produces_no_gap() {
             ceiling: String::new(),
             budget: 8192,
             seed: 0,
+            temperature: String::new(),
         },
     );
     // ...and then the process hangs. Nothing further is ever written.
@@ -701,6 +702,7 @@ fn a_pre_seed_attempt_is_not_counted_as_pinned_to_one_seed() {
                 budget: 8192,
                 // What the archive replays as. Not a seed of zero — no seed.
                 seed: 0,
+                temperature: String::new(),
             },
         );
     }
@@ -747,6 +749,7 @@ fn two_calls_that_drew_one_seed_are_visible_as_a_gap() {
                 ceiling: "exec".to_owned(),
                 budget: 8192,
                 seed,
+                temperature: String::new(),
             },
         );
     }

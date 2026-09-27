@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use abcc_engine::Tier;
+use abcc_engine::{Temperature, Tier};
 use abcc_tui::Theme;
 
 /// What to do, and the two things every subcommand shares.
@@ -216,6 +216,8 @@ pub struct Run {
     /// prevents. An operator running the arm that validates the rule needs to
     /// be able to take the rule out of the path.
     pub reasoning_ceiling: Option<usize>,
+    /// `--temperature 0|server`. `None` is the engine's default, which is `0`.
+    pub temperature: Option<Temperature>,
 }
 
 /// A task named on the command line, as `t42` or `42`.
@@ -280,6 +282,8 @@ run and fleet:
                     characters of reasoning one turn may spend before abcc
                     ends it; 0 turns the stop off, which is how the rule
                     itself gets measured
+  --temperature <t> 0 (the default) or server, which sends none and leaves it
+                    to the server
 
 paint:
   --sprites <dir>   the sprite corpus (default: $ABCC_SPRITES)
@@ -602,6 +606,9 @@ fn run_args(args: &mut Vec<String>, per_task: bool) -> Result<Run, CliError> {
             .transpose()?,
         reasoning_ceiling: take_flag(args, "--reasoning-ceiling")?
             .map(|r| number(&r, "--reasoning-ceiling"))
+            .transpose()?,
+        temperature: take_flag(args, "--temperature")?
+            .map(|t| t.parse().map_err(CliError::Usage))
             .transpose()?,
     };
     no_positionals(args, verb)?;

@@ -36,8 +36,8 @@ use abcc_core::seq::AttemptId;
 use crate::control::{ControlPoint, Disposition, Stop};
 use crate::head::{Head, Posting};
 use crate::provider::{
-    ApiRequest, Body, Delta, Message, Provider, ProviderError, Role, Schema, ToolCall, TraceSignal,
-    Turn, TurnStream,
+    ApiRequest, Body, Delta, Message, Provider, ProviderError, Role, Schema, Temperature, ToolCall,
+    TraceSignal, Turn, TurnStream,
 };
 use crate::tools::{Reach, Tier, ToolSpec};
 
@@ -328,6 +328,8 @@ pub struct Limits {
     /// caught; twenty-four small unproductive rounds are not, and that attempt
     /// still ends at [`Limits::rounds`]. 5 for 5 on turns, 0 for 1 on attempts.
     pub reasoning_ceiling: usize,
+    /// What every call in the loop sends as its temperature. See [`Temperature`].
+    pub temperature: Temperature,
 }
 
 impl Default for Limits {
@@ -347,6 +349,7 @@ impl Default for Limits {
             // plateau that catches 5 and costs 0 over 3,048 logged turns.
             // Derived, not chosen; see the field.
             reasoning_ceiling: 50_000,
+            temperature: Temperature::Zero,
         }
     }
 }
@@ -700,6 +703,7 @@ impl<'a> TurnLoop<'a> {
             tool_call_gap: self.limits.tool_call_gap,
             liveness_slice: self.limits.liveness_gap,
             seed,
+            temperature: self.limits.temperature,
         };
         journal.record(Event::ModelCallStarted {
             attempt,
@@ -714,6 +718,7 @@ impl<'a> TurnLoop<'a> {
             ceiling: posting.ceiling().to_string(),
             budget: posting.budget(),
             seed,
+            temperature: self.limits.temperature.to_string(),
         });
 
         let mut stream = self

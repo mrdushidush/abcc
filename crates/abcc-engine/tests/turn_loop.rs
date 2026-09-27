@@ -19,8 +19,8 @@ use abcc_engine::scripted::{Script, Scripted};
 use abcc_engine::tools::ToolSpec;
 use abcc_engine::workspace::Workspace;
 use abcc_engine::{
-    Body, ControlPoint, Head, Keep, Limits, NoTools, PhaseEnded, Schema, ToolCall, ToolResult,
-    Tools, TurnLoop,
+    Body, ControlPoint, Head, Keep, Limits, NoTools, PhaseEnded, Schema, Temperature, ToolCall,
+    ToolResult, Tools, TurnLoop,
 };
 
 const ATTEMPT: AttemptId = AttemptId::at(Seq::new(7));
@@ -1605,6 +1605,40 @@ fn the_seed_reaches_the_provider_and_the_log_says_which_one() {
         "a call asked the server to pick its own seed while the log recorded a \
          number: {sent:?}"
     );
+}
+
+/// The log says which temperature every call carried: `0` by default since
+/// 2026-09-27, `server` when the loop was told to send none.
+#[test]
+fn the_log_says_which_temperature_each_call_carried() {
+    let temperatures = |limits: Limits| {
+        let provider = Scripted::new(vec![Script::says("done")]);
+        let tools = Recorder::default();
+        let (mut control, _handle) = ControlPoint::new();
+        let mut body = Body::opening("go");
+        let mut log: Vec<Event> = Vec::new();
+        TurnLoop::new(&provider, &tools, MODEL).limits(limits).run(
+            Head::Recon,
+            ATTEMPT,
+            None,
+            &mut body,
+            &mut control,
+            &mut |e: Event| log.push(e),
+        );
+        log.into_iter()
+            .filter_map(|e| match e {
+                Event::ModelCallStarted { temperature, .. } => Some(temperature),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(temperatures(Limits::default()), vec!["0"]);
+    let server = Limits {
+        temperature: Temperature::Server,
+        ..Limits::default()
+    };
+    assert_eq!(temperatures(server), vec!["server"]);
 }
 
 /// 🚨 **Two rounds of one phase are two seeds**, which is the half that makes
