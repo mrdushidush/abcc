@@ -13,10 +13,11 @@ use abcc_core::run::AttemptPhase;
 use abcc_core::seq::{MissionId, TaskId, UnitId};
 use abcc_core::task::TaskState;
 use abcc_drive::{Driver, Landed, Operator, Said};
+use abcc_engine::compact;
 use abcc_engine::control::ControlHandle;
-use abcc_engine::provider::{Body, Delta, Role};
+use abcc_engine::provider::{Body, Delta, Message, Role};
 use abcc_engine::scripted::{Script, Scripted};
-use abcc_engine::turn::PhaseEnded;
+use abcc_engine::turn::{Limits, PhaseEnded};
 use abcc_engine::workspace::Toolchain;
 use abcc_store::Store;
 use abcc_vcs::Repo;
@@ -429,4 +430,94 @@ fn an_interrupted_turn_does_not_end_the_chat() {
         e,
         Event::Note { text } if text.contains("the operator stopped the turn")
     )));
+}
+
+/// A conversation that has grown past half the window is compacted before the
+/// next turn: the model sees the brief, one summary, the last messages and what
+/// the operator just said, and the log and the operator are both told.
+#[test]
+fn a_long_chat_is_compacted_before_the_next_turn() {
+    let s = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+    let provider = Scripted::new(vec![Script::says("carrying on")]);
+    let mut operator = Typist {
+        says: VecDeque::from([Said::Ask("now add three()".into()), Said::Quit]),
+        ..Typist::default()
+    };
+    // Carried over and already long: the brief, then twenty exchanges.
+    let mut body = Body::opening("## The task\n\nadd a function two() that returns 2");
+    for i in 0..20 {
+        body.append(Message::user(format!("ask {i}: {}", "u".repeat(1_000))));
+        body.append(Message::assistant(format!(
+            "reply {i}: {}",
+            "a".repeat(1_000)
+        )));
+    }
+    let brief = body.messages()[0].clone();
+
+    let repo = Repo::open(&s.root).expect("open");
+    let quiet = |_: &Delta| {};
+    Driver::new(&mut store, &repo, &provider, MODEL, &s.worktrees)
+        .toolchain(PASSING)
+        .limits(Limits {
+            evict_window: Some(8_192),
+            ..Limits::default()
+        })
+        .chat(
+            task,
+            UnitId(0),
+            Cause::Fresh,
+            &mut body,
+            &mut operator,
+            &quiet,
+        )
+        .expect("chat");
+
+    let seen = &provider.seen()[0].messages;
+    assert_eq!(seen[0], brief);
+    assert!(compact::is_summary(&seen[1]), "{}", seen[1].content);
+    assert_eq!(seen.len(), 1 + 1 + compact::PRESERVE_RECENT);
+    assert_eq!(seen.last().expect("a message").content, "now add three()");
+    assert!(
+        operator.notes.iter().any(|n| n.starts_with("compact:")),
+        "{:?}",
+        operator.notes
+    );
+    assert!(events(&store).iter().any(|e| matches!(
+        e,
+        Event::Note { text } if text.contains("compact: 29 earlier message(s) summarised")
+    )));
+}
+
+/// Without a window, which is a server that did not say how big it is, a chat
+/// is never compacted however long it gets.
+#[test]
+fn without_a_window_a_chat_is_never_compacted() {
+    let s = subject();
+    let mut store = Store::in_memory().expect("store");
+    let task = seed(&mut store);
+    let provider = Scripted::new(vec![Script::says("carrying on")]);
+    let mut operator = Typist {
+        says: VecDeque::from([Said::Ask("now add three()".into()), Said::Quit]),
+        ..Typist::default()
+    };
+    let mut body = Body::opening("## The task");
+    for i in 0..20 {
+        body.append(Message::user(format!("ask {i}: {}", "u".repeat(1_000))));
+    }
+
+    chat(
+        &s,
+        &mut store,
+        task,
+        Cause::Fresh,
+        &mut body,
+        &provider,
+        &mut operator,
+        PASSING,
+    );
+
+    assert_eq!(provider.seen()[0].messages.len(), 22);
+    assert!(operator.notes.is_empty(), "{:?}", operator.notes);
 }

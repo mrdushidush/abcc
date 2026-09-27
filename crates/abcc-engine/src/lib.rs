@@ -40,6 +40,7 @@
 //! table the reconciliation kept.
 
 pub mod child;
+pub mod compact;
 pub mod control;
 pub mod edit;
 pub mod evict;

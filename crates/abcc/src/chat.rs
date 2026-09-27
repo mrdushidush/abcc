@@ -18,7 +18,8 @@
 //! 4. **`/quit`** keeps the work: the task holds, and `--task` resumes it.
 //!
 //! Eviction (B3) is always on here: a conversation outgrows the window in a way
-//! a single batch phase rarely does.
+//! a single batch phase rarely does. For the same reason the driver compacts a
+//! long chat between turns (`abcc_engine::compact`), against the same window.
 
 use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Write};

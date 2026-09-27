@@ -230,6 +230,13 @@ impl Body {
         &mut self.messages
     }
 
+    /// For [`crate::compact`] only, which replaces the messages in `range` with
+    /// one summary of them. Crate-private for the reason
+    /// [`messages_mut`](Self::messages_mut) is.
+    pub(crate) fn summarise(&mut self, range: std::ops::Range<usize>, summary: Message) {
+        self.messages.splice(range, [summary]);
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.messages.len()

@@ -38,6 +38,11 @@ If a check refuses the change, say *yes* to keep going: the model sees what the
 check said and carries on in the same conversation. The time between the diff
 appearing and your `y` is recorded as your review; you do not type it.
 
+A long chat does not run out of room. Old tool output is cleared first, and past
+half the model's window everything but the task and the last dozen messages
+becomes one summary (`abcc: compact: ...` says when). The work in the tree is
+never touched; if the model seems to have forgotten something, tell it again.
+
 ## The three words the board answers with
 
 | | what it means | what you do |

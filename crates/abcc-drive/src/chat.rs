@@ -17,12 +17,16 @@
 //!   the first Ctrl-C. Per turn, an interrupt stops that turn and the operator
 //!   types the redirect. ⚠ A tool child already running (a `cargo test`) watches
 //!   the attempt's own point and finishes first.
+//! * **A long conversation is compacted between turns** ([`compact`]): past
+//!   half the window, everything between the brief and the last few messages
+//!   becomes one summary. A batch phase never needs it; eviction covers one.
 
 use abcc_core::attempt::Cause;
 use abcc_core::event::{Control, Event};
 use abcc_core::run::AttemptPhase;
 use abcc_core::seq::{AttemptId, TaskId, UnitId};
 use abcc_core::task::{Command, TaskState};
+use abcc_engine::compact;
 use abcc_engine::control::{ControlHandle, ControlPoint, Keep, Stop};
 use abcc_engine::head::Head;
 use abcc_engine::provider::{Body, Delta, Message};
@@ -220,6 +224,21 @@ impl Driver<'_> {
         operator: &mut dyn Operator,
         deltas: &dyn Fn(&Delta),
     ) -> Result<Option<PhaseEnded>> {
+        // Between the operator's turns, a long conversation is summarised before
+        // it fills the window (claudette's compaction). The window is eviction's:
+        // chat always evicts, so a chat without one is a chat whose server did
+        // not say how big it is, and then neither runs.
+        if let Some(window) = self.limits.evict_window
+            && let Some(compacted) =
+                compact::compact(body, Head::Builders.posted(self.ceiling).prefix(), window)
+        {
+            let said = compacted.note(window);
+            self.store.append(Event::Note {
+                text: format!("{attempt} {said}"),
+            })?;
+            operator.note(&said);
+        }
+
         let (mut turn, interrupt) = ControlPoint::new();
         operator.turn_starting(interrupt);
 

@@ -62,7 +62,7 @@ pub fn estimate_tokens(prefix: &str, body: &Body) -> usize {
     prefix.len() / 4 + 1 + body.messages().iter().map(message_tokens).sum::<usize>()
 }
 
-fn message_tokens(m: &Message) -> usize {
+pub(crate) fn message_tokens(m: &Message) -> usize {
     let calls: usize = m
         .tool_calls
         .iter()
