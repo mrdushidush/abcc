@@ -20,6 +20,7 @@
 //! Eviction (B3) is always on here: a conversation outgrows the window in a way
 //! a single batch phase rarely does.
 
+use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,11 +46,12 @@ use crate::line_editor::{LineEditor, ReadOutcome};
 use crate::run::{Confirmed, confirm_model, limits_for, report, report_boot};
 use crate::{AppError, Invocation, cli, land, ops};
 
-const HELP: &str = "\
-  /diff   what this chat has changed so far
-  /done   run the checks; if they pass, see the diff and land it
-  /quit   stop and keep the work (abcc chat --task <id> picks it up)
-  Esc or Ctrl-C while it works stops that turn; then say what to do instead";
+const HELP: &str = concat!(
+    "  /diff   what this chat has changed so far\n",
+    "  /done   run the checks; if they pass, see the diff and land it\n",
+    "  /quit   stop and keep the work (abcc chat --task <id> picks it up)\n",
+    "  Esc or Ctrl-C while it works stops that turn; then say what to do instead",
+);
 
 /// Run `abcc chat`.
 ///
@@ -71,9 +73,11 @@ pub fn chat(
         pid: std::process::id(),
     })?;
 
-    let mut terminal = Terminal::new(LineEditor::new(Some(
-        ground.home.root().join("chat_history"),
-    )));
+    let screen = Arc::new(Screen::new());
+    let mut terminal = Terminal::new(
+        LineEditor::new(Some(ground.home.root().join("chat_history"))),
+        Arc::clone(&screen),
+    );
     let task = match (&args.run.task, &args.prompt) {
         (Some(named), _) => TaskId::at(Seq::new(named.0)),
         (None, Some(ask)) => ops::new_task(&mut store, &ground, ask, args.title.as_deref())?.0,
@@ -112,8 +116,7 @@ pub fn chat(
     writeln!(out, "\nchat on {task}: {}\n{HELP}\n", row.title)?;
     out.flush()?;
 
-    let stream = Stream::default();
-    let deltas = |d: &Delta| stream.take(d);
+    let deltas = |d: &Delta| screen.take(d);
     let mut cause = continuing(&store, task)?;
     let mut body = Body::new();
     let landed = loop {
@@ -210,14 +213,16 @@ fn continuing(store: &Store, task: TaskId) -> Result<Cause, AppError> {
 struct Terminal {
     editor: LineEditor,
     interactive: bool,
+    screen: Arc<Screen>,
     watcher: Option<Watcher>,
 }
 
 impl Terminal {
-    fn new(editor: LineEditor) -> Terminal {
+    fn new(editor: LineEditor, screen: Arc<Screen>) -> Terminal {
         Terminal {
             editor,
             interactive: io::stdin().is_terminal() && io::stderr().is_terminal(),
+            screen,
             watcher: None,
         }
     }
@@ -273,74 +278,45 @@ impl Operator for Terminal {
     }
 
     fn event(&mut self, event: &Event) {
-        let mut out = io::stdout().lock();
-        let _ = match event {
-            Event::ToolCallStarted { tool, .. } => write!(out, "{}  ▸ {tool}", clear()),
+        match event {
+            Event::ToolCallStarted { tool, .. } => self.screen.tool_started(tool),
             Event::ToolCallEnded {
-                arguments,
                 exit,
                 unmeasured,
                 output,
                 ..
             } => {
-                let args = arguments
-                    .as_ref()
-                    .map_or(String::new(), |a| short(a.as_str(), 90));
                 let how = match (unmeasured, exit) {
                     (Some(why), _) => format!("refused: {}", short(&why.to_string(), 80)),
                     (None, Some(0) | None) => {
-                        let n = output.as_ref().map_or(0, Scrubbed::len);
-                        format!("ok, {n} chars")
+                        format!("ok, {} chars", output.as_ref().map_or(0, Scrubbed::len))
                     }
                     (None, Some(code)) => format!("exit {code}"),
                 };
-                write!(out, " {args}  — {how}{}", eol())
+                self.screen.line_end(&format!("  — {how}"));
             }
-            Event::PhaseNudged { .. } => write!(
-                out,
-                "{}  (abcc nudged the model to answer){}",
-                clear(),
-                eol()
-            ),
-            Event::PromptCut { .. } => {
-                write!(out, "{}  ⚠ the server cut the prompt{}", clear(), eol())
-            }
+            Event::PhaseNudged { .. } => self.screen.line("  (abcc nudged the model to answer)"),
+            Event::PromptCut { .. } => self.screen.line("  ⚠ the server cut the prompt"),
             Event::Note { text } if text.contains("evict:") => {
-                write!(
-                    out,
-                    "{}  (older tool output stubbed to make room){}",
-                    clear(),
-                    eol()
-                )
+                self.screen
+                    .line("  (older tool output stubbed to make room)");
             }
-            _ => Ok(()),
-        };
-        let _ = out.flush();
+            _ => {}
+        }
     }
 
     fn turn_ended(&mut self, ended: &PhaseEnded) {
         if let Some(watcher) = self.watcher.take() {
             watcher.finish();
         }
-        let mut out = io::stdout().lock();
-        let _ = match ended {
-            PhaseEnded::Answered { .. } => write!(out, "{}{}", clear(), eol()),
-            PhaseEnded::Stopped { .. } => write!(
-                out,
-                "{}  (stopped — say what to do instead){}",
-                clear(),
-                eol()
-            ),
+        match ended {
+            PhaseEnded::Answered { .. } => self.screen.line(""),
+            PhaseEnded::Stopped { .. } => self.screen.line("  (stopped — say what to do instead)"),
             PhaseEnded::Unmeasured { why, .. } => {
-                write!(
-                    out,
-                    "{}  (the turn ended without an answer: {why}){}",
-                    clear(),
-                    eol()
-                )
+                self.screen
+                    .line(&format!("  (the turn ended without an answer: {why})"));
             }
-        };
-        let _ = out.flush();
+        }
     }
 
     fn diff(&mut self, patch: &str) {
@@ -361,8 +337,8 @@ impl Operator for Terminal {
 /// ⚠ Raw mode is what turns Ctrl-C into a key rather than the signal that would
 /// end the process — and it is on only while a turn runs, off before the line
 /// editor reads again (it uses raw mode itself). On Windows it touches input
-/// only; elsewhere output loses its carriage returns, which is why everything
-/// printed during a turn ends in [`eol`].
+/// only; elsewhere output loses its carriage returns, which is why [`Screen`]
+/// ends every line with `\r\n` on a terminal.
 struct Watcher {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -404,21 +380,53 @@ impl Watcher {
     }
 }
 
-/// The reply as it streams, and a line saying the model is thinking while it
-/// is only reasoning.
-#[derive(Default)]
-struct Stream(Mutex<Streaming>);
-
-#[derive(Default)]
-struct Streaming {
-    reasoning: usize,
-    shown: usize,
-    status: bool,
+/// What the conversation looks like on stdout, shared by the delta observer and
+/// the event renderer.
+///
+/// On a terminal it streams the reply, shows a `thinking` counter while the
+/// model only reasons, and clears it in place. Piped (the bench), it writes
+/// plain lines and no escapes, so a transcript reads as text.
+struct Screen {
+    live: bool,
+    state: Mutex<Painted>,
 }
 
-impl Stream {
+#[derive(Default)]
+struct Painted {
+    reasoning: usize,
+    shown: usize,
+    /// A `thinking` counter is on the current line.
+    status: bool,
+    /// Tool calls as the stream delivered them, so the line for each can name
+    /// what it was called with — the log keeps arguments only for failed calls
+    /// (F505), and the tree already holds what a successful one did.
+    calls: VecDeque<(String, String)>,
+}
+
+impl Screen {
+    fn new() -> Screen {
+        Screen {
+            live: io::stdout().is_terminal(),
+            state: Mutex::new(Painted::default()),
+        }
+    }
+
+    fn eol(&self) -> &'static str {
+        if self.live { "\r\n" } else { "\n" }
+    }
+
+    /// Take the `thinking` counter off the current line, if it is there.
+    fn unstatus(&self, s: &mut Painted, out: &mut impl Write) {
+        if s.status {
+            s.status = false;
+            if self.live {
+                let _ = write!(out, "\r\x1b[K");
+            }
+        }
+    }
+
     fn take(&self, delta: &Delta) {
-        let Ok(mut s) = self.0.lock() else { return };
+        let Ok(mut s) = self.state.lock() else { return };
         let mut out = io::stdout().lock();
         match delta {
             Delta::Opened { .. } => {
@@ -427,37 +435,59 @@ impl Stream {
             }
             Delta::Reasoning(text) => {
                 s.reasoning += text.chars().count();
-                if s.reasoning >= s.shown + 400 {
+                if self.live && s.reasoning >= s.shown + 400 {
                     s.shown = s.reasoning;
                     s.status = true;
-                    let _ = write!(out, "\r  · thinking ({} chars)", s.reasoning);
+                    let _ = write!(out, "\r\x1b[K  · thinking ({} chars)", s.reasoning);
                 }
             }
             Delta::Text(text) => {
-                if s.status {
-                    s.status = false;
-                    let _ = write!(out, "{}", clear());
-                }
-                let _ = write!(out, "{}", text.replace('\n', eol()));
+                self.unstatus(&mut s, &mut out);
+                let _ = write!(out, "{}", text.replace('\n', self.eol()));
             }
-            Delta::ToolCallOpened { .. } if s.status => {
-                s.status = false;
-                let _ = write!(out, "{}", clear());
+            Delta::ToolCall(call) => {
+                self.unstatus(&mut s, &mut out);
+                s.calls
+                    .push_back((call.tool.clone(), call.arguments.clone()));
             }
             _ => {}
         }
         let _ = out.flush();
     }
-}
 
-/// Back to the start of the line and clear it.
-const fn clear() -> &'static str {
-    "\r\x1b[K"
-}
+    /// `▸ tool args`, left open for [`Screen::line_end`] to finish.
+    fn tool_started(&self, tool: &str) {
+        let Ok(mut s) = self.state.lock() else { return };
+        let mut out = io::stdout().lock();
+        self.unstatus(&mut s, &mut out);
+        // A call recovered from the reasoning (F841) never came through the
+        // stream, so the queue is only trusted when it names the same tool.
+        let args = match s.calls.front() {
+            Some((queued, _)) if queued == tool => s.calls.pop_front().map(|(_, a)| a),
+            _ => None,
+        };
+        let args = args.map_or(String::new(), |a| format!(" {}", short(&a, 90)));
+        let _ = write!(out, "{}  ▸ {tool}{args}", self.eol());
+        let _ = out.flush();
+    }
 
-/// A line ending that survives raw mode.
-const fn eol() -> &'static str {
-    "\r\n"
+    fn line_end(&self, text: &str) {
+        // Held for the write, so a delta cannot interleave with the tool line.
+        let Ok(_painting) = self.state.lock() else {
+            return;
+        };
+        let mut out = io::stdout().lock();
+        let _ = write!(out, "{text}");
+        let _ = out.flush();
+    }
+
+    fn line(&self, text: &str) {
+        let Ok(mut s) = self.state.lock() else { return };
+        let mut out = io::stdout().lock();
+        self.unstatus(&mut s, &mut out);
+        let _ = write!(out, "{}{text}", self.eol());
+        let _ = out.flush();
+    }
 }
 
 /// At most `max` characters of `text`, on one line.
