@@ -1082,6 +1082,63 @@ fn a_phase_that_says_nothing_and_then_answers_is_answered() {
     );
 }
 
+/// F849: a call recovered from the reply text is run, and its markup is kept
+/// off the transcript, so the body carries the call once, as a call. The
+/// recovery is on the log, and no push follows it.
+#[test]
+fn a_call_recovered_from_the_reply_runs_and_its_markup_leaves_the_transcript() {
+    let markup = "<tool_call><function=read_file>\n<parameter=path>\nsolution.ts\n\
+                  </parameter>\n</function>\n</tool_call>";
+    let provider = Scripted::new(vec![
+        Script::raw(vec![
+            Ok(Delta::Opened { ttfb_ms: 12 }),
+            Ok(Delta::Text(format!("Reading it first.\n{markup}"))),
+            Ok(Delta::ToolCall(ToolCall {
+                id: "from_reply_0".to_owned(),
+                tool: "read_file".to_owned(),
+                arguments: r#"{"path":"solution.ts"}"#.to_owned(),
+            })),
+            Ok(Delta::Closed {
+                usage: Usage {
+                    prompt_tokens: 64,
+                    completion_tokens: 30,
+                    reasoning_tokens: None,
+                    cached_tokens: None,
+                },
+                finish: Finish::Stop,
+            }),
+        ]),
+        Script::says("done"),
+    ]);
+    let tools = Recorder::default();
+    let (mut control, _handle) = ControlPoint::new();
+    let mut body = Body::opening("fix makeGrid");
+    let mut log = Vec::new();
+
+    let ended = TurnLoop::new(&provider, &tools, MODEL).run(
+        Head::Builders,
+        ATTEMPT,
+        None,
+        &mut body,
+        &mut control,
+        &mut |e: Event| log.push(e),
+    );
+
+    assert!(matches!(ended, PhaseEnded::Answered { .. }), "{ended:?}");
+    assert_eq!(tools.ran.lock().unwrap().as_slice(), ["read_file"]);
+    let roles: Vec<Role> = body.messages().iter().map(|m| m.role).collect();
+    assert_eq!(roles, vec![Role::User, Role::Assistant, Role::Tool]);
+    let asked = &body.messages()[1];
+    assert_eq!(asked.content, "Reading it first.");
+    assert_eq!(asked.tool_calls.len(), 1);
+    assert!(
+        log.iter()
+            .any(|e| matches!(e, Event::Note { text } if text.starts_with("F849: 1 tool call"))),
+        "the recovery left no trace on the log: {:?}",
+        kinds(&log)
+    );
+}
+
 /// A tool that refuses, the way `apply_patch` refused five times running.
 struct Refuses;
 

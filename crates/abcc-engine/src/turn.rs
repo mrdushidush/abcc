@@ -36,6 +36,7 @@ use abcc_core::seq::AttemptId;
 use crate::control::{ControlPoint, Disposition, Stop};
 use crate::evict;
 use crate::head::{Head, Posting};
+use crate::openai;
 use crate::provider::{
     ApiRequest, Body, Delta, Message, Provider, ProviderError, Role, Schema, Temperature, ToolCall,
     TraceSignal, Turn, TurnStream,
@@ -778,6 +779,31 @@ impl<'a> TurnLoop<'a> {
                     ),
                 });
             }
+
+            // F849: calls recovered from the reply text. The markup comes off
+            // the transcript, so the call is on the body once, as the call the
+            // server's parser should have returned. No push follows it: the
+            // phase did not stop short of an answer, its call was lost.
+            let from_reply = turn
+                .tool_calls
+                .iter()
+                .filter(|c| c.id.starts_with(openai::FROM_REPLY))
+                .count();
+            let turn = if from_reply > 0 {
+                journal.record(Event::Note {
+                    text: format!(
+                        "F849: {from_reply} tool call(s) recovered from the reply text of a \
+                         stop turn by {}",
+                        posting.call_sign()
+                    ),
+                });
+                Turn {
+                    text: openai::reply_before_calls(&turn.text).to_owned(),
+                    ..turn
+                }
+            } else {
+                turn
+            };
 
             self.tool_round(posting, attempt, &turn, body, journal, &mut report);
 

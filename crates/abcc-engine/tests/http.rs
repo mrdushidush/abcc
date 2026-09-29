@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use abcc_core::event::{Event, Finish};
 use abcc_core::outcome::Why;
 use abcc_core::seq::{AttemptId, Seq};
-use abcc_engine::openai::OpenAiCompat;
+use abcc_engine::openai::{self, OpenAiCompat};
 use abcc_engine::provider::{ApiRequest, Delta, ProviderError, Role, Schema, Temperature};
 use abcc_engine::tools::{TOOLS, ToolSpec};
 use abcc_engine::{
@@ -559,6 +559,51 @@ fn a_tool_call_written_inside_the_trace_is_recovered_only_from_its_end() {
 
     let spoke = calls(&turn(vec![(Duration::ZERO, text_chunk("the answer"))]));
     assert!(spoke.is_empty(), "{spoke:?}");
+}
+
+/// F849: a `stop` turn whose reply **ends** in `<tool_call>` blocks asks for
+/// those calls. The first reply is `Q39`'s, byte for byte: no newline after
+/// `<tool_call>`, which is why the server returned no call. Words before the
+/// run stay words; a block the reply moved past is not a request.
+#[test]
+fn a_tool_call_written_as_the_reply_is_recovered_only_from_its_end() {
+    const Q39: &str = "<tool_call><function=read_file>\n<parameter=path>\nsolution.ts\n\
+                       </parameter>\n</function>\n</tool_call>";
+    let turn = |reply: &str| {
+        let text = serde_json::json!({"choices":[{"delta":{"content": reply}}]});
+        let stub = Stub::new(vec![Reply::sse(vec![
+            (Duration::ZERO, chunk(&text.to_string())),
+            (Duration::ZERO, chunk(STOP)),
+            (Duration::ZERO, chunk(USAGE)),
+            (Duration::ZERO, "data: [DONE]\n\n".to_owned()),
+        ])]);
+        let body = Body::opening("go");
+        drain(&stub.provider(), &request(Head::Builders, &body, BUDGET))
+            .into_iter()
+            .filter_map(|d| match d {
+                Ok(Delta::ToolCall(c)) => Some(c),
+                _ => None,
+            })
+            .collect::<Vec<ToolCall>>()
+    };
+
+    let alone = turn(Q39);
+    assert_eq!(alone.len(), 1, "{alone:?}");
+    assert_eq!(alone[0].id, "from_reply_0");
+    assert_eq!(alone[0].tool, "read_file");
+    assert_eq!(alone[0].arguments, r#"{"path":"solution.ts"}"#);
+    assert_eq!(openai::reply_before_calls(Q39), "");
+
+    let said = format!("Let me look at the file first.\n\n{Q39}\n");
+    assert_eq!(turn(&said).len(), 1);
+    assert_eq!(
+        openai::reply_before_calls(&said),
+        "Let me look at the file first."
+    );
+
+    let moved_on = format!("{Q39}\nActually, the fix is on line 2.");
+    assert!(turn(&moved_on).is_empty());
+    assert_eq!(openai::reply_before_calls(&moved_on), moved_on);
 }
 
 /// 🚨 A stream that answers without usage **stops**. `stream_options.include_usage`

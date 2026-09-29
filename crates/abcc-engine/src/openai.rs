@@ -614,6 +614,9 @@ struct Parse {
     /// whether a turn that ended `stop` with nothing on the wire wrote its tool
     /// call inside the trace instead. See [`calls_in_reasoning`].
     trace: String,
+    /// F849: the reply's text, kept for the same question asked of a turn that
+    /// did say something. See [`calls_in_reply`].
+    reply: String,
     called: u32,
 }
 
@@ -677,6 +680,7 @@ impl Parse {
                 && !text.is_empty()
             {
                 self.said_something = true;
+                self.reply.push_str(&text);
                 self.out.push(Ok(Delta::Text(text)));
             }
             for fragment in choice.delta.tool_calls {
@@ -785,8 +789,13 @@ impl Parse {
             }));
             return;
         };
-        if reason == "stop" && !self.said_something && self.called == 0 {
-            for call in calls_in_reasoning(&self.trace) {
+        if reason == "stop" && self.called == 0 {
+            let recovered = if self.said_something {
+                calls_in_reply(&self.reply)
+            } else {
+                calls_in_reasoning(&self.trace)
+            };
+            for call in recovered {
                 self.out.push(Ok(Delta::ToolCall(call)));
             }
         }
@@ -815,24 +824,64 @@ impl Parse {
 /// parser applies when it has no schema to hand. A block that reads as neither
 /// form ends the run, so a malformed call is left an absence rather than guessed.
 fn calls_in_reasoning(trace: &str) -> Vec<ToolCall> {
+    numbered(trailing_calls(trace).1, "from_reasoning_")
+}
+
+/// **F849: the tool calls a `stop` turn wrote as its reply.**
+///
+/// `Q39` in the S6 bench: Builders ended `stop` with 98 characters of reply
+/// text that were one `<tool_call>` block, written without the newline the
+/// server's parser expects after `<tool_call>`. The server returned no call,
+/// the phase took the markup as its answer and ended with no edit. This does
+/// what the parser would have done, by the same rule as [`calls_in_reasoning`]:
+/// only the trailing run of blocks is taken. The markup is then kept out of
+/// the transcript by [`reply_before_calls`], so the call is not asked twice.
+fn calls_in_reply(reply: &str) -> Vec<ToolCall> {
+    numbered(trailing_calls(reply).1, FROM_REPLY)
+}
+
+/// The id prefix of a call recovered by [`calls_in_reply`], which is how the
+/// turn loop knows the reply's markup has to come off the transcript.
+pub const FROM_REPLY: &str = "from_reply_";
+
+/// The part of a reply that comes before its trailing `<tool_call>` blocks:
+/// what the model said, without the calls [`calls_in_reply`] took out of it.
+#[must_use]
+pub fn reply_before_calls(reply: &str) -> &str {
+    &reply[..trailing_calls(reply).0]
+}
+
+/// The trailing run of `<tool_call>` blocks in `text`: the byte length of what
+/// precedes the run, and the calls in the order they were written.
+fn trailing_calls(text: &str) -> (usize, Vec<(String, String)>) {
     const OPEN: &str = "<tool_call>";
     const CLOSE: &str = "</tool_call>";
-    let mut rest = trace.trim_end();
+    let mut rest = text.trim_end();
     let mut calls = Vec::new();
     while let Some(before) = rest.strip_suffix(CLOSE) {
         let Some(at) = before.rfind(OPEN) else { break };
-        let Some((tool, arguments)) = one_call(&before[at + OPEN.len()..]) else {
+        let Some(call) = one_call(&before[at + OPEN.len()..]) else {
             break;
         };
-        calls.push((tool, arguments));
+        calls.push(call);
         rest = before[..at].trim_end();
     }
     calls.reverse();
+    // `rest` is always a prefix of `text`, so its length is where the run starts.
+    let kept = if calls.is_empty() {
+        text.len()
+    } else {
+        rest.len()
+    };
+    (kept, calls)
+}
+
+fn numbered(calls: Vec<(String, String)>, prefix: &str) -> Vec<ToolCall> {
     calls
         .into_iter()
         .enumerate()
         .map(|(n, (tool, arguments))| ToolCall {
-            id: format!("from_reasoning_{n}"),
+            id: format!("{prefix}{n}"),
             tool,
             arguments,
         })
