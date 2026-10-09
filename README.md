@@ -5,9 +5,11 @@ repository tasks. One Rust binary: a fleet of two local slots, a durable SQLite
 event log, a gate built out of deterministic refusals, and a terminal console
 with an isometric battlefield.
 
-> **Status: pre-alpha, and not yet open.** The first milestone is being built.
-> Nothing here is released, nothing is packaged, and the repository is private
-> until the succession notice on v1 is up.
+> **Status: pre-alpha.** It is public so that it can be read, not because it is
+> finished. Nothing here is released and nothing is packaged — it is not on
+> crates.io. Every measurement behind it was taken on one Windows machine against
+> one local model; CI builds and tests it on Linux and Windows. Issues are
+> welcome; read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
 
 ## What it is
 
@@ -103,10 +105,15 @@ which keeps its own repository, its final Docker tag and its history. It is a
 rewrite sharing a repository with a TypeScript/Python monorepo inherits a CI
 configuration and a 575-line CONTRIBUTING that do not apply to it.
 
-**None of v1's code is here.** 2.0 is a clean-room rewrite: the predecessors were
-read as a specification and as a test corpus, their catalogued defects became
-test cases, and the code was written fresh. That is why it ships
-`MIT OR Apache-2.0` with no inherited-code caveat. The art, the audio and the
+**None of v1's code is here.** 2.0 is a rewrite: the predecessors were read as a
+specification and as a test corpus, their catalogued defects became test cases,
+and the code was written fresh. **The one exception is claudette** — the same
+author's code, under the same licence — from which three modules were ported
+deliberately rather than rewritten: the conversation compaction
+(`crates/abcc-engine/src/compact.rs`), the stale tool-result eviction
+(`crates/abcc-engine/src/evict.rs`) and the chat line editor
+(`crates/abcc/src/line_editor.rs`). Each names its source in its header and lists
+what it changed. So it ships `MIT OR Apache-2.0` with no inherited-code caveat. The art, the audio and the
 identity are David's own. ⚠ **They are not in this repository**: the sprite
 corpus lives outside it and `abcc paint` is told where by `--sprites` or
 `ABCC_SPRITES`, so a fresh clone builds and runs but cannot draw the
@@ -120,13 +127,17 @@ keeping were extracted and are already running in 2.0's measurement harness.
 
 The architecture was not designed in this repository. It came out of a research
 phase that produced thirteen workstream documents, two acceptance sweeps, a
-signed-off summary and fourteen ADRs, against 713 numbered findings — all of it
-in the ABCC 2.0 research repository, which is where every claim in the source
-comments can be checked.
+signed-off summary and fourteen ADRs, and the measuring has not stopped since:
+there are now 25 ADRs and 849 numbered findings. All of it is in the ABCC 2.0
+research repository, which is where every claim in the source comments can be
+checked — ⚠ **once it is published.** It is still private, being reviewed
+before it goes out, so for now a finding id in a comment is a reference you
+cannot follow from here.
 
 Source comments cite that work by finding id (`F146`), by workstream (`W3`) and
 by decision record (`ADR-0004`). **A number in a comment is quoted from a named
-finding**; if you cannot find the finding, treat the number as wrong.
+finding**; once the research repository is public, if you cannot find the
+finding, treat the number as wrong.
 
 ## Licence
 

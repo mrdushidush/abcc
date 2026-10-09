@@ -53,3 +53,11 @@ codebases — ABCC v1, Claudette and battle-command-forge — as specification a
 a source of test cases. Where a design here is better than theirs, it is usually
 because one of them shipped the defect first and left it where it could be
 measured.
+
+Three modules are not reimplementations but ports, from
+[Claudette](https://github.com/mrdushidush/claudette) — David's own code, under
+the same `MIT OR Apache-2.0` licence: the conversation compaction
+(`crates/abcc-engine/src/compact.rs`), the stale tool-result eviction
+(`crates/abcc-engine/src/evict.rs`) and the chat line editor
+(`crates/abcc/src/line_editor.rs`), tests included. Each one's header names the
+file it came from and lists what changed.

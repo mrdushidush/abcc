@@ -233,9 +233,10 @@ it does not and cannot constrain what a tool child does. Do not read it as an ai
 
 ## Reporting something
 
-This is a personal research project with no release, no users and nothing published to crates.io. If
-you find something, open an issue — or, if it is the kind of thing that should not be an issue, mail
-the address in `Cargo.toml`. There is no bounty and no response-time commitment.
+This is a personal research project with no release and nothing published to crates.io. If you find
+something, open an issue — or, if it is the kind of thing that should not be public, report it
+privately through **Report a vulnerability** on the repository's Security tab, or mail the address in
+`Cargo.toml`. There is no bounty and no response-time commitment.
 
 ## Things that are deliberately not here
 
