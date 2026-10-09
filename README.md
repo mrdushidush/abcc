@@ -128,16 +128,17 @@ keeping were extracted and are already running in 2.0's measurement harness.
 The architecture was not designed in this repository. It came out of a research
 phase that produced thirteen workstream documents, two acceptance sweeps, a
 signed-off summary and fourteen ADRs, and the measuring has not stopped since:
-there are now 25 ADRs and 849 numbered findings. All of it is in the ABCC 2.0
-research repository, which is where every claim in the source comments can be
-checked — ⚠ **once it is published.** It is still private, being reviewed
-before it goes out, so for now a finding id in a comment is a reference you
-cannot follow from here.
+there are now 25 ADRs and 849 numbered findings. All of it is in
+[**abcc-research**](https://github.com/mrdushidush/abcc-research), which is
+where every claim in the source comments can be checked — its README says where
+to start.
 
 Source comments cite that work by finding id (`F146`), by workstream (`W3`) and
 by decision record (`ADR-0004`). **A number in a comment is quoted from a named
-finding**; once the research repository is public, if you cannot find the
-finding, treat the number as wrong.
+finding**; if you cannot find the finding, treat the number as wrong.
+In that repository, `python research/tools/fledger.py build` once, then
+`python research/tools/fledger.py show F146`, prints one and says whether a later
+finding corrected it.
 
 ## Licence
 
