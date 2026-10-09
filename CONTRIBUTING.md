@@ -8,13 +8,24 @@ measures — human review minutes per merged change (W13).
 `abcc replay <task>` helps), or a claim in the README, `SECURITY.md` or a source
 comment that the code does not bear out — the last kind especially.
 
-**Pull requests are by invitation.** Open an issue first and say what you want to
-change; if it is wanted, the issue will say so. An unsolicited pull request may be
-closed without review — not because it is unwelcome, but because reviewing it
-costs the minutes the project is trying to save.
+**Pull requests are by invitation, and the invitation is a label.** An issue
+labelled [`pr-welcome`](https://github.com/mrdushidush/abcc/labels/pr-welcome) is
+pre-approved: comment "taking this" and send the pull request without asking. A
+claim lapses after 14 days without a draft pull request. For anything else, open
+an issue first and say what you want to change; if it is wanted, the issue gets
+the label.
 
-If you are invited to send one, CI must pass, and it runs the same three checks
-you can run locally, on Linux and on Windows:
+How pull requests get reviewed:
+
+- **On Fridays, up to three a week, oldest first.**
+- **Over 200 changed lines, or outside the issue's scope:** closed with a note,
+  not reviewed — not because it is unwelcome, but because reviewing it costs the
+  minutes the project is trying to save. Split it, or open an issue.
+- **You keep the merge.** If a pull request needs a fix, I ask you for it or push
+  it to your branch; I never rewrite your pull request as my own.
+
+CI must pass, and it runs the same three checks you can run locally, on Linux and
+on Windows. None of them needs a model or a GPU:
 
 ```
 cargo fmt --all --check

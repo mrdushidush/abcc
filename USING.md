@@ -21,7 +21,7 @@ recognized*; the spelling here is `$env:VAR = "value"`.
 Put `abcc` on PATH, so the loop below is five words rather than five paths:
 
 ```powershell
-cargo install --path crates\abcc --locked
+cargo install --path crates/abcc --locked
 ```
 
 It lands in `~\.cargo\bin`, which is already on PATH. ⚠ **It is a copy, not

@@ -1,15 +1,29 @@
 # ABCC 2.0 — Agent Battle Command Center
 
-An RTS-framed command center for running local model workers against real
-repository tasks. One Rust binary: a fleet of two local slots, a durable SQLite
-event log, a gate built out of deterministic refusals, and a terminal console
-with an isometric battlefield.
+**Put a coding job on a board. A local model tries it in a scratch copy of your
+repository, your real tests decide whether it lands, and you read the diff
+before anything is committed.** The model never grades its own work. One Rust
+binary, driving a model on your own machine.
+
+```sh
+git clone https://github.com/mrdushidush/abcc && cd abcc
+cargo install --path crates/abcc --locked     # Rust stable
+# Start an OpenAI-compatible server holding a model (LM Studio is what it is
+# measured on, one 16 GB GPU), then, from a checkout of your own repository:
+abcc check --model <the id your server reports>
+abcc chat "make one() return two"
+```
+
+Under the hood: a durable SQLite event log, a gate built out of deterministic
+refusals, and an RTS-framed terminal console.
 
 > **Status: pre-alpha.** It is public so that it can be read, not because it is
 > finished. Nothing here is released and nothing is packaged — it is not on
 > crates.io. Every measurement behind it was taken on one Windows machine against
 > one local model; CI builds and tests it on Linux and Windows. Issues are
-> welcome; read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
+> welcome; issues labelled
+> [`pr-welcome`](https://github.com/mrdushidush/abcc/labels/pr-welcome) are
+> open for a pull request — [`CONTRIBUTING.md`](CONTRIBUTING.md) has the rest.
 
 ## What it is
 
@@ -139,6 +153,15 @@ finding**; if you cannot find the finding, treat the number as wrong.
 In that repository, `python research/tools/fledger.py build` once, then
 `python research/tools/fledger.py show F146`, prints one and says whether a later
 finding corrected it.
+
+## The family
+
+| Repo | What it is |
+|---|---|
+| [claudette](https://github.com/mrdushidush/claudette) | **Use it today:** an air-gapped coding agent in one Rust binary, and Q56, a hidden-test benchmark for local models |
+| **abcc** (this repo) | **What's next:** the board, the gate and the fleet. Pre-alpha |
+| [abcc-research](https://github.com/mrdushidush/abcc-research) | **The evidence:** every measurement behind both, numbered and correctable |
+| [agent-battle-command-center](https://github.com/mrdushidush/agent-battle-command-center) | Where it started: v1, TypeScript, RTS-style UI. Stable, in maintenance |
 
 ## Licence
 
