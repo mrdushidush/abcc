@@ -14,6 +14,10 @@ abcc check --model <the id your server reports>
 abcc chat "make one() return two"
 ```
 
+![abcc chat on a toy Python repo: the model fixes a failing test in a worktree, /done runs the repository's checks and a judge's report, the diff is shown, y lands it as a commit, and pytest passes on main](docs/images/abcc-chat-demo.gif)
+
+*`abcc chat` on a two-test toy repo: the model fixes a failing test in its own worktree, `/done` runs the checks, you read the diff, and `y` lands it. A real run on qwen3.6-35b-a3b in LM Studio on a 16 GB card; pauses where the screen didn't change are trimmed.*
+
 Under the hood: a durable SQLite event log, a gate built out of deterministic
 refusals, and an RTS-framed terminal console.
 
