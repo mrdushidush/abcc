@@ -16,6 +16,11 @@ The shell on this box is **PowerShell**, and every line below is written for it.
 `export VAR=value` is bash and PowerShell answers *the term 'export' is not
 recognized*; the spelling here is `$env:VAR = "value"`.
 
+The commands themselves (`abcc …`, `lms …`, `cargo …`) are shell-neutral. Only
+the lines that set an environment variable or edit your shell profile are
+PowerShell-specific, and each of those has a bash/zsh equivalent right next to
+it. In bash or zsh, `$env:VAR = "value"` is spelled `export VAR=value`.
+
 ## Once, ever
 
 Put `abcc` on PATH, so the loop below is five words rather than five paths:
@@ -36,6 +41,17 @@ Then name the model once, in the profile, so every shell you open already has it
 if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Force $PROFILE }
 Add-Content $PROFILE '$env:ABCC_MODEL = "qwen3.6-35b-a3b-mtp@iq3_s"'
 ```
+
+In bash or zsh, the same step is one line appended to your shell's startup file
+(`~/.bashrc` for bash, `~/.zshrc` for zsh):
+
+```bash
+echo 'export ABCC_MODEL="qwen3.6-35b-a3b-mtp@iq3_s"' >> ~/.bashrc   # bash
+echo 'export ABCC_MODEL="qwen3.6-35b-a3b-mtp@iq3_s"' >> ~/.zshrc    # zsh
+```
+
+Open a new shell (or run `source ~/.bashrc` / `source ~/.zshrc`) and
+`echo $ABCC_MODEL` should print the model name.
 
 ## Once, at the start of a session
 
